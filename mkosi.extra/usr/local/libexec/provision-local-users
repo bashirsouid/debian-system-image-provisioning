@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-USERS_FILE="/usr/local/etc/users.tsv"
+USERS_FILE="${USERS_FILE:-/usr/local/etc/users.conf}"
+SKEL_DIR="${SKEL_DIR:-/etc/skel}"
 
 pick_nologin_shell() {
     local candidate
@@ -25,14 +26,58 @@ pick_login_shell() {
     fi
 }
 
+trim() {
+    local value="$1"
+    value="${value#${value%%[![:space:]]*}}"
+    value="${value%${value##*[![:space:]]}}"
+    printf '%s\n' "$value"
+}
+
+lookup_group_name_by_gid() {
+    local gid="$1"
+    getent group "$gid" | awk -F: 'NR==1 { print $1 }'
+}
+
+ensure_primary_group() {
+    local group="$1"
+    local requested_gid="$2"
+    local current_gid existing_name
+
+    if getent group "$group" >/dev/null 2>&1; then
+        current_gid="$(getent group "$group" | awk -F: 'NR==1 { print $3 }')"
+        if [[ -n "$requested_gid" && "$current_gid" != "$requested_gid" ]]; then
+            existing_name="$(lookup_group_name_by_gid "$requested_gid" || true)"
+            if [[ -n "$existing_name" && "$existing_name" != "$group" ]]; then
+                echo "ERROR: requested gid $requested_gid for primary group $group is already owned by group $existing_name" >&2
+                exit 1
+            fi
+            groupmod -g "$requested_gid" "$group"
+        fi
+        printf '%s\n' "$group"
+        return
+    fi
+
+    if [[ -n "$requested_gid" ]]; then
+        existing_name="$(lookup_group_name_by_gid "$requested_gid" || true)"
+        if [[ -n "$existing_name" && "$existing_name" != "$group" ]]; then
+            echo "ERROR: requested gid $requested_gid for primary group $group is already owned by group $existing_name" >&2
+            exit 1
+        fi
+        groupadd -g "$requested_gid" "$group"
+    else
+        groupadd "$group"
+    fi
+
+    printf '%s\n' "$group"
+}
+
 ensure_groups() {
     local groups_csv="$1"
     local group
 
     IFS=',' read -ra requested_groups <<< "$groups_csv"
     for group in "${requested_groups[@]}"; do
-        group="${group#${group%%[![:space:]]*}}"
-        group="${group%${group##*[![:space:]]}}"
+        group="$(trim "$group")"
         [[ -n "$group" ]] || continue
         getent group "$group" >/dev/null 2>&1 || groupadd "$group"
     done
@@ -46,8 +91,7 @@ set_supplementary_groups() {
 
     IFS=',' read -ra requested_groups <<< "$groups_csv"
     for group in "${requested_groups[@]}"; do
-        group="${group#${group%%[![:space:]]*}}"
-        group="${group%${group##*[![:space:]]}}"
+        group="$(trim "$group")"
         [[ -n "$group" ]] || continue
         cleaned+=("$group")
     done
@@ -57,37 +101,91 @@ set_supplementary_groups() {
     fi
 }
 
+maybe_set_uid() {
+    local username="$1"
+    local requested_uid="$2"
+    local existing_name current_uid
+
+    [[ -n "$requested_uid" ]] || return 0
+
+    current_uid="$(id -u "$username")"
+    if [[ "$current_uid" == "$requested_uid" ]]; then
+        return 0
+    fi
+
+    existing_name="$(getent passwd "$requested_uid" | awk -F: 'NR==1 { print $1 }' || true)"
+    if [[ -n "$existing_name" && "$existing_name" != "$username" ]]; then
+        echo "ERROR: requested uid $requested_uid for user $username is already owned by $existing_name" >&2
+        exit 1
+    fi
+
+    usermod -u "$requested_uid" "$username"
+}
+
+seed_user_file_if_missing() {
+    local username="$1"
+    local primary_group="$2"
+    local home="$3"
+    local relpath="$4"
+    local mode="$5"
+
+    [[ -d "$home" ]] || return 0
+    [[ -f "$SKEL_DIR/$relpath" ]] || return 0
+    [[ -e "$home/$relpath" ]] && return 0
+
+    install -D -o "$username" -g "$primary_group" -m "$mode" "$SKEL_DIR/$relpath" "$home/$relpath"
+}
+
 create_or_update_login_user() {
     local username="$1"
     local shell="$2"
-    local home="/home/$username"
+    local primary_group="$3"
+    local requested_uid="$4"
+    local home="$5"
+    local existed=false
 
     if id "$username" >/dev/null 2>&1; then
-        usermod -s "$shell" "$username"
-        return
+        existed=true
+        usermod -s "$shell" -g "$primary_group" -d "$home" "$username"
+    else
+        local args=(--home-dir "$home" --shell "$shell" --gid "$primary_group" --no-user-group)
+        [[ -n "$requested_uid" ]] && args+=(--uid "$requested_uid")
+        if [[ -d "$home" ]]; then
+            args+=(--no-create-home)
+        else
+            args+=(--create-home)
+        fi
+        useradd "${args[@]}" "$username"
     fi
 
-    if [[ -d "$home" ]]; then
-        useradd -M -d "$home" -s "$shell" "$username"
-        chown -R "$username:$username" "$home"
-        chmod 0700 "$home"
-    else
-        useradd -m -d "$home" -s "$shell" "$username"
+    maybe_set_uid "$username" "$requested_uid"
+
+    if [[ ! -d "$home" ]]; then
+        install -d -o "$username" -g "$primary_group" -m 0700 "$home"
+    elif [[ "$existed" == false ]]; then
+        chown "$username:$primary_group" "$home"
         chmod 0700 "$home"
     fi
+
+    seed_user_file_if_missing "$username" "$primary_group" "$home" .xinitrc 0644
 }
 
 create_or_update_service_user() {
     local username="$1"
     local shell="$2"
+    local primary_group="$3"
+    local requested_uid="$4"
+    local home="$5"
 
     if id "$username" >/dev/null 2>&1; then
-        usermod -s "$shell" "$username"
-        usermod -d /nonexistent "$username" || true
-        return
+        usermod -s "$shell" -g "$primary_group" -d "$home" "$username" || true
+    else
+        local args=(--home-dir "$home" --shell "$shell" --gid "$primary_group" --no-user-group --no-create-home)
+        [[ -n "$requested_uid" ]] && args+=(--uid "$requested_uid")
+        useradd "${args[@]}" "$username"
     fi
 
-    useradd -M -d /nonexistent -s "$shell" "$username"
+    maybe_set_uid "$username" "$requested_uid"
 }
 
 apply_password_state() {
@@ -113,18 +211,26 @@ if [[ ! -s "$USERS_FILE" ]]; then
     exit 0
 fi
 
-while IFS=$'\t' read -r username can_login requested_shell groups_csv password_hash; do
+while IFS=':' read -r username can_login requested_shell groups_csv password_hash requested_uid requested_gid primary_group requested_home; do
     [[ -n "$username" ]] || continue
     [[ "$username" != "root" ]] || continue
 
+    primary_group="$(trim "$primary_group")"
+    requested_home="$(trim "$requested_home")"
+    requested_uid="$(trim "$requested_uid")"
+    requested_gid="$(trim "$requested_gid")"
+    primary_group="$(ensure_primary_group "$primary_group" "$requested_gid")"
+
     if [[ "$can_login" == "true" ]]; then
         effective_shell="$(pick_login_shell "$requested_shell")"
-        echo "==> [FIRSTBOOT] login account=$username shell=$effective_shell"
-        create_or_update_login_user "$username" "$effective_shell"
+        effective_home="${requested_home:-/home/$username}"
+        echo "==> [FIRSTBOOT] login account=$username uid=${requested_uid:-auto} gid=${requested_gid:-auto} group=$primary_group shell=$effective_shell home=$effective_home"
+        create_or_update_login_user "$username" "$effective_shell" "$primary_group" "$requested_uid" "$effective_home"
     else
         effective_shell="$NOLOGIN_SHELL"
-        echo "==> [FIRSTBOOT] service account=$username shell=$effective_shell"
-        create_or_update_service_user "$username" "$effective_shell"
+        effective_home="${requested_home:-/nonexistent}"
+        echo "==> [FIRSTBOOT] service account=$username uid=${requested_uid:-auto} gid=${requested_gid:-auto} group=$primary_group shell=$effective_shell home=$effective_home"
+        create_or_update_service_user "$username" "$effective_shell" "$primary_group" "$requested_uid" "$effective_home"
     fi
 
     ensure_groups "$groups_csv"

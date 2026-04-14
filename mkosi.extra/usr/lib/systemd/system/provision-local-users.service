@@ -1,6 +1,6 @@
 [Unit]
 Description=Provision local users from embedded image data
-ConditionPathExists=/usr/local/etc/users.tsv
+ConditionPathExists=/usr/local/etc/users.conf
 After=local-fs.target systemd-remount-fs.service systemd-sysusers.service
 Before=systemd-user-sessions.service getty.target display-manager.service multi-user.target graphical.target
 

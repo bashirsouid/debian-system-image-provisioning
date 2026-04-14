@@ -8,6 +8,26 @@ USERS_SAMPLE="$PROJECT_ROOT/.users.json.sample"
 PROFILE="devbox"
 HOST=""
 MKOSI_FORCE=""
+SYNC_HOST_IDS=true
+
+HOST_USER_NAME="$(id -un)"
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
+HOST_PRIMARY_GROUP="$(id -gn)"
+
+usage() {
+  cat <<'USAGE'
+Usage: ./build.sh [options]
+
+Options:
+  --profile NAME           build profile (default: devbox)
+  --host NAME              include host-specific overlay from hosts/NAME/
+  --force                  pass mkosi -f
+  --clean                  pass mkosi -f -f
+  --sync-host-ids=yes|no   when username matches the invoking host user,
+                           copy that user's uid/gid/group into the image
+USAGE
+}
 
 hash_password() {
   local password="$1"
@@ -30,12 +50,35 @@ PY
   exit 1
 }
 
-render_users_tsv() {
+normalize_optional_id() {
+  local raw="$1"
+  local fallback="${2-}"
+
+  case "$raw" in
+    "")
+      printf '%s\n' ""
+      ;;
+    host)
+      printf '%s\n' "$fallback"
+      ;;
+    *[!0-9]*)
+      echo "ERROR: invalid numeric id value: $raw" >&2
+      exit 1
+      ;;
+    *)
+      printf '%s\n' "$raw"
+      ;;
+  esac
+}
+
+render_users_conf() {
   local output="$1"
   : > "$output"
 
   while IFS= read -r entry; do
     local username can_login requested_shell password_hash password_plain groups_csv
+    local requested_uid requested_gid requested_primary_group requested_home
+    local effective_uid effective_gid effective_primary_group effective_home
 
     username="$(jq -r '.username // empty' <<<"$entry")"
     can_login="$(jq -r 'if has("can_login") and .can_login != null then .can_login else true end' <<<"$entry")"
@@ -51,6 +94,10 @@ render_users_tsv() {
         (.groups | tostring)
       end
     ' <<<"$entry")"
+    requested_uid="$(jq -r '.uid // empty' <<<"$entry")"
+    requested_gid="$(jq -r '.gid // empty' <<<"$entry")"
+    requested_primary_group="$(jq -r '.primary_group // empty' <<<"$entry")"
+    requested_home="$(jq -r '.home // empty' <<<"$entry")"
 
     [[ -n "$username" && "$username" != "root" ]] || continue
 
@@ -58,12 +105,38 @@ render_users_tsv() {
       password_hash="$(hash_password "$password_plain")"
     fi
 
-    printf '%s\t%s\t%s\t%s\t%s\n' \
+    effective_uid="$(normalize_optional_id "$requested_uid")"
+    effective_gid="$(normalize_optional_id "$requested_gid")"
+    effective_primary_group="$requested_primary_group"
+
+    if [[ "$requested_primary_group" == "host" ]]; then
+      effective_primary_group="$HOST_PRIMARY_GROUP"
+    fi
+
+    if [[ "$SYNC_HOST_IDS" == true && "$username" == "$HOST_USER_NAME" ]]; then
+      [[ -n "$effective_uid" ]] || effective_uid="$HOST_UID"
+      [[ -n "$effective_gid" ]] || effective_gid="$HOST_GID"
+      [[ -n "$effective_primary_group" ]] || effective_primary_group="$HOST_PRIMARY_GROUP"
+    fi
+
+    if [[ "$can_login" == "true" ]]; then
+      effective_home="${requested_home:-/home/$username}"
+      [[ -n "$effective_primary_group" ]] || effective_primary_group="$username"
+    else
+      effective_home="${requested_home:-/nonexistent}"
+      [[ -n "$effective_primary_group" ]] || effective_primary_group="$username"
+    fi
+
+    printf '%s:%s:%s:%s:%s:%s:%s:%s:%s\n' \
       "$username" \
       "$can_login" \
       "$requested_shell" \
       "$groups_csv" \
-      "$password_hash" >> "$output"
+      "$password_hash" \
+      "$effective_uid" \
+      "$effective_gid" \
+      "$effective_primary_group" \
+      "$effective_home" >> "$output"
   done < <(jq -c '.[]' "$USERS_FILE")
 }
 
@@ -82,11 +155,24 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --clean)
-      MKOSI_FORCE="-ff"
+      MKOSI_FORCE="-f -f"
       shift
+      ;;
+    --sync-host-ids=yes|--sync-host-ids=true)
+      SYNC_HOST_IDS=true
+      shift
+      ;;
+    --sync-host-ids=no|--sync-host-ids=false)
+      SYNC_HOST_IDS=false
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
       ;;
     *)
       echo "Unknown option: $1" >&2
+      usage >&2
       exit 1
       ;;
   esac
@@ -124,10 +210,11 @@ if [[ "$PROFILE" == "devbox" && ! -f "$PROJECT_ROOT/third-party/awesome/CMakeLis
 fi
 
 echo "==> Preparing first-boot provisioning data..."
+echo "==> Host UID/GID sync for matching user '$HOST_USER_NAME': $SYNC_HOST_IDS ($HOST_UID:$HOST_GID $HOST_PRIMARY_GROUP)"
 rm -rf "$SECRETS_DIR"
 install -d -m 0755 "$SECRETS_DIR/usr/local/etc"
-render_users_tsv "$SECRETS_DIR/usr/local/etc/users.tsv"
-chmod 0600 "$SECRETS_DIR/usr/local/etc/users.tsv"
+render_users_conf "$SECRETS_DIR/usr/local/etc/users.conf"
+chmod 0600 "$SECRETS_DIR/usr/local/etc/users.conf"
 
 EXTRA_ARGS=()
 if [[ -n "$HOST" ]]; then
@@ -152,6 +239,7 @@ CHECKSUM_INPUTS=(
   mkosi.extra
   hosts
   third-party
+  docs
   .users.json
   build.sh
   run.sh
@@ -179,7 +267,12 @@ if [[ -f "$CHECKSUM_FILE" ]]; then
 fi
 
 echo "==> Starting mkosi build (profile: $PROFILE, force: ${MKOSI_FORCE:-none})..."
-mkosi --profile="$PROFILE" ${MKOSI_FORCE} "${EXTRA_ARGS[@]}" build
+if [[ -n "$MKOSI_FORCE" ]]; then
+  # shellcheck disable=SC2086
+  mkosi --profile="$PROFILE" $MKOSI_FORCE "${EXTRA_ARGS[@]}" build
+else
+  mkosi --profile="$PROFILE" "${EXTRA_ARGS[@]}" build
+fi
 
 echo "$CURRENT_CHECKSUM" > "$CHECKSUM_FILE"
 echo "==> Build complete. Artifacts are in mkosi.output/"
