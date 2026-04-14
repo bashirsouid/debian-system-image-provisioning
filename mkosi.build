@@ -1,4 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "==> [BUILD] no custom source build step; using distro packages only"
+# Run inside the mkosi build root so BuildPackages are available. mkosi's own
+# example pattern is to re-exec with mkosi-chroot when needed.
+if [[ "${container:-}" != "mkosi" ]]; then
+    exec mkosi-chroot "$CHROOT_SCRIPT" "$@"
+fi
+
+# The shared mkosi.build hook is invoked for every profile. The server profile
+# does not install AwesomeWM, so skip cleanly there.
+if ! command -v awesome >/dev/null 2>&1; then
+    echo "==> [BUILD] AwesomeWM package not present in this image; skipping source overlay build"
+    exit 0
+fi
+
+AWESOME_SRC="$SRCDIR/third-party/awesome"
+if [[ ! -d "$AWESOME_SRC/.git" && ! -f "$AWESOME_SRC/CMakeLists.txt" ]]; then
+    echo "ERROR: AwesomeWM source not found at $AWESOME_SRC" >&2
+    echo "Run ./update-3rd-party-deps.sh before building the devbox profile." >&2
+    exit 1
+fi
+
+BUILD_PATH="${BUILDDIR:-$SRCDIR/.build-awesome}"
+mkdir -p "$BUILD_PATH"
+
+echo "==> [BUILD] configuring AwesomeWM from source: $AWESOME_SRC"
+cmake \
+    -S "$AWESOME_SRC" \
+    -B "$BUILD_PATH" \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DSYSCONFDIR=/etc \
+    -DGENERATE_DOC=OFF \
+    -DGENERATE_MANPAGES=OFF
+
+echo "==> [BUILD] compiling AwesomeWM ($(nproc) jobs)"
+cmake --build "$BUILD_PATH" -j "$(nproc)"
+
+echo "==> [BUILD] installing AwesomeWM into DESTDIR overlay"
+DESTDIR="$DESTDIR" cmake --install "$BUILD_PATH"
+
+echo "==> [BUILD] AwesomeWM source overlay installed successfully"

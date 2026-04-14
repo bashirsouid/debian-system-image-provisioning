@@ -59,6 +59,12 @@ if ! command -v openssl >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1;
   exit 1
 fi
 
+if [[ "$PROFILE" == "devbox" && ! -f "$PROJECT_ROOT/third-party/awesome/CMakeLists.txt" ]]; then
+  echo "ERROR: devbox profile requires third-party/awesome" >&2
+  echo "Run ./update-3rd-party-deps.sh first." >&2
+  exit 1
+fi
+
 echo "==> Preparing secrets..."
 rm -rf "$SECRETS_DIR"
 install -d -m 0755 "$SECRETS_DIR/usr/local/etc"
@@ -87,6 +93,7 @@ CHECKSUM_INPUTS=(
   mkosi.prepare
   mkosi.extra
   hosts
+  third-party
   .users.json
   build.sh
   run.sh
