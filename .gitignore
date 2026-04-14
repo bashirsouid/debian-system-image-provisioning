@@ -13,3 +13,5 @@ image.*
 # Legacy
 .build/
 artifacts/
+
+third-party/
