@@ -1,0 +1,28 @@
+#!/bin/bash
+# ============================================================
+# mkosi.prepare — Image preparation hook
+#
+# Called with 'final' after software packages are installed.
+# We use this to install the Liquorix kernel for the devbox
+# profile since mkosi 25.3 doesn't easily support third-party
+# repos during the initial 'Packages=' phase on this system.
+# ============================================================
+set -euxo pipefail
+
+PHASE="${1:-}"
+
+if [[ "$PHASE" == "final" ]]; then
+    # Detect the profile. We can check if specific files exist to identify role.
+    if [[ -f "/etc/apt/sources.list.d/liquorix.sources" ]]; then
+        echo "==> Devbox profile detected (Liquorix repo present)"
+        echo "==> Installing Liquorix kernel..."
+        
+        # We are inside the chroot, but mkosi.prepare runs with network access
+        apt-get update
+        apt-get install -y linux-image-liquorix-amd64 linux-headers-liquorix-amd64
+        
+        echo "==> Liquorix kernel installation complete"
+    else
+        echo "==> Non-devbox profile or Liquorix repo missing, skipping kernel install"
+    fi
+fi

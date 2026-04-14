@@ -1,0 +1,84 @@
+#!/bin/bash
+set -euxo pipefail
+
+# ============================================================
+# mkosi.finalize — FINAL step of image preparation
+# ============================================================
+
+ROOT="${BUILDROOT:-}"
+if [[ -z "$ROOT" ]]; then
+    echo "ERROR: BUILDROOT not found." >&2
+    exit 1
+fi
+
+USERS_FILE_REL="/usr/local/etc/users.json"
+USERS_FILE_ABS="$ROOT$USERS_FILE_REL"
+
+if [[ -f "$USERS_FILE_ABS" ]]; then
+    echo "==> [FINALIZE] Provisioning users..."
+    
+    # Run everything inside a single chroot block
+    # Note: We avoid naming variables 'SHELL' or 'USERNAME' to prevent 
+    # conflicts with read-only environment variables.
+    chroot "$ROOT" /bin/bash <<EOF
+set -euxo pipefail
+
+USER_COUNT=\$(jq length "$USERS_FILE_REL")
+
+for ((i = 0; i < USER_COUNT; i++)); do
+    U_JSON=\$(jq -c ".[\$i]" "$USERS_FILE_REL")
+    U_NAME=\$(echo "\$U_JSON" | jq -r ".username")
+    U_PASS=\$(echo "\$U_JSON" | jq -r ".password")
+    U_GROUPS=\$(echo "\$U_JSON" | jq -r ".groups // \"\"")
+    U_SHELL=\$(echo "\$U_JSON" | jq -r ".shell // \"/bin/bash\"")
+    U_CAN_LOGIN=\$(echo "\$U_JSON" | jq -r ".can_login // true")
+
+    if [[ "\$U_NAME" == "root" || -z "\$U_NAME" || "\$U_NAME" == "null" ]]; then
+        continue
+    fi
+
+    E_SHELL="/usr/bin/false"
+    [[ "\$U_CAN_LOGIN" == "true" ]] && E_SHELL="\$U_SHELL"
+
+    echo "  Account: \$U_NAME (shell: \$E_SHELL)"
+
+    # Create/Update user
+    if ! id "\$U_NAME" >/dev/null 2>&1; then
+        useradd -m -s "\$E_SHELL" "\$U_NAME"
+    else
+        chsh -s "\$E_SHELL" "\$U_NAME"
+    fi
+
+    # Set password
+    if [[ -n "\$U_PASS" && "\$U_PASS" != "null" ]]; then
+        echo "\$U_NAME:\$U_PASS" | chpasswd
+    fi
+
+    # Add to groups
+    if [[ -n "\$U_GROUPS" && "\$U_GROUPS" != "null" ]]; then
+        IFS=',' read -r -a g_list <<< "\$U_GROUPS"
+        for g in "\${g_list[@]}"; do
+            [[ -n "\$g" ]] || continue
+            getent group "\$g" >/dev/null 2>&1 || groupadd "\$g"
+            usermod -aG "\$g" "\$U_NAME"
+        done
+    fi
+
+    # Permissions
+    chmod 0700 "/home/\$U_NAME"
+    chown -R "\$U_NAME:\$U_NAME" "/home/\$U_NAME"
+done
+
+# Security cleanup
+rm -f "$USERS_FILE_REL"
+EOF
+
+else
+    echo "==> [FINALIZE] No users.json found, skipping."
+fi
+
+# Final root lockdown (surviving firstboot)
+sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*$|root:x:0:0:root:/root:/usr/bin/false|' "$ROOT/etc/passwd"
+sed -i 's/^root:[^:]*:/root:!:/' "$ROOT/etc/shadow"
+
+echo "==> [FINALIZE] Image preparation complete"

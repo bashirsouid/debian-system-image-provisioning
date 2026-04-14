@@ -1,0 +1,15 @@
+[
+  {
+    "username": "demo",
+    "password": "change-me-now",
+    "groups": "sudo,audio,video,render,input",
+    "shell": "/bin/bash",
+    "can_login": true
+  },
+  {
+    "username": "deploy",
+    "groups": "sudo",
+    "shell": "/bin/bash",
+    "can_login": false
+  }
+]

@@ -1,0 +1,15 @@
+# Secrets & credentials
+.users.json
+.env
+.mkosi-secrets/
+
+# Build outputs & cache
+mkosi.cache/
+mkosi.builddir/
+image
+image.*
+.config-checksum
+
+# Legacy
+.build/
+artifacts/
