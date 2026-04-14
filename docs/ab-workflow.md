@@ -36,3 +36,8 @@ Keep testing with `mkosi vm` and spare-disk images first. Once you are happy wit
 user provisioning and desktop behavior, the next implementation step should be a
 `mkosi.sysupdate/` directory that targets two rootfs slots plus the matching boot
 artifacts.
+
+## Current bridge step now included
+
+This tree now also includes a conservative host-side bridge for local A/B testing: `scripts/ab-flash.sh`.
+It is not the final `systemd-sysupdate`-based solution, but it does let you sync the built image into the inactive root slot on a UEFI + GRUB machine, keep the current slot as the saved fallback, and trial-boot the new slot once before blessing it with `ab-bless-boot`.

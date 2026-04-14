@@ -1,0 +1,16 @@
+# Example evox2-oriented A/B deployment config.
+#
+# Replace these with the real stable by-partlabel/by-partuuid symlinks from the
+# machine before using scripts/ab-flash.sh.
+
+ESP_PART=/dev/disk/by-partlabel/ESP
+SLOT_A_ROOT=/dev/disk/by-partlabel/ROOT_A
+SLOT_B_ROOT=/dev/disk/by-partlabel/ROOT_B
+
+EXTRA_KERNEL_ARGS="quiet"
+PRESERVE_PATHS=(
+  /etc/fstab
+  /etc/machine-id
+  /etc/hostname
+  /etc/ssh/ssh_host_*
+)

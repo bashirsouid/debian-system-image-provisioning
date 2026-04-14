@@ -1,0 +1,38 @@
+# Example config for scripts/ab-flash.sh
+#
+# Use stable symlinks where possible, for example /dev/disk/by-partlabel/*
+# or /dev/disk/by-partuuid/*.
+
+# Shared EFI System Partition that GRUB boots from.
+ESP_PART=/dev/disk/by-partlabel/ESP
+
+# Dual root slots.
+SLOT_A_ROOT=/dev/disk/by-partlabel/ROOT_A
+SLOT_B_ROOT=/dev/disk/by-partlabel/ROOT_B
+
+# Current GRUB paths on the running host.
+GRUB_DEFAULT_FILE=/etc/default/grub
+GRUB_CFG=/boot/grub/grub.cfg
+GRUB_D_SCRIPT=/etc/grub.d/09_ab_slots
+GRUBENV_PATH=/boot/grub/grubenv
+
+# Where the slot UKIs will be stored on the shared ESP.
+ESP_UKI_DIR=/EFI/Linux
+ESP_SLOT_A_UKI=ab-slot-a.efi
+ESP_SLOT_B_UKI=ab-slot-b.efi
+
+# Extra kernel arguments passed by GRUB to both slot UKIs.
+# Keep this simple: space-separated words only.
+EXTRA_KERNEL_ARGS="quiet"
+
+# Paths copied from the running system into the newly flashed inactive slot
+# after the image rootfs is synced.
+PRESERVE_PATHS=(
+  /etc/fstab
+  /etc/machine-id
+  /etc/hostname
+  /etc/ssh/ssh_host_*
+)
+
+# Set to yes only if you understand the grubenv risks on your boot storage.
+ALLOW_GRUBENV_UNSAFE=no

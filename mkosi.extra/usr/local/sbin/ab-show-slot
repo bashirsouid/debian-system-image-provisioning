@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONF="/etc/ab-slot.conf"
+if [[ -f "$CONF" ]]; then
+  cat "$CONF"
+else
+  echo "No /etc/ab-slot.conf present on this system."
+fi

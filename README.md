@@ -137,6 +137,15 @@ The first option is useful when you specifically want to compare against your re
 
 See `docs/home-storage.md` for the trade-offs.
 
+
+## Host-side A/B flashing
+
+For an actual UEFI + GRUB workstation with two root partitions, the tree now also includes `scripts/ab-flash.sh` plus `ab-flash.conf.sample`.
+
+That script mounts the built `image.raw`, syncs it into the **inactive** root slot, copies the image UKI into the shared ESP, regenerates GRUB with stable slot IDs, keeps the current slot as the saved fallback, and sets the newly flashed slot for the **next boot only**.
+
+See `docs/ab-grub-deploy.md` for the assumptions and workflow.
+
 ## Bare-metal testing
 
 This project still emits a whole-disk image (`Format=disk`).

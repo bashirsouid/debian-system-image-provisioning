@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONF="/etc/ab-slot.conf"
+[[ -f "$CONF" ]] || {
+  echo "ERROR: $CONF not found" >&2
+  exit 1
+}
+# shellcheck disable=SC1090
+source "$CONF"
+: "${AB_GRUB_ID:?AB_GRUB_ID missing from $CONF}"
+
+if ! command -v grub-set-default >/dev/null 2>&1; then
+  echo "ERROR: grub-set-default not found" >&2
+  exit 1
+fi
+
+echo "==> Marking slot ${AB_SLOT:-unknown} as the persistent GRUB default ($AB_GRUB_ID)"
+grub-set-default "$AB_GRUB_ID"
+echo "==> Done. Future boots will stay on this slot unless changed again."
