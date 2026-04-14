@@ -1,0 +1,12 @@
+[Unit]
+Description=Provision local users from embedded image data
+ConditionPathExists=/usr/local/etc/users.tsv
+After=local-fs.target systemd-remount-fs.service systemd-sysusers.service
+Before=systemd-user-sessions.service getty.target display-manager.service multi-user.target graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/provision-local-users
+
+[Install]
+WantedBy=multi-user.target

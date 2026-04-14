@@ -1,13 +1,16 @@
 # mkosi image provisioning
 
-This version keeps the fixes for account provisioning and bootability **without** dropping your source-built AwesomeWM workflow.
+This version keeps the source-built AwesomeWM workflow, but moves regular-user creation back to **first boot** instead of trying to create login users during the mkosi build.
+
+That change is deliberate: with modern mkosi, unprivileged builds run in a single-user namespace, and account creation that needs `chown` to arbitrary UIDs can fail during build scripts. First-boot provisioning avoids that entire class of failure while still giving you a deterministic image.
 
 What changed:
-- user provisioning happens at build time in `mkosi.finalize` using mkosi-compatible host-side account tools
-- the devbox profile still installs Debian's `awesome` package for runtime dependency coverage, then `mkosi.build` overlays the latest AwesomeWM built from `third-party/awesome`
-- the AwesomeWM build now runs inside `mkosi-chroot`, so `BuildPackages=` are available from mkosi instead of depending on random host libraries
-- `run.sh` passes QEMU arguments to `mkosi vm` correctly
-- the image is explicitly configured as a bootable disk image using `systemd-boot`
+- `mkosi.build` still builds AwesomeWM from `third-party/awesome`
+- user data from `.users.json` is converted on the host into `/usr/local/etc/users.tsv`
+- a first-boot systemd unit provisions users before normal login services open up
+- the root account stays locked by image configuration
+- `run.sh` still passes QEMU arguments correctly to `mkosi vm`
+- the image is still explicitly configured as a bootable disk image using `systemd-boot`
 
 ## Quick start
 
@@ -15,22 +18,24 @@ What changed:
 ./update-3rd-party-deps.sh
 cp .users.json.sample .users.json
 # edit .users.json and set a real password for your login user
+./clean.sh --all
 ./build.sh --profile devbox
 ./run.sh --profile devbox
 ```
 
-Console login should work with the username/password from `.users.json`.
-For the devbox profile, log in on the text console and then run:
+On the first boot, the image will provision users from the embedded data and then remove that data from the root filesystem. After the console login appears, log in with the username and password from `.users.json`.
+
+For the devbox profile, start X manually after login:
 
 ```bash
 startx
 ```
 
-## How the AwesomeWM source build works
+## Why this is the right shape
 
-The devbox profile intentionally keeps the distro `awesome` package installed so Debian resolves the runtime dependency set for you. During `mkosi.build`, the current Git checkout in `third-party/awesome` is compiled and installed into the image's `DESTDIR` overlay, replacing the older packaged AwesomeWM files in the final image.
+The original repository README already said users should be provisioned during first boot. That turns out to be the safer design for rootless mkosi builds as well.
 
-That keeps the image reproducible while still tracking upstream AwesomeWM development from Git.
+Build-time account creation is still possible when mkosi is run with enough privileges to `chown` files to arbitrary UIDs, but that is not the path this repo now depends on.
 
 ## Bare-metal testing
 

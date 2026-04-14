@@ -9,6 +9,64 @@ PROFILE="devbox"
 HOST=""
 MKOSI_FORCE=""
 
+hash_password() {
+  local password="$1"
+
+  if command -v openssl >/dev/null 2>&1; then
+    printf '%s' "$password" | openssl passwd -6 -stdin
+    return
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    PASSWORD="$password" python3 - <<'PY'
+import crypt
+import os
+print(crypt.crypt(os.environ['PASSWORD'], crypt.mksalt(crypt.METHOD_SHA512)))
+PY
+    return
+  fi
+
+  echo "ERROR: need openssl or python3 on the build host to hash user passwords" >&2
+  exit 1
+}
+
+render_users_tsv() {
+  local output="$1"
+  : > "$output"
+
+  while IFS= read -r entry; do
+    local username can_login requested_shell password_hash password_plain groups_csv
+
+    username="$(jq -r '.username // empty' <<<"$entry")"
+    can_login="$(jq -r 'if has("can_login") and .can_login != null then .can_login else true end' <<<"$entry")"
+    requested_shell="$(jq -r '.shell // "/bin/bash"' <<<"$entry")"
+    password_hash="$(jq -r '.password_hash // empty' <<<"$entry")"
+    password_plain="$(jq -r '.password // empty' <<<"$entry")"
+    groups_csv="$(jq -r '
+      if .groups == null then
+        ""
+      elif (.groups | type) == "array" then
+        (.groups | map(tostring) | join(","))
+      else
+        (.groups | tostring)
+      end
+    ' <<<"$entry")"
+
+    [[ -n "$username" && "$username" != "root" ]] || continue
+
+    if [[ -z "$password_hash" && -n "$password_plain" ]]; then
+      password_hash="$(hash_password "$password_plain")"
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+      "$username" \
+      "$can_login" \
+      "$requested_shell" \
+      "$groups_csv" \
+      "$password_hash" >> "$output"
+  done < <(jq -c '.[]' "$USERS_FILE")
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)
@@ -65,11 +123,11 @@ if [[ "$PROFILE" == "devbox" && ! -f "$PROJECT_ROOT/third-party/awesome/CMakeLis
   exit 1
 fi
 
-echo "==> Preparing secrets..."
+echo "==> Preparing first-boot provisioning data..."
 rm -rf "$SECRETS_DIR"
 install -d -m 0755 "$SECRETS_DIR/usr/local/etc"
-cp "$USERS_FILE" "$SECRETS_DIR/usr/local/etc/users.json"
-chmod 0600 "$SECRETS_DIR/usr/local/etc/users.json"
+render_users_tsv "$SECRETS_DIR/usr/local/etc/users.tsv"
+chmod 0600 "$SECRETS_DIR/usr/local/etc/users.tsv"
 
 EXTRA_ARGS=()
 if [[ -n "$HOST" ]]; then

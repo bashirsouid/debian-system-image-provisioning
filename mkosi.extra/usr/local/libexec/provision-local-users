@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+USERS_FILE="/usr/local/etc/users.tsv"
+
+pick_nologin_shell() {
+    local candidate
+    for candidate in /usr/sbin/nologin /usr/bin/nologin /bin/false /usr/bin/false; do
+        if [[ -x "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return
+        fi
+    done
+    printf '/bin/false\n'
+}
+
+pick_login_shell() {
+    local requested="$1"
+    if [[ -n "$requested" && -x "$requested" ]]; then
+        printf '%s\n' "$requested"
+    elif [[ -x /bin/bash ]]; then
+        printf '/bin/bash\n'
+    else
+        printf '/bin/sh\n'
+    fi
+}
+
+ensure_groups() {
+    local groups_csv="$1"
+    local group
+
+    IFS=',' read -ra requested_groups <<< "$groups_csv"
+    for group in "${requested_groups[@]}"; do
+        group="${group#${group%%[![:space:]]*}}"
+        group="${group%${group##*[![:space:]]}}"
+        [[ -n "$group" ]] || continue
+        getent group "$group" >/dev/null 2>&1 || groupadd "$group"
+    done
+}
+
+set_supplementary_groups() {
+    local username="$1"
+    local groups_csv="$2"
+    local cleaned=()
+    local group
+
+    IFS=',' read -ra requested_groups <<< "$groups_csv"
+    for group in "${requested_groups[@]}"; do
+        group="${group#${group%%[![:space:]]*}}"
+        group="${group%${group##*[![:space:]]}}"
+        [[ -n "$group" ]] || continue
+        cleaned+=("$group")
+    done
+
+    if ((${#cleaned[@]} > 0)); then
+        usermod -G "$(IFS=,; echo "${cleaned[*]}")" "$username"
+    fi
+}
+
+create_or_update_login_user() {
+    local username="$1"
+    local shell="$2"
+    local home="/home/$username"
+
+    if id "$username" >/dev/null 2>&1; then
+        usermod -s "$shell" "$username"
+        return
+    fi
+
+    if [[ -d "$home" ]]; then
+        useradd -M -d "$home" -s "$shell" "$username"
+        chown -R "$username:$username" "$home"
+        chmod 0700 "$home"
+    else
+        useradd -m -d "$home" -s "$shell" "$username"
+        chmod 0700 "$home"
+    fi
+}
+
+create_or_update_service_user() {
+    local username="$1"
+    local shell="$2"
+
+    if id "$username" >/dev/null 2>&1; then
+        usermod -s "$shell" "$username"
+        usermod -d /nonexistent "$username" || true
+        return
+    fi
+
+    useradd -M -d /nonexistent -s "$shell" "$username"
+}
+
+apply_password_state() {
+    local username="$1"
+    local can_login="$2"
+    local password_hash="$3"
+
+    if [[ "$can_login" == "true" && -n "$password_hash" ]]; then
+        usermod -p "$password_hash" "$username"
+    else
+        usermod -L "$username"
+    fi
+}
+
+NOLOGIN_SHELL="$(pick_nologin_shell)"
+
+echo "==> [FIRSTBOOT] provisioning local users"
+usermod -L -s "$NOLOGIN_SHELL" root || true
+
+if [[ ! -s "$USERS_FILE" ]]; then
+    echo "==> [FIRSTBOOT] no user data found; nothing to do"
+    rm -f "$USERS_FILE"
+    exit 0
+fi
+
+while IFS=$'\t' read -r username can_login requested_shell groups_csv password_hash; do
+    [[ -n "$username" ]] || continue
+    [[ "$username" != "root" ]] || continue
+
+    if [[ "$can_login" == "true" ]]; then
+        effective_shell="$(pick_login_shell "$requested_shell")"
+        echo "==> [FIRSTBOOT] login account=$username shell=$effective_shell"
+        create_or_update_login_user "$username" "$effective_shell"
+    else
+        effective_shell="$NOLOGIN_SHELL"
+        echo "==> [FIRSTBOOT] service account=$username shell=$effective_shell"
+        create_or_update_service_user "$username" "$effective_shell"
+    fi
+
+    ensure_groups "$groups_csv"
+    set_supplementary_groups "$username" "$groups_csv"
+    apply_password_state "$username" "$can_login" "$password_hash"
+done < "$USERS_FILE"
+
+rm -f "$USERS_FILE"
+echo "==> [FIRSTBOOT] local user provisioning complete"

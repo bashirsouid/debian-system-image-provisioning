@@ -21,8 +21,59 @@ if [[ ! -d "$AWESOME_SRC/.git" && ! -f "$AWESOME_SRC/CMakeLists.txt" ]]; then
     exit 1
 fi
 
-BUILD_PATH="${BUILDDIR:-$SRCDIR/.build-awesome}"
+# mkosi's BUILDDIR is a shared top-level directory reused across builds. Do not
+# point CMake at that directory directly: Awesome links an executable named
+# "awesome", and a stale top-level directory with the same name then breaks the
+# link step with "cannot open output file awesome: Is a directory".
+BUILD_ROOT="${BUILDDIR:-$SRCDIR/.mkosi-awesome-build}"
+BUILD_PATH="$BUILD_ROOT/awesome-cmake"
+mkdir -p "$BUILD_ROOT"
+
+echo "==> [BUILD] resetting isolated AwesomeWM build dir: $BUILD_PATH"
+rm -rf "$BUILD_PATH"
 mkdir -p "$BUILD_PATH"
+
+# Awesome upstream explicitly documents pinning LUA_EXECUTABLE, LUA_LIBRARY and
+# LUA_INCLUDE_DIR when you need a specific Lua. Debian trixie ships Lua 5.3 and
+# 5.4, while Awesome upstream also warns that building from source often trips
+# over LGI/Lua version mismatches. Use 5.3 by default here because Debian's
+# lua-lgi package provides the Lua 5.3 LGI module path that Awesome checks.
+AWESOME_LUA_VERSION="${AWESOME_LUA_VERSION:-5.3}"
+LUA_BIN="$(command -v "lua${AWESOME_LUA_VERSION}" || true)"
+
+if [[ -z "$LUA_BIN" || ! -x "$LUA_BIN" ]]; then
+    echo "ERROR: required Lua interpreter not found in PATH: lua${AWESOME_LUA_VERSION}" >&2
+    exit 1
+fi
+
+LUA_INCLUDE_DIR="/usr/include/lua${AWESOME_LUA_VERSION}"
+if [[ ! -f "$LUA_INCLUDE_DIR/lua.h" ]]; then
+    echo "ERROR: required Lua headers not found at $LUA_INCLUDE_DIR/lua.h" >&2
+    echo "       Ensure liblua${AWESOME_LUA_VERSION}-dev is installed for the build." >&2
+    exit 1
+fi
+
+MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)"
+LUA_LIBRARY=""
+if [[ -n "$MULTIARCH" && -f "/usr/lib/$MULTIARCH/liblua${AWESOME_LUA_VERSION}.so" ]]; then
+    LUA_LIBRARY="/usr/lib/$MULTIARCH/liblua${AWESOME_LUA_VERSION}.so"
+else
+    LUA_LIBRARY="$(find /usr/lib -path "*/liblua${AWESOME_LUA_VERSION}.so" -print 2>/dev/null | head -n 1 || true)"
+fi
+
+if [[ -z "$LUA_LIBRARY" || ! -f "$LUA_LIBRARY" ]]; then
+    echo "ERROR: required Lua shared library not found for Lua ${AWESOME_LUA_VERSION}" >&2
+    echo "       Looked for liblua${AWESOME_LUA_VERSION}.so under /usr/lib." >&2
+    exit 1
+fi
+
+echo "==> [BUILD] preflighting LGI with $LUA_BIN"
+if ! "$LUA_BIN" -e 'pcall(require, "luarocks.loader"); require("lgi.version")' >/dev/null 2>&1; then
+    echo "ERROR: LGI is not importable by $LUA_BIN inside the build environment" >&2
+    echo "       Awesome requires lgi.version at build and runtime." >&2
+    echo "       Ensure lua-lgi is installed in Packages=." >&2
+    exit 1
+fi
 
 echo "==> [BUILD] configuring AwesomeWM from source: $AWESOME_SRC"
 cmake \
@@ -32,7 +83,10 @@ cmake \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DSYSCONFDIR=/etc \
     -DGENERATE_DOC=OFF \
-    -DGENERATE_MANPAGES=OFF
+    -DGENERATE_MANPAGES=OFF \
+    -DLUA_EXECUTABLE="$LUA_BIN" \
+    -DLUA_LIBRARY="$LUA_LIBRARY" \
+    -DLUA_INCLUDE_DIR="$LUA_INCLUDE_DIR"
 
 echo "==> [BUILD] compiling AwesomeWM ($(nproc) jobs)"
 cmake --build "$BUILD_PATH" -j "$(nproc)"
