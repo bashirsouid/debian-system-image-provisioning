@@ -3,6 +3,7 @@ set -euo pipefail
 
 USERS_FILE="${USERS_FILE:-/usr/local/etc/users.conf}"
 SKEL_DIR="${SKEL_DIR:-/etc/skel}"
+QEMU_HOME_SEED_DIR="${QEMU_HOME_SEED_DIR:-/run/qemu-home-seed}"
 
 pick_nologin_shell() {
     local candidate
@@ -136,6 +137,24 @@ seed_user_file_if_missing() {
     install -D -o "$username" -g "$primary_group" -m "$mode" "$SKEL_DIR/$relpath" "$home/$relpath"
 }
 
+seed_user_tree_if_missing() {
+    local username="$1"
+    local primary_group="$2"
+    local home="$3"
+    local source_root="$4"
+    local relpath="$5"
+    local target="$home/$relpath"
+    local source="$source_root/$relpath"
+
+    [[ -d "$home" ]] || return 0
+    [[ -e "$source" ]] || return 0
+    [[ -e "$target" ]] && return 0
+
+    install -d -o "$username" -g "$primary_group" -m 0700 "$(dirname "$target")"
+    cp -a "$source" "$target"
+    chown -R "$username:$primary_group" "$target"
+}
+
 create_or_update_login_user() {
     local username="$1"
     local shell="$2"
@@ -168,6 +187,8 @@ create_or_update_login_user() {
     fi
 
     seed_user_file_if_missing "$username" "$primary_group" "$home" .xinitrc 0644
+    seed_user_tree_if_missing "$username" "$primary_group" "$home" "$QEMU_HOME_SEED_DIR" .config/awesome
+    seed_user_tree_if_missing "$username" "$primary_group" "$home" "$QEMU_HOME_SEED_DIR" .config/picom
 }
 
 create_or_update_service_user() {

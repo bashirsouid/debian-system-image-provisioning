@@ -3,6 +3,7 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SECRETS_DIR="$PROJECT_ROOT/.mkosi-secrets"
+THIRD_PARTY_DIR="$PROJECT_ROOT/.mkosi-thirdparty"
 USERS_FILE="$PROJECT_ROOT/.users.json"
 USERS_SAMPLE="$PROJECT_ROOT/.users.json.sample"
 PROFILE="devbox"
@@ -69,6 +70,66 @@ normalize_optional_id() {
       printf '%s\n' "$raw"
       ;;
   esac
+}
+
+read_release_from_mkosi_conf() {
+  awk -F= '
+    /^[[:space:]]*Release[[:space:]]*=/ {
+      value=$2
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      print value
+      exit
+    }
+  ' "$PROJECT_ROOT/mkosi.conf"
+}
+
+fetch_url() {
+  local url="$1"
+  local destination="$2"
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$destination"
+    return
+  fi
+
+  if command -v wget >/dev/null 2>&1; then
+    wget -qO "$destination" "$url"
+    return
+  fi
+
+  echo "ERROR: need curl or wget on the build host to fetch third-party repo metadata" >&2
+  exit 1
+}
+
+prepare_liquorix_trees() {
+  local suite sandbox_root keyring_path source_path
+
+  suite="$(read_release_from_mkosi_conf)"
+  if [[ -z "$suite" ]]; then
+    echo "ERROR: unable to determine Debian Release= from mkosi.conf" >&2
+    exit 1
+  fi
+
+  rm -rf "$THIRD_PARTY_DIR"
+
+  sandbox_root="$THIRD_PARTY_DIR/liquorix-sandbox"
+  install -d -m 0755 \
+    "$sandbox_root/etc/apt/sources.list.d" \
+    "$sandbox_root/usr/share/keyrings"
+
+  keyring_path="$sandbox_root/usr/share/keyrings/liquorix-keyring.gpg"
+  fetch_url "https://liquorix.net/liquorix-keyring.gpg" "$keyring_path"
+
+  source_path="$sandbox_root/etc/apt/sources.list.d/liquorix.sources"
+  cat > "$source_path" <<SOURCE
+Types: deb
+URIs: https://liquorix.net/debian
+Suites: $suite
+Components: main
+Architectures: amd64
+Signed-By: /usr/share/keyrings/liquorix-keyring.gpg
+SOURCE
 }
 
 render_users_conf() {
@@ -217,6 +278,12 @@ render_users_conf "$SECRETS_DIR/usr/local/etc/users.conf"
 chmod 0600 "$SECRETS_DIR/usr/local/etc/users.conf"
 
 EXTRA_ARGS=()
+if [[ "$PROFILE" == "devbox" ]]; then
+  echo "==> Preparing Liquorix repository metadata for devbox..."
+  prepare_liquorix_trees
+  EXTRA_ARGS+=("--sandbox-tree=$THIRD_PARTY_DIR/liquorix-sandbox:/")
+fi
+
 if [[ -n "$HOST" ]]; then
   HOST_DIR="hosts/$HOST"
   if [[ ! -d "$HOST_DIR" ]]; then

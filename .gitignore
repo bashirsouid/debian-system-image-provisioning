@@ -2,6 +2,7 @@
 .users.json
 .env
 .mkosi-secrets/
+.mkosi-thirdparty/
 
 # Build outputs & cache
 mkosi.cache/
