@@ -1,5 +1,0 @@
-Types: deb
-URIs: http://liquorix.net/debian
-Suites: sid
-Components: main
-Signed-By: mkosi.profiles/devbox/liquorix-keyring.gpg

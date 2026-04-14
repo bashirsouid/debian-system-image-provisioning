@@ -1,36 +1,4 @@
-#!/bin/bash
-set -eux
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Only build awesome if the source exists (devbox profile includes it;
-# server profile skips this entirely).
-if [ ! -d "$SRCDIR/third-party/awesome" ]; then
-    echo "==> No awesome source found at $SRCDIR/third-party/awesome"
-    echo "==> Skipping AwesomeWM build (server profile or missing source)"
-    exit 0
-fi
-
-# Use $BUILDDIR for incremental cmake builds if available,
-# otherwise fall back to /tmp.
-if [ -n "${BUILDDIR:-}" ]; then
-    BUILD_PATH="$BUILDDIR/awesome"
-else
-    BUILD_PATH="/tmp/awesome-build"
-fi
-mkdir -p "$BUILD_PATH"
-
-cd "$BUILD_PATH"
-
-echo "==> Configuring AwesomeWM build..."
-cmake "$SRCDIR/third-party/awesome" \
-    -DCMAKE_INSTALL_PREFIX=/usr \
-    -DSYSCONFDIR=/etc \
-    -DGENERATE_DOC=OFF \
-    -DGENERATE_MANPAGES=OFF
-
-echo "==> Building AwesomeWM ($(nproc) jobs)..."
-make -j"$(nproc)"
-
-echo "==> Installing AwesomeWM to DESTDIR..."
-make install DESTDIR="$DESTDIR"
-
-echo "==> AwesomeWM built and installed to DESTDIR successfully"
+echo "==> [BUILD] no custom source build step; using distro packages only"

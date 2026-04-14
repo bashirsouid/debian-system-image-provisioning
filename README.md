@@ -1,56 +1,43 @@
-# Mkosi Image Building - Machine Provisioning
+# mkosi image provisioning (stabilized)
 
-This project restructures mkosi image building for machine provisioning, supporting different roles (devbox, server) and host-specific configurations.
+This version is focused on getting you a reproducible, testable image first.
 
-## Architecture
+What changed:
+- user provisioning happens at build time in `mkosi.finalize` using host-side `useradd/usermod/groupadd -R`, not a plain `chroot` block
+- the fragile AwesomeWM source build step was removed; the `devbox` profile now uses Debian packages only
+- the broken Liquorix repository hook was removed for now
+- the custom `nsswitch.conf` override was removed so Debian defaults apply
+- `run.sh` now passes QEMU arguments to `mkosi vm` correctly
+- the image is explicitly configured as a bootable disk image using `systemd-boot`
 
--   **`mkosi.conf`**: Base configuration shared by all images (Debian Trixie).
--   **`mkosi.profiles/`**: Role-based configurations.
-    -   `devbox`: Desktop environment with AwesomeWM (built from source) and Liquorix kernel.
-    -   `server`: Minimal headless environment.
--   **`hosts/`**: Host-specific overrides (fstab, extra drivers, etc.).
--   **`mkosi.build`**: Two-phase build script to compile AwesomeWM from source.
--   **`mkosi.postinst`**: Post-installation script for security (root lockdown).
--   **`build.sh`**: Smart wrapper for building images.
--   **`run.sh`**: Helper to boot the image in QEMU with optimized display.
--   **`clean.sh`**: Helper to clean up build artifacts.
+## Quick start
 
-## Prerequisites
+```bash
+cp .users.json.sample .users.json
+# edit .users.json and set a real password for your login user
+./build.sh --profile devbox
+./run.sh --profile devbox
+```
 
--   `mkosi` (version 25+)
--   `qemu-system-x86_64`
--   `jq` (for user provisioning)
+Console login should work with the username/password from `.users.json`.
+For the devbox profile, log in on the text console and then run:
 
-## Getting Started
+```bash
+startx
+```
 
-1.  **Prepare Users**:
-    ```bash
-    cp .users.json.sample .users.json
-    # Edit .users.json and set your usernames and passwords
-    ```
+## Bare-metal testing
 
-2.  **Build a Devbox Image**:
-    ```bash
-    ./build.sh --profile devbox
-    ```
+This project currently emits a whole-disk image (`Format=disk`).
+That is ideal for:
+- `mkosi vm`
+- `mkosi burn /dev/<disk>`
+- `dd` to a spare whole disk or USB device
 
-3.  **Boot the Image**:
-    ```bash
-    ./run.sh --profile devbox
-    ```
+It is **not** the right long-term format for writing directly to an already-existing
+single root partition in an A/B setup, because the image contains its own partition
+layout and EFI system partition.
 
-## Key Features
-
--   **Debian Trixie**: Uses the latest testing distribution.
--   **Liquorix Kernel**: Included in the `devbox` profile for better performance and hardware support (e.g., Ryzen AI 395).
--   **AwesomeWM from source**: Compiles the latest git version of AwesomeWM, with runtime dependencies managed automatically via the Debian package system overlay trick.
--   **Security**: The `root` account is completely locked. Users are provisioned via `.users.json` during the first boot.
--   **Resizable QEMU Window**: Uses `virtio-gpu` and `spice-vdagent` to support seamless window resizing in the VM.
-
-## Troubleshooting
-
-### QEMU Display Issues
-If `gl=on` fails, the `run.sh` script automatically falls back to `gl=off`. Ensure you have `spice-vdagent` running in the guest for automatic resolution scaling.
-
-### Rebuilding
-Use `./build.sh --force` to force a rebuild if automatic staleness detection doesn't catch a change. Use `./clean.sh --all` for a completely fresh build.
+Get the image booting first in QEMU and on a spare disk. After that, move the A/B
+rollout layer to `systemd-sysupdate` / `mkosi sysupdate` with explicit transfer
+files.

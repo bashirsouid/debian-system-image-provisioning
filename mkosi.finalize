@@ -1,84 +1,145 @@
-#!/bin/bash
-set -euxo pipefail
+#!/usr/bin/env bash
+set -euo pipefail
 
-# ============================================================
-# mkosi.finalize — FINAL step of image preparation
-# ============================================================
+ROOT="${BUILDROOT:?BUILDROOT is required}"
+USERS_FILE_REL="/usr/local/etc/users.json"
+USERS_FILE="$ROOT$USERS_FILE_REL"
 
-ROOT="${BUILDROOT:-}"
-if [[ -z "$ROOT" ]]; then
-    echo "ERROR: BUILDROOT not found." >&2
+hash_password() {
+    local password="$1"
+
+    if command -v openssl >/dev/null 2>&1; then
+        printf '%s' "$password" | openssl passwd -6 -stdin
+        return
+    fi
+
+    if command -v python3 >/dev/null 2>&1; then
+        PASSWORD="$password" python3 - <<'PY'
+import crypt
+import os
+print(crypt.crypt(os.environ['PASSWORD'], crypt.mksalt(crypt.METHOD_SHA512)))
+PY
+        return
+    fi
+
+    echo "ERROR: need openssl or python3 on the build host to hash user passwords" >&2
     exit 1
+}
+
+pick_nologin_shell() {
+    local candidate
+    for candidate in /usr/sbin/nologin /usr/bin/nologin /bin/false /usr/bin/false; do
+        if [[ -x "$ROOT$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return
+        fi
+    done
+    printf '/bin/false\n'
+}
+
+user_exists() {
+    local username="$1"
+    grep -qE "^${username}:" "$ROOT/etc/passwd"
+}
+
+ensure_home_permissions() {
+    local username="$1"
+    local uid gid home
+
+    uid="$(awk -F: -v u="$username" '$1 == u { print $3; exit }' "$ROOT/etc/passwd")"
+    gid="$(awk -F: -v u="$username" '$1 == u { print $4; exit }' "$ROOT/etc/passwd")"
+    home="/home/$username"
+
+    if [[ -z "$uid" || -z "$gid" ]]; then
+        echo "ERROR: unable to determine UID/GID for $username" >&2
+        exit 1
+    fi
+
+    mkdir -p "$ROOT$home"
+    chown -R "$uid:$gid" "$ROOT$home"
+    chmod 0700 "$ROOT$home"
+}
+
+NOLOGIN_SHELL="$(pick_nologin_shell)"
+
+echo "==> [FINALIZE] locking root account"
+usermod -R "$ROOT" -L -s "$NOLOGIN_SHELL" root
+
+if [[ ! -f "$USERS_FILE" ]]; then
+    echo "==> [FINALIZE] no users file found; skipping user provisioning"
+    exit 0
 fi
 
-USERS_FILE_REL="/usr/local/etc/users.json"
-USERS_FILE_ABS="$ROOT$USERS_FILE_REL"
+echo "==> [FINALIZE] provisioning users from $USERS_FILE_REL"
 
-if [[ -f "$USERS_FILE_ABS" ]]; then
-    echo "==> [FINALIZE] Provisioning users..."
-    
-    # Run everything inside a single chroot block
-    # Note: We avoid naming variables 'SHELL' or 'USERNAME' to prevent 
-    # conflicts with read-only environment variables.
-    chroot "$ROOT" /bin/bash <<EOF
-set -euxo pipefail
+while IFS= read -r entry; do
+    username="$(jq -r '.username // empty' <<<"$entry")"
+    can_login="$(jq -r 'if has("can_login") and .can_login != null then .can_login else true end' <<<"$entry")"
+    requested_shell="$(jq -r '.shell // "/bin/bash"' <<<"$entry")"
+    password_hash="$(jq -r '.password_hash // empty' <<<"$entry")"
+    password_plain="$(jq -r '.password // empty' <<<"$entry")"
 
-USER_COUNT=\$(jq length "$USERS_FILE_REL")
-
-for ((i = 0; i < USER_COUNT; i++)); do
-    U_JSON=\$(jq -c ".[\$i]" "$USERS_FILE_REL")
-    U_NAME=\$(echo "\$U_JSON" | jq -r ".username")
-    U_PASS=\$(echo "\$U_JSON" | jq -r ".password")
-    U_GROUPS=\$(echo "\$U_JSON" | jq -r ".groups // \"\"")
-    U_SHELL=\$(echo "\$U_JSON" | jq -r ".shell // \"/bin/bash\"")
-    U_CAN_LOGIN=\$(echo "\$U_JSON" | jq -r ".can_login // true")
-
-    if [[ "\$U_NAME" == "root" || -z "\$U_NAME" || "\$U_NAME" == "null" ]]; then
+    if [[ -z "$username" || "$username" == "root" ]]; then
         continue
     fi
 
-    E_SHELL="/usr/bin/false"
-    [[ "\$U_CAN_LOGIN" == "true" ]] && E_SHELL="\$U_SHELL"
+    effective_shell="$requested_shell"
+    if [[ "$can_login" != "true" ]]; then
+        effective_shell="$NOLOGIN_SHELL"
+    elif [[ ! -x "$ROOT$effective_shell" ]]; then
+        echo "==> [FINALIZE] requested shell $effective_shell for $username is missing; falling back to /bin/bash"
+        effective_shell="/bin/bash"
+    fi
 
-    echo "  Account: \$U_NAME (shell: \$E_SHELL)"
+    echo "==> [FINALIZE] account=$username can_login=$can_login shell=$effective_shell"
 
-    # Create/Update user
-    if ! id "\$U_NAME" >/dev/null 2>&1; then
-        useradd -m -s "\$E_SHELL" "\$U_NAME"
+    if ! user_exists "$username"; then
+        useradd -m -s "$effective_shell" "$username"
     else
-        chsh -s "\$E_SHELL" "\$U_NAME"
+        usermod -R "$ROOT" -s "$effective_shell" "$username"
     fi
 
-    # Set password
-    if [[ -n "\$U_PASS" && "\$U_PASS" != "null" ]]; then
-        echo "\$U_NAME:\$U_PASS" | chpasswd
+    groups=()
+    while IFS= read -r group; do
+        [[ -n "$group" ]] || continue
+        groupadd -f "$group"
+        groups+=("$group")
+    done < <(
+        jq -r '
+            if .groups == null then
+                empty
+            elif (.groups | type) == "array" then
+                .groups[]
+            else
+                (.groups | split(","))[]
+            end
+            | gsub("^\\s+|\\s+$"; "")
+            | select(length > 0)
+        ' <<<"$entry"
+    )
+
+    if ((${#groups[@]} > 0)); then
+        group_csv="$(IFS=,; echo "${groups[*]}")"
+        usermod -R "$ROOT" -G "$group_csv" "$username"
+    else
+        usermod -R "$ROOT" -G "" "$username" || true
     fi
 
-    # Add to groups
-    if [[ -n "\$U_GROUPS" && "\$U_GROUPS" != "null" ]]; then
-        IFS=',' read -r -a g_list <<< "\$U_GROUPS"
-        for g in "\${g_list[@]}"; do
-            [[ -n "\$g" ]] || continue
-            getent group "\$g" >/dev/null 2>&1 || groupadd "\$g"
-            usermod -aG "\$g" "\$U_NAME"
-        done
+    if [[ "$can_login" == "true" ]]; then
+        if [[ -n "$password_hash" ]]; then
+            usermod -R "$ROOT" -p "$password_hash" "$username"
+        elif [[ -n "$password_plain" ]]; then
+            usermod -R "$ROOT" -p "$(hash_password "$password_plain")" "$username"
+        else
+            echo "==> [FINALIZE] no password provided for $username; leaving the account locked"
+            usermod -R "$ROOT" -L "$username"
+        fi
+    else
+        usermod -R "$ROOT" -L "$username"
     fi
 
-    # Permissions
-    chmod 0700 "/home/\$U_NAME"
-    chown -R "\$U_NAME:\$U_NAME" "/home/\$U_NAME"
-done
+    ensure_home_permissions "$username"
+done < <(jq -c '.[]' "$USERS_FILE")
 
-# Security cleanup
-rm -f "$USERS_FILE_REL"
-EOF
-
-else
-    echo "==> [FINALIZE] No users.json found, skipping."
-fi
-
-# Final root lockdown (surviving firstboot)
-sed -i 's|^root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*$|root:x:0:0:root:/root:/usr/bin/false|' "$ROOT/etc/passwd"
-sed -i 's/^root:[^:]*:/root:!:/' "$ROOT/etc/shadow"
-
-echo "==> [FINALIZE] Image preparation complete"
+rm -f "$USERS_FILE"
+echo "==> [FINALIZE] image preparation complete"
