@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# shellcheck source=/usr/local/libexec/ab-common
+source /usr/local/libexec/ab-common
+
+HEALTH_REASON=""
+
+check_no_failed_units() {
+  local failed_output
+  failed_output="$(systemctl --failed --no-legend --plain 2>/dev/null || true)"
+  if [[ -n "$failed_output" ]]; then
+    HEALTH_REASON="failed-units"
+    return 1
+  fi
+  return 0
+}
+
+run_health_hooks() {
+  local dir="${AB_HEALTH_HOOK_DIR:-/usr/local/libexec/ab-health-check.d}"
+  local hook
+
+  [[ -d "$dir" ]] || return 0
+
+  while IFS= read -r -d '' hook; do
+    [[ -x "$hook" ]] || continue
+    if ! "$hook"; then
+      HEALTH_REASON="hook:$(basename "$hook")"
+      return 1
+    fi
+  done < <(find "$dir" -maxdepth 1 -type f -perm /111 -print0 | sort -z)
+
+  return 0
+}
+
+record_fallback_if_needed() {
+  local now="$1"
+
+  if [[ -n "$AB_PENDING_SLOT" && "$AB_PENDING_SLOT" != "$AB_SLOT" ]]; then
+    AB_LAST_FALLBACK_FROM="$AB_PENDING_SLOT"
+    AB_LAST_FALLBACK_TO="$AB_SLOT"
+    AB_LAST_FALLBACK_AT="$now"
+    AB_PENDING_SLOT=""
+    AB_PENDING_ENTRY_ID=""
+    AB_PENDING_IMAGE_SHA256=""
+    AB_PENDING_DEPLOYED_AT=""
+  fi
+}
+
+maybe_reboot_on_failure() {
+  if ! ab_truthy "$AB_REBOOT_ON_HEALTH_FAILURE"; then
+    return 0
+  fi
+
+  local delay
+  delay="${AB_HEALTH_FAILURE_REBOOT_DELAY:-5}"
+  if [[ "$delay" =~ ^[0-9]+$ ]] && (( delay > 0 )); then
+    sleep "$delay"
+  fi
+
+  echo "A/B slot health failed; rebooting so the saved fallback slot becomes active on the next boot" >&2
+  systemctl reboot --force
+}
+
+main() {
+  local now delay
+
+  [[ $EUID -eq 0 ]] || ab_die "ab-report-boot-health must run as root"
+  ab_require_slot_conf
+  trap ab_close_state_dir EXIT
+  ab_open_state_dir
+  ab_load_state
+  ab_load_optional_env_file "$AB_BUILD_INFO_PATH"
+  ab_load_optional_env_file "$AB_DEPLOY_INFO_PATH"
+
+  now="$(ab_now_utc)"
+  record_fallback_if_needed "$now"
+
+  delay="${AB_HEALTH_DELAY_SECS:-20}"
+  if [[ "$delay" =~ ^[0-9]+$ ]] && (( delay > 0 )); then
+    sleep "$delay"
+  fi
+
+  if ! check_no_failed_units || ! run_health_hooks; then
+    AB_LAST_BOOT_SLOT="$AB_SLOT"
+    AB_LAST_BOOT_STATUS="unhealthy"
+    AB_LAST_BOOT_AT="$now"
+    AB_LAST_BAD_SLOT="$AB_SLOT"
+    AB_LAST_BAD_IMAGE_SHA256="${AB_IMAGE_SHA256:-}"
+    AB_LAST_BAD_REASON="$HEALTH_REASON"
+    AB_LAST_BAD_AT="$now"
+    ab_save_state
+    echo "A/B slot health check failed: $HEALTH_REASON" >&2
+    maybe_reboot_on_failure
+    exit 1
+  fi
+
+  AB_LAST_BOOT_SLOT="$AB_SLOT"
+  AB_LAST_BOOT_STATUS="healthy"
+  AB_LAST_BOOT_AT="$now"
+  AB_LAST_GOOD_SLOT="$AB_SLOT"
+  AB_LAST_GOOD_IMAGE_SHA256="${AB_IMAGE_SHA256:-}"
+  AB_LAST_GOOD_AT="$now"
+
+  if [[ -n "$AB_PENDING_SLOT" && "$AB_PENDING_SLOT" == "$AB_SLOT" ]]; then
+    if ab_truthy "$AB_AUTO_BLESS"; then
+      command -v bootctl >/dev/null 2>&1 || ab_die "bootctl not found"
+      bootctl --esp-path="$AB_ESP_MOUNTPOINT" set-default "$AB_ENTRY_ID"
+      AB_SAVED_SLOT="$AB_SLOT"
+      AB_SAVED_ENTRY_ID="$AB_ENTRY_ID"
+      AB_LAST_PROMOTION_SLOT="$AB_SLOT"
+      AB_LAST_PROMOTION_MODE="auto"
+      AB_LAST_PROMOTION_AT="$now"
+      AB_LAST_MANUAL_PROMOTION_REQUIRED_SLOT=""
+      AB_LAST_MANUAL_PROMOTION_REQUIRED_AT=""
+    else
+      AB_LAST_MANUAL_PROMOTION_REQUIRED_SLOT="$AB_SLOT"
+      AB_LAST_MANUAL_PROMOTION_REQUIRED_AT="$now"
+    fi
+
+    AB_PENDING_SLOT=""
+    AB_PENDING_ENTRY_ID=""
+    AB_PENDING_IMAGE_SHA256=""
+    AB_PENDING_DEPLOYED_AT=""
+  fi
+
+  ab_save_state
+}
+
+main "$@"

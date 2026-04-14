@@ -1,0 +1,145 @@
+---
+- name: Build and deploy the ARM64 cloudbox A/B image
+  hosts: cloudbox
+  become: true
+  gather_facts: true
+
+  vars:
+    project_root: "{{ playbook_dir }}/../.."
+    local_bundle: "/tmp/debian-system-image-provisioning-cloudbox.tar.gz"
+    remote_bundle: "/tmp/debian-system-image-provisioning-cloudbox.tar.gz"
+    remote_project_root: "{{ remote_project_root | default('/opt/debian-system-image-provisioning') }}"
+    build_profile: "{{ build_profile | default('server') }}"
+    build_host_overlay: "{{ build_host_overlay | default('cloudbox') }}"
+
+  pre_tasks:
+    - name: Assert the target host is ARM64
+      ansible.builtin.assert:
+        that:
+          - ansible_architecture in ['aarch64', 'arm64']
+        fail_msg: "This playbook is intended for an ARM64/aarch64 cloudbox target."
+
+    - name: Install build and deploy prerequisites
+      ansible.builtin.apt:
+        update_cache: true
+        name:
+          - ca-certificates
+          - curl
+          - dosfstools
+          - git
+          - jq
+          - mkosi
+          - openssl
+          - rsync
+          - systemd-boot-efi
+          - util-linux
+        state: present
+
+    - name: Build a local source bundle on the controller
+      delegate_to: localhost
+      become: false
+      ansible.builtin.command:
+        argv:
+          - tar
+          - --exclude=.git
+          - --exclude=mkosi.output
+          - --exclude=mkosi.cache
+          - --exclude=mkosi.builddir
+          - --exclude=.mkosi-secrets
+          - --exclude=.mkosi-thirdparty
+          - -C
+          - "{{ project_root }}"
+          - -czf
+          - "{{ local_bundle }}"
+          - .
+
+  tasks:
+    - name: Reset remote project checkout
+      ansible.builtin.file:
+        path: "{{ remote_project_root }}"
+        state: absent
+
+    - name: Create remote project directory
+      ansible.builtin.file:
+        path: "{{ remote_project_root }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy source bundle to the target
+      ansible.builtin.copy:
+        src: "{{ local_bundle }}"
+        dest: "{{ remote_bundle }}"
+        mode: '0644'
+
+    - name: Unpack the source bundle on the target
+      ansible.builtin.unarchive:
+        src: "{{ remote_bundle }}"
+        dest: "{{ remote_project_root }}"
+        remote_src: true
+
+    - name: Render cloudbox users.json
+      ansible.builtin.template:
+        src: ../templates/users.json.j2
+        dest: "{{ remote_project_root }}/.users.json"
+        mode: '0600'
+
+    - name: Render cloudbox ab-flash.conf
+      ansible.builtin.template:
+        src: ../templates/ab-flash.conf.j2
+        dest: "{{ remote_project_root }}/ab-flash.conf"
+        mode: '0600'
+
+    - name: Clean any previous build artifacts
+      ansible.builtin.command:
+        chdir: "{{ remote_project_root }}"
+        argv:
+          - ./clean.sh
+          - --all
+
+    - name: Build the cloudbox image on the target host
+      ansible.builtin.command:
+        chdir: "{{ remote_project_root }}"
+        argv:
+          - ./build.sh
+          - --profile
+          - "{{ build_profile }}"
+          - --host
+          - "{{ build_host_overlay }}"
+      register: build_result
+
+    - name: Deploy the built image into the inactive slot
+      ansible.builtin.command:
+        chdir: "{{ remote_project_root }}"
+        argv:
+          - ./scripts/ab-flash.sh
+          - --config
+          - ./ab-flash.conf
+          - --yes
+      register: flash_result
+
+    - name: Reboot into the newly deployed slot
+      ansible.builtin.reboot:
+        reboot_timeout: 1800
+        msg: "Rebooting into the new A/B slot"
+
+    - name: Wait for the host to come back
+      ansible.builtin.wait_for_connection:
+        timeout: 900
+        delay: 5
+
+    - name: Read A/B slot status after reboot
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/ab-status
+      register: ab_status_result
+      changed_when: false
+
+    - name: Show A/B status
+      ansible.builtin.debug:
+        var: ab_status_result.stdout_lines
+
+    - name: Optionally bless the new slot after post-reboot validation
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/ab-bless-boot
+      when: cloudbox_bless_after_health | default(false) | bool

@@ -3,25 +3,58 @@
 # Use stable symlinks where possible, for example /dev/disk/by-partlabel/*
 # or /dev/disk/by-partuuid/*.
 
-# Shared EFI System Partition that GRUB boots from.
+# Shared EFI System Partition.
 ESP_PART=/dev/disk/by-partlabel/ESP
 
 # Dual root slots.
 SLOT_A_ROOT=/dev/disk/by-partlabel/ROOT_A
 SLOT_B_ROOT=/dev/disk/by-partlabel/ROOT_B
 
-# Current GRUB paths on the running host.
-GRUB_DEFAULT_FILE=/etc/default/grub
-GRUB_CFG=/boot/grub/grub.cfg
-GRUB_D_SCRIPT=/etc/grub.d/09_ab_slots
-GRUBENV_PATH=/boot/grub/grubenv
+# Recommended bootloader path going forward.
+AB_BOOTLOADER=systemd-boot
 
-# Where the slot UKIs will be stored on the shared ESP.
+# Install or update systemd-boot on the shared ESP when deploying.
+INSTALL_SYSTEMD_BOOT=yes
+
+# Basic systemd-boot UI settings.
+LOADER_TIMEOUT=5
+LOADER_CONF_PATH=/loader/loader.conf
+LOADER_ENTRIES_DIR=/loader/entries
+
+# Where the slot UKIs and slot-state metadata will be stored on the shared ESP.
 ESP_UKI_DIR=/EFI/Linux
-ESP_SLOT_A_UKI=ab-slot-a.efi
-ESP_SLOT_B_UKI=ab-slot-b.efi
+SLOT_A_UKI=ab-slot-a.efi
+SLOT_B_UKI=ab-slot-b.efi
+SLOT_A_ENTRY_ID=ab-slot-a.conf
+SLOT_B_ENTRY_ID=ab-slot-b.conf
+AB_STATE_ESP_DIR=/EFI/Linux/ab-state
 
-# Extra kernel arguments passed by GRUB to both slot UKIs.
+# Slot-health policy written into the flashed slot.
+#
+# yes = if the trial slot reaches its health checks, it promotes itself to the
+#       persistent default automatically.
+# no  = keep the trial slot one-shot only; use `sudo ab-bless-boot` after you
+#       verify it manually.
+AB_AUTO_BLESS=no
+
+# Wait this many seconds after boot before evaluating slot health.
+AB_HEALTH_DELAY_SECS=20
+
+# Optional hook directory inside the flashed system. Any executable scripts in
+# this directory are run after the built-in "no failed units" check. A non-zero
+# exit code marks the slot unhealthy.
+AB_HEALTH_HOOK_DIR=/usr/local/libexec/ab-health-check.d
+
+# If enabled, a failed health check triggers a reboot so the machine returns to
+# the saved fallback slot on the following boot.
+AB_REBOOT_ON_HEALTH_FAILURE=no
+AB_HEALTH_FAILURE_REBOOT_DELAY=5
+
+# Metadata files written inside the flashed image.
+AB_BUILD_INFO_PATH=/usr/local/share/ab-image-meta/build-info.env
+AB_DEPLOY_INFO_PATH=/usr/local/share/ab-image-meta/deploy-info.env
+
+# Extra kernel arguments passed by the boot menu entries to both slots.
 # Keep this simple: space-separated words only.
 EXTRA_KERNEL_ARGS="quiet"
 
@@ -33,6 +66,3 @@ PRESERVE_PATHS=(
   /etc/hostname
   /etc/ssh/ssh_host_*
 )
-
-# Set to yes only if you understand the grubenv risks on your boot storage.
-ALLOW_GRUBENV_UNSAFE=no

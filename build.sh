@@ -201,6 +201,79 @@ render_users_conf() {
   done < <(jq -c '.[]' "$USERS_FILE")
 }
 
+git_value() {
+  local repo="$1"
+  shift
+  git -C "$repo" "$@" 2>/dev/null || true
+}
+
+git_rev() {
+  local repo="$1"
+  if git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git_value "$repo" rev-parse HEAD | head -n1
+  fi
+}
+
+git_dirty() {
+  local repo="$1"
+  if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+  if git -C "$repo" diff --no-ext-diff --quiet --ignore-submodules=dirty && \
+     git -C "$repo" diff --no-ext-diff --cached --quiet --ignore-submodules=dirty; then
+    printf 'no\n'
+  else
+    printf 'yes\n'
+  fi
+}
+
+write_env_kv() {
+  local path="$1"
+  shift
+  local tmp dir
+  dir="$(dirname "$path")"
+  install -d -m 0755 "$dir"
+  tmp="$(mktemp "$dir/.abtmp.XXXXXX")"
+  : > "$tmp"
+  while [[ $# -gt 0 ]]; do
+    printf '%s=%q\n' "$1" "${2-}" >> "$tmp"
+    shift 2
+  done
+  chmod 0644 "$tmp"
+  mv "$tmp" "$path"
+}
+
+render_build_info() {
+  local output="$1"
+  local build_time build_user build_host build_git_rev build_git_dirty
+  local awesome_git_rev awesome_git_dirty kernel_track mkosi_version host_overlay
+
+  build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  build_user="$HOST_USER_NAME"
+  build_host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)"
+  build_git_rev="$(git_rev "$PROJECT_ROOT")"
+  build_git_dirty="$(git_dirty "$PROJECT_ROOT")"
+  awesome_git_rev="$(git_rev "$PROJECT_ROOT/third-party/awesome")"
+  awesome_git_dirty="$(git_dirty "$PROJECT_ROOT/third-party/awesome")"
+  kernel_track="debian"
+  [[ "$PROFILE" == "devbox" ]] && kernel_track="liquorix"
+  mkosi_version="$(mkosi --version 2>/dev/null | head -n1 || true)"
+  host_overlay="${HOST:-none}"
+
+  write_env_kv "$output" \
+    AB_BUILD_TIME_UTC "$build_time" \
+    AB_BUILD_PROFILE "$PROFILE" \
+    AB_BUILD_HOST_OVERLAY "$host_overlay" \
+    AB_BUILD_HOST_USER "$build_user" \
+    AB_BUILD_HOSTNAME "$build_host" \
+    AB_BUILD_GIT_REV "$build_git_rev" \
+    AB_BUILD_GIT_DIRTY "$build_git_dirty" \
+    AB_BUILD_AWESOME_GIT_REV "$awesome_git_rev" \
+    AB_BUILD_AWESOME_GIT_DIRTY "$awesome_git_dirty" \
+    AB_BUILD_KERNEL_TRACK "$kernel_track" \
+    AB_BUILD_MKOSI_VERSION "$mkosi_version"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)
@@ -273,9 +346,10 @@ fi
 echo "==> Preparing first-boot provisioning data..."
 echo "==> Host UID/GID sync for matching user '$HOST_USER_NAME': $SYNC_HOST_IDS ($HOST_UID:$HOST_GID $HOST_PRIMARY_GROUP)"
 rm -rf "$SECRETS_DIR"
-install -d -m 0755 "$SECRETS_DIR/usr/local/etc"
+install -d -m 0755 "$SECRETS_DIR/usr/local/etc" "$SECRETS_DIR/usr/local/share/ab-image-meta"
 render_users_conf "$SECRETS_DIR/usr/local/etc/users.conf"
 chmod 0600 "$SECRETS_DIR/usr/local/etc/users.conf"
+render_build_info "$SECRETS_DIR/usr/local/share/ab-image-meta/build-info.env"
 
 EXTRA_ARGS=()
 if [[ "$PROFILE" == "devbox" ]]; then
@@ -307,7 +381,10 @@ CHECKSUM_INPUTS=(
   hosts
   third-party
   docs
+  scripts
+  ansible
   .users.json
+  ab-flash.conf.sample
   build.sh
   run.sh
   clean.sh

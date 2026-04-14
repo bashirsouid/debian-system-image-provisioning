@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AB_SLOT_CONF="${AB_SLOT_CONF:-/etc/ab-slot.conf}"
+
+ab_die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+ab_now_utc() {
+  date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+ab_truthy() {
+  case "${1,,}" in
+    1|y|yes|true|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+ab_require_slot_conf() {
+  [[ -f "$AB_SLOT_CONF" ]] || ab_die "$AB_SLOT_CONF not found"
+  # shellcheck disable=SC1090
+  source "$AB_SLOT_CONF"
+
+  : "${AB_SLOT:?AB_SLOT missing from $AB_SLOT_CONF}"
+  : "${AB_ENTRY_ID:?AB_ENTRY_ID missing from $AB_SLOT_CONF}"
+  : "${AB_ESP_DEVICE:?AB_ESP_DEVICE missing from $AB_SLOT_CONF}"
+
+  AB_BOOTLOADER="${AB_BOOTLOADER:-systemd-boot}"
+  AB_STATE_ESP_DIR="${AB_STATE_ESP_DIR:-/EFI/Linux/ab-state}"
+  AB_AUTO_BLESS="${AB_AUTO_BLESS:-no}"
+  AB_HEALTH_DELAY_SECS="${AB_HEALTH_DELAY_SECS:-20}"
+  AB_HEALTH_HOOK_DIR="${AB_HEALTH_HOOK_DIR:-/usr/local/libexec/ab-health-check.d}"
+  AB_BUILD_INFO_PATH="${AB_BUILD_INFO_PATH:-/usr/local/share/ab-image-meta/build-info.env}"
+  AB_DEPLOY_INFO_PATH="${AB_DEPLOY_INFO_PATH:-/usr/local/share/ab-image-meta/deploy-info.env}"
+  AB_REBOOT_ON_HEALTH_FAILURE="${AB_REBOOT_ON_HEALTH_FAILURE:-no}"
+  AB_HEALTH_FAILURE_REBOOT_DELAY="${AB_HEALTH_FAILURE_REBOOT_DELAY:-5}"
+}
+
+ab_open_state_dir() {
+  if [[ -n "${AB_STATE_DIR_OVERRIDE:-}" ]]; then
+    AB_STATE_DIR="$AB_STATE_DIR_OVERRIDE"
+    mkdir -p "$AB_STATE_DIR"
+    AB_STATE_MOUNTED_BY_US=false
+    return 0
+  fi
+
+  local existing_target
+  existing_target="$(findmnt -nro TARGET -S "$AB_ESP_DEVICE" 2>/dev/null | head -n1 || true)"
+  if [[ -n "$existing_target" ]]; then
+    AB_ESP_MOUNTPOINT="$existing_target"
+    AB_STATE_MOUNTED_BY_US=false
+  else
+    AB_ESP_MOUNTPOINT="${AB_ESP_MOUNTPOINT:-/run/ab-esp}"
+    mkdir -p "$AB_ESP_MOUNTPOINT"
+    mount "$AB_ESP_DEVICE" "$AB_ESP_MOUNTPOINT"
+    AB_STATE_MOUNTED_BY_US=true
+  fi
+
+  AB_STATE_DIR="$AB_ESP_MOUNTPOINT$AB_STATE_ESP_DIR"
+  mkdir -p "$AB_STATE_DIR"
+}
+
+ab_close_state_dir() {
+  if [[ "${AB_STATE_MOUNTED_BY_US:-false}" == true && -n "${AB_ESP_MOUNTPOINT:-}" ]]; then
+    umount "$AB_ESP_MOUNTPOINT"
+  fi
+}
+
+ab_load_optional_env_file() {
+  local path="$1"
+  if [[ -f "$path" ]]; then
+    # shellcheck disable=SC1090
+    source "$path"
+  fi
+}
+
+ab_state_defaults() {
+  AB_STATE_VERSION="${AB_STATE_VERSION:-2}"
+  AB_SAVED_SLOT="${AB_SAVED_SLOT:-}"
+  AB_SAVED_ENTRY_ID="${AB_SAVED_ENTRY_ID:-}"
+  AB_PENDING_SLOT="${AB_PENDING_SLOT:-}"
+  AB_PENDING_ENTRY_ID="${AB_PENDING_ENTRY_ID:-}"
+  AB_PENDING_IMAGE_SHA256="${AB_PENDING_IMAGE_SHA256:-}"
+  AB_PENDING_DEPLOYED_AT="${AB_PENDING_DEPLOYED_AT:-}"
+  AB_LAST_BOOT_SLOT="${AB_LAST_BOOT_SLOT:-}"
+  AB_LAST_BOOT_STATUS="${AB_LAST_BOOT_STATUS:-}"
+  AB_LAST_BOOT_AT="${AB_LAST_BOOT_AT:-}"
+  AB_LAST_GOOD_SLOT="${AB_LAST_GOOD_SLOT:-}"
+  AB_LAST_GOOD_IMAGE_SHA256="${AB_LAST_GOOD_IMAGE_SHA256:-}"
+  AB_LAST_GOOD_AT="${AB_LAST_GOOD_AT:-}"
+  AB_LAST_BAD_SLOT="${AB_LAST_BAD_SLOT:-}"
+  AB_LAST_BAD_IMAGE_SHA256="${AB_LAST_BAD_IMAGE_SHA256:-}"
+  AB_LAST_BAD_REASON="${AB_LAST_BAD_REASON:-}"
+  AB_LAST_BAD_AT="${AB_LAST_BAD_AT:-}"
+  AB_LAST_FALLBACK_FROM="${AB_LAST_FALLBACK_FROM:-}"
+  AB_LAST_FALLBACK_TO="${AB_LAST_FALLBACK_TO:-}"
+  AB_LAST_FALLBACK_AT="${AB_LAST_FALLBACK_AT:-}"
+  AB_LAST_PROMOTION_SLOT="${AB_LAST_PROMOTION_SLOT:-}"
+  AB_LAST_PROMOTION_MODE="${AB_LAST_PROMOTION_MODE:-}"
+  AB_LAST_PROMOTION_AT="${AB_LAST_PROMOTION_AT:-}"
+  AB_LAST_MANUAL_PROMOTION_REQUIRED_SLOT="${AB_LAST_MANUAL_PROMOTION_REQUIRED_SLOT:-}"
+  AB_LAST_MANUAL_PROMOTION_REQUIRED_AT="${AB_LAST_MANUAL_PROMOTION_REQUIRED_AT:-}"
+}
+
+ab_state_file_path() {
+  printf '%s/status.env\n' "$AB_STATE_DIR"
+}
+
+ab_write_kv_file() {
+  local path="$1"
+  shift
+
+  local tmp dir
+  dir="$(dirname "$path")"
+  mkdir -p "$dir"
+  tmp="$(mktemp "$dir/.abtmp.XXXXXX")"
+  : > "$tmp"
+
+  while [[ $# -gt 0 ]]; do
+    printf '%s=%q\n' "$1" "${2-}" >> "$tmp"
+    shift 2
+  done
+
+  chmod 0644 "$tmp"
+  mv "$tmp" "$path"
+}
+
+ab_load_state() {
+  local path
+  path="$(ab_state_file_path)"
+  if [[ -f "$path" ]]; then
+    # shellcheck disable=SC1090
+    source "$path"
+  fi
+  ab_state_defaults
+  AB_STATE_FILE="$path"
+}
+
+ab_save_state() {
+  ab_write_kv_file "$AB_STATE_FILE" \
+    AB_STATE_VERSION "$AB_STATE_VERSION" \
+    AB_SAVED_SLOT "$AB_SAVED_SLOT" \
+    AB_SAVED_ENTRY_ID "$AB_SAVED_ENTRY_ID" \
+    AB_PENDING_SLOT "$AB_PENDING_SLOT" \
+    AB_PENDING_ENTRY_ID "$AB_PENDING_ENTRY_ID" \
+    AB_PENDING_IMAGE_SHA256 "$AB_PENDING_IMAGE_SHA256" \
+    AB_PENDING_DEPLOYED_AT "$AB_PENDING_DEPLOYED_AT" \
+    AB_LAST_BOOT_SLOT "$AB_LAST_BOOT_SLOT" \
+    AB_LAST_BOOT_STATUS "$AB_LAST_BOOT_STATUS" \
+    AB_LAST_BOOT_AT "$AB_LAST_BOOT_AT" \
+    AB_LAST_GOOD_SLOT "$AB_LAST_GOOD_SLOT" \
+    AB_LAST_GOOD_IMAGE_SHA256 "$AB_LAST_GOOD_IMAGE_SHA256" \
+    AB_LAST_GOOD_AT "$AB_LAST_GOOD_AT" \
+    AB_LAST_BAD_SLOT "$AB_LAST_BAD_SLOT" \
+    AB_LAST_BAD_IMAGE_SHA256 "$AB_LAST_BAD_IMAGE_SHA256" \
+    AB_LAST_BAD_REASON "$AB_LAST_BAD_REASON" \
+    AB_LAST_BAD_AT "$AB_LAST_BAD_AT" \
+    AB_LAST_FALLBACK_FROM "$AB_LAST_FALLBACK_FROM" \
+    AB_LAST_FALLBACK_TO "$AB_LAST_FALLBACK_TO" \
+    AB_LAST_FALLBACK_AT "$AB_LAST_FALLBACK_AT" \
+    AB_LAST_PROMOTION_SLOT "$AB_LAST_PROMOTION_SLOT" \
+    AB_LAST_PROMOTION_MODE "$AB_LAST_PROMOTION_MODE" \
+    AB_LAST_PROMOTION_AT "$AB_LAST_PROMOTION_AT" \
+    AB_LAST_MANUAL_PROMOTION_REQUIRED_SLOT "$AB_LAST_MANUAL_PROMOTION_REQUIRED_SLOT" \
+    AB_LAST_MANUAL_PROMOTION_REQUIRED_AT "$AB_LAST_MANUAL_PROMOTION_REQUIRED_AT"
+}

@@ -1,0 +1,40 @@
+# Example config for an ARM64 cloudbox host using systemd-boot.
+# Replace the devices below with stable by-partuuid/by-partlabel symlinks.
+
+ESP_PART=/dev/disk/by-partlabel/ESP
+SLOT_A_ROOT=/dev/disk/by-partlabel/ROOT_A
+SLOT_B_ROOT=/dev/disk/by-partlabel/ROOT_B
+
+# Recommended path going forward.
+AB_BOOTLOADER=systemd-boot
+INSTALL_SYSTEMD_BOOT=yes
+LOADER_TIMEOUT=3
+
+# Oracle Cloud Arm serial console uses ttyAMA0.
+EXTRA_KERNEL_ARGS="quiet console=ttyAMA0,115200 console=tty1"
+
+# Default: one trial boot, then fall back to the saved slot on the next reboot
+# unless the new slot is blessed.
+AB_AUTO_BLESS=yes
+AB_HEALTH_DELAY_SECS=30
+AB_REBOOT_ON_HEALTH_FAILURE=yes
+AB_HEALTH_FAILURE_REBOOT_DELAY=10
+AB_HEALTH_HOOK_DIR=/usr/local/libexec/ab-health-check.d
+AB_STATE_ESP_DIR=/EFI/Linux/ab-state
+AB_BUILD_INFO_PATH=/usr/local/share/ab-image-meta/build-info.env
+AB_DEPLOY_INFO_PATH=/usr/local/share/ab-image-meta/deploy-info.env
+
+ESP_UKI_DIR=/EFI/Linux
+LOADER_CONF_PATH=/loader/loader.conf
+LOADER_ENTRIES_DIR=/loader/entries
+SLOT_A_ENTRY_ID=ab-slot-a.conf
+SLOT_B_ENTRY_ID=ab-slot-b.conf
+SLOT_A_UKI=ab-slot-a.efi
+SLOT_B_UKI=ab-slot-b.efi
+
+PRESERVE_PATHS=(
+  /etc/fstab
+  /etc/machine-id
+  /etc/hostname
+  /etc/ssh/ssh_host_*
+)

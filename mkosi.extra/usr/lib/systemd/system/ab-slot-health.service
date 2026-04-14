@@ -1,0 +1,14 @@
+[Unit]
+Description=Assess A/B slot health and optionally bless the trial slot
+ConditionPathExists=/etc/ab-slot.conf
+After=local-fs.target systemd-user-sessions.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/ab-report-boot-health
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=multi-user.target
+WantedBy=graphical.target

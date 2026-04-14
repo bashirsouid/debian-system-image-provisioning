@@ -1,20 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONF="/etc/ab-slot.conf"
-[[ -f "$CONF" ]] || {
-  echo "ERROR: $CONF not found" >&2
-  exit 1
+# shellcheck source=/usr/local/libexec/ab-common
+source /usr/local/libexec/ab-common
+
+main() {
+  local now
+
+  [[ $EUID -eq 0 ]] || ab_die "ab-bless-boot must run as root"
+  ab_require_slot_conf
+  command -v bootctl >/dev/null 2>&1 || ab_die "bootctl not found"
+
+  trap ab_close_state_dir EXIT
+  ab_open_state_dir
+  ab_load_state
+
+  now="$(ab_now_utc)"
+
+  echo "==> Marking slot ${AB_SLOT:-unknown} as the persistent systemd-boot default ($AB_ENTRY_ID)"
+  bootctl --esp-path="$AB_ESP_MOUNTPOINT" set-default "$AB_ENTRY_ID"
+
+  AB_SAVED_SLOT="$AB_SLOT"
+  AB_SAVED_ENTRY_ID="$AB_ENTRY_ID"
+  AB_PENDING_SLOT=""
+  AB_PENDING_ENTRY_ID=""
+  AB_PENDING_IMAGE_SHA256=""
+  AB_PENDING_DEPLOYED_AT=""
+  AB_LAST_PROMOTION_SLOT="$AB_SLOT"
+  AB_LAST_PROMOTION_MODE="manual"
+  AB_LAST_PROMOTION_AT="$now"
+  if [[ "${AB_LAST_MANUAL_PROMOTION_REQUIRED_SLOT:-}" == "$AB_SLOT" ]]; then
+    AB_LAST_MANUAL_PROMOTION_REQUIRED_SLOT=""
+    AB_LAST_MANUAL_PROMOTION_REQUIRED_AT=""
+  fi
+
+  ab_save_state
+  echo "==> Done. Future boots will stay on this slot unless changed again."
 }
-# shellcheck disable=SC1090
-source "$CONF"
-: "${AB_GRUB_ID:?AB_GRUB_ID missing from $CONF}"
 
-if ! command -v grub-set-default >/dev/null 2>&1; then
-  echo "ERROR: grub-set-default not found" >&2
-  exit 1
-fi
-
-echo "==> Marking slot ${AB_SLOT:-unknown} as the persistent GRUB default ($AB_GRUB_ID)"
-grub-set-default "$AB_GRUB_ID"
-echo "==> Done. Future boots will stay on this slot unless changed again."
+main "$@"
