@@ -1,3 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec /usr/local/sbin/ab-status --brief "$@"
+
+current="$(findmnt -nro SOURCE / 2>/dev/null || true)"
+label="$(blkid -o value -s PARTLABEL "$current" 2>/dev/null || true)"
+version="$(. /etc/os-release 2>/dev/null; printf '%s' "${IMAGE_VERSION:-}" )"
+
+echo "root-source=${current:-unknown}"
+echo "partlabel=${label:-unknown}"
+echo "image-version=${version:-unknown}"

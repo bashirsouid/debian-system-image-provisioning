@@ -1,5 +1,5 @@
 ---
-- name: Build and deploy the ARM64 cloudbox A/B image
+- name: Build and bootstrap/update the ARM64 cloudbox native sysupdate path
   hosts: cloudbox
   become: true
   gather_facts: true
@@ -11,6 +11,8 @@
     remote_project_root: "{{ remote_project_root | default('/opt/debian-system-image-provisioning') }}"
     build_profile: "{{ build_profile | default('server') }}"
     build_host_overlay: "{{ build_host_overlay | default('cloudbox') }}"
+    cloudbox_bootstrap_target: "{{ cloudbox_bootstrap_target | default('') }}"
+    cloudbox_bootstrap_mode: "{{ (cloudbox_bootstrap_target | default('') | length) > 0 }}"
 
   pre_tasks:
     - name: Assert the target host is ARM64
@@ -26,12 +28,19 @@
           - ca-certificates
           - curl
           - dosfstools
+          - fdisk
           - git
           - jq
+          - kmod
           - mkosi
           - openssl
+          - python3
           - rsync
+          - systemd
           - systemd-boot-efi
+          - systemd-boot-tools
+          - systemd-container
+          - systemd-repart
           - util-linux
         state: present
 
@@ -83,11 +92,48 @@
         dest: "{{ remote_project_root }}/.users.json"
         mode: '0600'
 
-    - name: Render cloudbox ab-flash.conf
-      ansible.builtin.template:
-        src: ../templates/ab-flash.conf.j2
-        dest: "{{ remote_project_root }}/ab-flash.conf"
-        mode: '0600'
+    - name: Write cloudbox host-specific kernel command line
+      ansible.builtin.copy:
+        dest: "{{ remote_project_root }}/hosts/cloudbox/kernel-cmdline.extra"
+        mode: '0644'
+        content: "{{ cloudbox_extra_kernel_args | default('quiet console=ttyAMA0,115200 console=tty1') }}\n"
+
+    - name: Write bootstrap ESP repart definition
+      ansible.builtin.copy:
+        dest: "{{ remote_project_root }}/deploy.repart/00-esp.conf"
+        mode: '0644'
+        content: |
+          [Partition]
+          Type=esp
+          Label=ESP
+          SizeMinBytes={{ cloudbox_esp_size | default('512M') }}
+          SizeMaxBytes={{ cloudbox_esp_size | default('512M') }}
+          Format=vfat
+      when: cloudbox_bootstrap_mode
+
+    - name: Write bootstrap root A repart definition
+      ansible.builtin.copy:
+        dest: "{{ remote_project_root }}/deploy.repart/10-root-a.conf"
+        mode: '0644'
+        content: |
+          [Partition]
+          Type=root
+          Label=_empty
+          SizeMinBytes={{ cloudbox_root_slot_size | default('8G') }}
+          SizeMaxBytes={{ cloudbox_root_slot_size | default('8G') }}
+      when: cloudbox_bootstrap_mode
+
+    - name: Write bootstrap root B repart definition
+      ansible.builtin.copy:
+        dest: "{{ remote_project_root }}/deploy.repart/11-root-b.conf"
+        mode: '0644'
+        content: |
+          [Partition]
+          Type=root
+          Label=_empty
+          SizeMinBytes={{ cloudbox_root_slot_size | default('8G') }}
+          SizeMaxBytes={{ cloudbox_root_slot_size | default('8G') }}
+      when: cloudbox_bootstrap_mode
 
     - name: Clean any previous build artifacts
       ansible.builtin.command:
@@ -107,39 +153,59 @@
           - "{{ build_host_overlay }}"
       register: build_result
 
-    - name: Deploy the built image into the inactive slot
+    - name: Bootstrap a blank/offline target disk with the first sysupdate-managed version
       ansible.builtin.command:
         chdir: "{{ remote_project_root }}"
         argv:
-          - ./scripts/ab-flash.sh
-          - --config
-          - ./ab-flash.conf
+          - ./scripts/bootstrap-ab-disk.sh
+          - --target
+          - "{{ cloudbox_bootstrap_target }}"
+          - --loader-timeout
+          - "{{ cloudbox_loader_timeout | default(3) | string }}"
           - --yes
-      register: flash_result
+      when: cloudbox_bootstrap_mode
+      register: bootstrap_result
 
-    - name: Reboot into the newly deployed slot
+    - name: Stage an in-place update with systemd-sysupdate
+      ansible.builtin.command:
+        chdir: "{{ remote_project_root }}"
+        argv:
+          - ./scripts/sysupdate-local-update.sh
+          - --source-dir
+          - ./mkosi.output
+      when: not cloudbox_bootstrap_mode
+      register: sysupdate_result
+
+    - name: Reboot into the newly staged retained version
       ansible.builtin.reboot:
         reboot_timeout: 1800
-        msg: "Rebooting into the new A/B slot"
+        msg: "Rebooting into the new retained system version"
+      when: (not cloudbox_bootstrap_mode) and (cloudbox_update_reboot | default(true) | bool)
 
     - name: Wait for the host to come back
       ansible.builtin.wait_for_connection:
         timeout: 900
         delay: 5
+      when: (not cloudbox_bootstrap_mode) and (cloudbox_update_reboot | default(true) | bool)
 
-    - name: Read A/B slot status after reboot
+    - name: Read retained-version status after reboot
       ansible.builtin.command:
         argv:
           - /usr/local/sbin/ab-status
       register: ab_status_result
       changed_when: false
+      when: (not cloudbox_bootstrap_mode) and (cloudbox_update_reboot | default(true) | bool)
 
-    - name: Show A/B status
+    - name: Show retained-version status
       ansible.builtin.debug:
         var: ab_status_result.stdout_lines
+      when: ab_status_result is defined
 
-    - name: Optionally bless the new slot after post-reboot validation
+    - name: Optionally request manual bless after post-reboot validation
       ansible.builtin.command:
         argv:
           - /usr/local/sbin/ab-bless-boot
-      when: cloudbox_bless_after_health | default(false) | bool
+      when:
+        - (not cloudbox_bootstrap_mode)
+        - (cloudbox_update_reboot | default(true) | bool)
+        - (cloudbox_bless_after_reboot | default(false) | bool)

@@ -1,0 +1,13 @@
+[Unit]
+Description=Verify boot health before boot-complete.target is reached
+After=multi-user.target network-online.target
+Wants=network-online.target
+Before=boot-complete.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/ab-health-gate
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=boot-complete.target

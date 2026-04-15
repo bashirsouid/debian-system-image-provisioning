@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/host-deps.sh
+source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
+
 DEEP=false
 ALL=false
 
@@ -44,6 +48,11 @@ if [[ $# -gt 0 ]]; then
   usage >&2
   exit 1
 fi
+
+if ! ab_hostdeps_have_all_commands mkosi; then
+  ab_hostdeps_ensure_packages "cleanup prerequisites" mkosi || exit 1
+fi
+ab_hostdeps_ensure_commands "cleanup prerequisites" mkosi || exit 1
 
 echo "==> Cleaning build artifacts..."
 

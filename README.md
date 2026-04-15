@@ -1,39 +1,108 @@
 # mkosi image provisioning
 
-This tree builds Debian OS images with mkosi so you can rebuild the base system
-regularly instead of converging long-lived machines forever with Ansible.
+This tree builds Debian images with `mkosi`, keeps the desktop path on source-built
+AwesomeWM, and now uses the **native systemd update stack** for retained-version / A-B-like
+updates:
 
-Current goals:
+- `systemd-repart` for the initial disk layout
+- `systemd-sysupdate` for installing new root and boot artifacts
+- `systemd-boot` boot counting + `systemd-bless-boot` for automatic rollback
+- `mkosi` as the image builder and artifact producer
+
+## Why the previous A/B script was only a bridge
+
+The old `ab-flash.sh` path copied a built `image.raw` into an inactive partition and kept
+its own slot state on the ESP. That worked as a practical bring-up tool, but it duplicated
+three jobs that the current systemd stack already solves natively:
+
+- versioned boot artifacts and boot attempt counting
+- health-gated promotion of a newly booted version
+- versioned root-image installation into a retained offline slot
+
+That is why it was a **bridge** rather than the golden path: it was a custom copier wrapped
+around a problem that modern systemd already has first-class primitives for.
+
+The repo now treats the golden path as:
+
+1. **Bootstrap once** onto a blank or offline target disk/image with `systemd-repart`
+2. **Install the first version** with `systemd-sysupdate`
+3. **Boot via systemd-boot**
+4. On later updates, stage the next version with `systemd-sysupdate`
+5. Let boot counting + `boot-complete.target` + `systemd-bless-boot` decide whether the new
+   version stays or the older retained version wins
+
+## What “A/B” means in the new design
+
+The new design is closer to “two retained versions” than to permanently named `ROOT_A` and
+`ROOT_B` partitions.
+
+That is intentional.
+
+`systemd-sysupdate` is natively version-oriented. It installs a new version into an empty
+root slot, keeps the currently booted version protected, and retains up to `InstancesMax=2`.
+So the effective behavior is still A/B:
+
+- one currently booted known-good version
+- one newer trial version
+- automatic fallback when the new one does not become healthy
+
+But the slots are now managed by **version metadata**, not by a custom “copy this raw image
+into ROOT_B” script.
+
+## Current goals
+
 - reproducible base images
 - source-built AwesomeWM for the `devbox` profile
 - first-boot local user provisioning that works in rootless mkosi builds
-- Liquorix kernel for the desktop/devbox path on x86-64
-- conservative UEFI + systemd-boot A/B deployment for local testing
-- an ARM64 server path for a `cloudbox` host
-- an Ansible playbook that can build and deploy the ARM server path on the target host
+- Liquorix kernel for the x86-64 `devbox` path
+- native retained-version updates with `systemd-sysupdate`
+- a server-only ARM64 `cloudbox` overlay
+- an Ansible playbook that can build and bootstrap/update `cloudbox`
 
-## Why the current shape looks like this
+## Important assumptions and constraints
 
-A few decisions here are deliberate because they were the least fragile path:
+These are deliberate design constraints, not hidden gotchas:
 
-- regular users are created on **first boot**, not during `mkosi.finalize`
-  - that avoids rootless-build ownership problems when mkosi runs inside a user namespace
-- `run.sh` uses plain `mkosi vm`
-  - that keeps VM startup on the mkosi-supported path instead of depending on version-sensitive raw QEMU argument forwarding
-- the `devbox` profile still builds AwesomeWM from source
-  - Debian's packaged AwesomeWM is too stale for the intended workflow here
-- the `devbox` profile uses Liquorix again
-  - but only through mkosi's package-manager sandbox path, not by copying ad hoc apt config into the image late in the build
-- QEMU testing seeds a tiny sample home config at runtime
-  - so you get a quick smoke test without baking machine-specific personal config into flashed images
-- host-side A/B flashing is treated as a **bridge step**, not the final updater design
-  - it is useful for local testing now, while the longer-term slot-aware update path should move toward `systemd-sysupdate`
-- the recommended bootloader for the A/B flow is now **systemd-boot**, not GRUB
-  - the images already build with `Bootloader=systemd-boot`, and `bootctl` makes one-shot vs persistent slot selection much simpler than the old GRUB-specific path
-- the ARM `cloudbox` path is intentionally **server-only**
-  - no desktop environment, no AwesomeWM, no Liquorix; it stays on Debian's stock `linux-image-arm64`
-- the included Ansible path builds **natively on the ARM target**
-  - that avoids cross-architecture build surprises when testing on an OCI Ampere box
+- UEFI only
+- `systemd-boot` is the supported boot loader for the native update path
+- the **first** install onto a new disk is destructive and expects a blank or offline target
+- later updates are in-place via `systemd-sysupdate`
+- the initial bootstrap currently creates:
+  - one ESP
+  - two root partitions
+- Secure Boot is **not** wired up yet in this repo’s update flow
+- host-specific kernel flags are still supported, but they now live in generated Boot Loader
+  Specification entries instead of GRUB config
+- the `cloudbox` path is intentionally server-only: no desktop stack, no AwesomeWM, no
+  Liquorix
+
+## Host dependency auto-install
+
+The repo scripts now try to auto-install missing **host-side** tools on Debian/Ubuntu
+build or deploy machines before they fail. The intent is to make commands like
+`./build.sh`, `./run.sh`, `./clean.sh`, `./scripts/bootstrap-ab-disk.sh`, and
+`./scripts/sysupdate-local-update.sh` behave like project entrypoints rather than
+assuming you already curated the host manually.
+
+Current behavior:
+
+- auto-install is **enabled by default**
+- on Debian/Ubuntu hosts, scripts use `apt-get install --no-install-recommends`
+  and `sudo` when needed
+- set `AB_AUTO_INSTALL_DEPS=no` to disable this and get a manual install hint instead
+- if the required commands already exist, the scripts do not try to install anything
+
+This especially matters for the sysupdate export path because on Debian trixie the
+`sfdisk` tool comes from the `fdisk` package rather than from the `util-linux` package,
+and `jq` is its own package. The native update path also depends on `systemd-repart`,
+`systemd-sysupdate`, and the systemd-boot tooling on the host side.
+
+Examples:
+
+```bash
+./build.sh --profile devbox
+AB_AUTO_INSTALL_DEPS=no ./build.sh --profile server --host cloudbox
+```
 
 ## Quick start
 
@@ -45,27 +114,25 @@ cp .users.json.sample .users.json
 # edit .users.json and set a real password for your login user
 ./clean.sh --all
 ./build.sh --profile devbox
-./run.sh --profile devbox
+./run.sh
 ```
 
-On the first boot, the image provisions users from the embedded data and then
-removes that embedded user file from the root filesystem.
+On first boot the image provisions local users from embedded data and then removes the user
+seed file.
 
-For the devbox profile, start X manually after login:
+For the devbox profile, log in and run:
 
 ```bash
 startx
 ```
 
-If you want a different X resolution, set `STARTX_RESOLUTION` before launching X:
+For a different X resolution:
 
 ```bash
 STARTX_RESOLUTION=1920x1080 startx
 ```
 
-### ARM64 cloudbox server build
-
-Use the dedicated host overlay:
+### ARM64 cloudbox build
 
 ```bash
 cp .users.json.sample .users.json
@@ -75,44 +142,29 @@ cp .users.json.sample .users.json
 ```
 
 That overlay:
+
 - forces `Architecture=arm64`
-- uses Debian's `linux-image-arm64`
+- uses Debian’s stock `linux-image-arm64`
 - stays server-only
 
 ## QEMU sample home seed
 
-For normal `./run.sh` use, the default path is intentionally simple: `run.sh`
-mounts `runtime-seeds/qemu-home/` into the guest and first boot copies that
-sample data into the login user's home only when the target paths do not already
-exist.
+`run.sh` defaults to an **ephemeral** VM and mounts `runtime-seeds/qemu-home/` into the guest
+for the `devbox` profile.
 
-Current sample seed:
-- `~/.config/awesome/rc.lua`
-- `~/.config/picom/picom.conf`
+On first boot the guest copies the sample files into the login user’s home only if the target
+paths do not already exist.
 
-Because `run.sh` defaults to an **ephemeral** VM snapshot, those sample-home
-changes are discarded when the VM exits unless you opt into `--persistent`.
-
-## Liquorix notes
-
-The `devbox` profile uses Liquorix on `x86-64`.
-
-The `server` profile keeps Debian's stock kernel path. The ARM64 `cloudbox`
-overlay uses `linux-image-arm64`.
-
-For the `devbox` profile we also keep `dpkg` and `kmod` in the image and disable
-mkosi package-metadata cleanup. That avoids a Debian/apt cleanup edge case where
-purging `dpkg` causes `kmod` auto-removal to fail because `kmod` maintainer
-scripts call `dpkg-maintscript-helper`.
+That gives you a smoke-test config in QEMU without baking personal host config into the image
+that you would later flash or deploy.
 
 ## User IDs for shared mutable state
 
-By default, `build.sh` copies the invoking host user's numeric uid/gid/group into
-any `.users.json` entry whose `username` matches that host username. That is the
-safest default for preserving ownership on a shared `/home` or other mutable data
-when switching between root slots built on the same machine.
+By default, `build.sh` copies the invoking host user’s numeric uid/gid/group into any
+`.users.json` entry whose `username` matches the build host user. That is the safest default
+when you want ownership to stay stable across retained-root updates.
 
-You can also pin ids explicitly per user in `.users.json`:
+You can also pin ids explicitly in `.users.json`:
 
 ```json
 [
@@ -133,182 +185,192 @@ To disable automatic host-id syncing for the matching host username:
 ./build.sh --profile devbox --sync-host-ids=no
 ```
 
-## Persistent `/home` and host-home testing
+## `/home` strategy
 
-There are two sane modes here:
+For real retained-root machines, keep mutable workstation data **outside** the root image.
+That means `/home` should live on a separate persistent partition or subvolume.
 
-1. For real A/B-style machines, keep `/home` outside the image on its own
-   persistent partition or subvolume.
-2. For QEMU compatibility testing on the build host, use runtime sharing rather
-   than baking the host's live `/home` into the image design.
-
-This tree supports host-specific overlays through `--host NAME`, so you can
-build a machine-specific image that mounts external `/home` only on that machine:
-
-```bash
-./build.sh --profile devbox --host evox2
-```
-
-For temporary VM testing against your real host config, `run.sh` also exposes
-mkosi's native runtime mount features:
+For QEMU testing, the repo intentionally does **not** mount your real host home by default.
+Instead it seeds a tiny sample AwesomeWM setup. When you want to compare with host config,
+use runtime sharing explicitly:
 
 ```bash
 ./run.sh --runtime-tree "$HOME/.config/awesome:/mnt/host-awesome"
 ./run.sh --runtime-home
 ```
 
-Use `--runtime-tree` when you want to compare against specific host config.
-Use `--runtime-home` only for disposable compatibility testing.
+Use `--runtime-home` only for disposable tests.
 
-See `docs/home-storage.md` for the trade-offs.
+See `docs/home-storage.md` for the storage trade-offs.
 
-## Host-side A/B flashing
+## Build output and sysupdate artifacts
 
-For an actual UEFI workstation or server with two root partitions, this tree now
-recommends `scripts/ab-flash.sh` plus `ab-flash.conf.sample` in **systemd-boot**
-mode.
+`build.sh` now pins `mkosi` to a single `ImageId` + `ImageVersion` for that invocation and
+writes `mkosi.output/.latest-build.env` plus per-profile/per-host metadata files such as
+`mkosi.output/.latest-build.devbox.none.env`. `run.sh` reuses that metadata, so `./build.sh`
+followed by `./run.sh` boots the image that was just built instead of recalculating a fresh
+timestamped output name. If you pass `--profile` or `--host`, `run.sh` looks for the matching
+saved build metadata for that specific combination. `mkosi` history is also enabled in
+`mkosi.conf.d/10-caching.conf` so a plain `mkosi vm` can reuse the last build configuration as well.
 
-That script:
-- mounts the built `image.raw`
-- syncs it into the **inactive** root slot
-- copies the current slot's UKI and the image UKI into the shared ESP
-- installs or updates systemd-boot on the shared ESP
-- writes Boot Loader Specification entries for slot A and slot B
-- keeps the current slot as the saved fallback
-- schedules the newly flashed slot for the **next boot only**
-- writes shared deployment metadata and slot-health state into the ESP
+`build.sh` produces two layers of output in `mkosi.output/`:
 
-### Assumptions and constraints for the A/B flow
+1. the usual `mkosi` build outputs such as `debian-provisioning_<VERSION>.raw`
+2. versioned **sysupdate source artifacts** used by the golden-path updater
 
-These are not hidden assumptions; they are part of the design:
+Current exported artifact names look like this:
 
-- UEFI firmware only
-- systemd-boot on the real host, or willingness to let `bootctl install` switch the host to systemd-boot
-- on the first migration away from GRUB, you may need to verify that firmware boot order now points at systemd-boot if your firmware ignores the new NVRAM entry
-- two plain root partitions as slots
-- no LVM root slots and no MD RAID root slots in this first cut
-- a shared ESP that the machine firmware can boot from
-- Secure Boot disabled for this current flow
-- the image should already have been tested in QEMU before you flash a real slot
-- for the **first migration away from GRUB**, the currently running slot must already have a UKI available under `/boot/EFI/Linux`, `/efi/EFI/Linux`, or `/boot/efi/EFI/Linux` so the script can preserve it as the fallback slot
-
-### Why Secure Boot is out of scope in the current A/B script
-
-The current slot entries use Boot Loader Specification entries with a `uki`
-reference plus an `options` line to inject slot-specific `root=UUID=...` and
-host-specific extra kernel flags. That is practical for local development, but
-it is not the final signed Secure Boot story.
-
-### Custom kernel flags
-
-The systemd-boot path still supports host-specific kernel arguments. Put them in
-`EXTRA_KERNEL_ARGS` inside `ab-flash.conf`.
-
-For a Ryzen AI Max desktop example:
-
-```bash
-EXTRA_KERNEL_ARGS="quiet amdgpu.gttsize=3072"
+```text
+debian-provisioning_<VERSION>_<ARCH>.root.raw
+debian-provisioning_<VERSION>_<ARCH>.efi
+debian-provisioning_<VERSION>_<ARCH>.conf
 ```
 
-For an OCI ARM serial-console friendly server example:
+The generated `.conf` file is a Boot Loader Specification entry that references the matching
+UKI and supplies the root partition label plus host-specific extra kernel arguments.
+
+## Host-specific kernel arguments
+
+GRUB-specific kernel flags are not required for this design.
+
+Instead, host overlays can supply kernel arguments through `hosts/<name>/kernel-cmdline.extra`.
+Those arguments are rendered into the versioned Boot Loader Specification entry that gets
+installed by `systemd-sysupdate`.
+
+Current examples:
+
+- `hosts/evox2/kernel-cmdline.extra`
+- `hosts/cloudbox/kernel-cmdline.extra`
+
+For the Ryzen AI Max desktop path this is where `amdgpu.gttsize=` now belongs.
+
+## The native install/update flow
+
+### One-time destructive bootstrap onto a blank or offline target disk/image
+
+Build first:
 
 ```bash
-EXTRA_KERNEL_ARGS="quiet console=ttyAMA0,115200 console=tty1"
+./build.sh --profile server --host cloudbox
 ```
 
-### Slot health reporting and promotion model
-
-This repo implements a shared-state model on the ESP under
-`/EFI/Linux/ab-state` by default.
-
-It records:
-- which slot is the saved default
-- which slot is pending as the current trial boot
-- the image sha256 and deploy time for the pending slot
-- the last healthy boot
-- the last unhealthy boot and reason
-- the last observed fallback
-- the last promotion event
-- whether a slot still needs a manual `ab-bless-boot`
-
-Each flashed slot also gets deployment metadata inside the root filesystem and as
-`slot-a.env` / `slot-b.env` files on the shared ESP.
-
-The flashed system enables `ab-slot-health.service`, which:
-- waits a configurable grace period after boot
-- fails the slot if there are failed systemd units
-- optionally runs extra executable hook scripts from `AB_HEALTH_HOOK_DIR`
-- records the result into the shared ESP state
-- optionally auto-promotes the new slot if `AB_AUTO_BLESS=yes`
-- can optionally reboot on failure so the saved fallback slot becomes active on the following boot
-
-A conservative desktop setting is:
+Then bootstrap a target disk or raw disk image:
 
 ```bash
-AB_AUTO_BLESS=no
-AB_REBOOT_ON_HEALTH_FAILURE=no
+sudo ./scripts/bootstrap-ab-disk.sh --target /dev/sdX
 ```
 
-A more unattended server-style setting is:
+What that script does:
+
+1. destroys the target partition table
+2. creates the ESP + two empty root partitions with `systemd-repart`
+3. installs `systemd-boot` into the target ESP
+4. seeds the first retained version using `systemd-sysupdate` from `mkosi.output/`
+
+### Later in-place updates on an already bootstrapped machine
+
+On a machine that is already running this layout:
 
 ```bash
-AB_AUTO_BLESS=yes
-AB_REBOOT_ON_HEALTH_FAILURE=yes
+sudo ./scripts/sysupdate-local-update.sh --source-dir ./mkosi.output --reboot
 ```
 
-### Typical deploy flow
+That stages the next version with `systemd-sysupdate` and reboots into the new trial entry.
+
+### Boot success and fallback
+
+The image now uses the native boot-complete path:
+
+- a generated BLS entry is created with boot counters
+- `systemd-boot` decrements tries on each boot attempt
+- `ab-health-gate.service` runs before `boot-complete.target`
+- if the health gate succeeds, `systemd-bless-boot.service` marks the entry good
+- if the health gate never succeeds, the counted entry eventually falls behind the older good
+  one and the system falls back to the older retained version
+
+This is the key difference from the old bridge path: promotion/rollback is now done by the
+boot loader + systemd boot-complete pipeline, not by custom ESP state files.
+
+## Health checks
+
+The current boot health gate does three things:
+
+- waits `AB_HEALTH_DELAY_SECS` seconds after boot
+- fails if there are failed systemd units
+- runs any executable hooks in `/usr/local/libexec/ab-health-check.d`
+
+Health status is recorded locally in:
+
+```text
+/var/lib/ab-health/status.env
+```
+
+Useful commands on the installed system:
 
 ```bash
-cp ab-flash.conf.sample ab-flash.conf
-# edit devices and policy
-sudo ./scripts/ab-flash.sh --config ./ab-flash.conf
-sudo reboot
+ab-status
+ab-bless-boot
+ab-mark-bad
 ```
 
-After the new slot boots:
+- `ab-status` shows the current root partition label, build metadata, health result, bootctl
+  state, and installed sysupdate versions
+- `ab-bless-boot` requests `boot-complete.target` so `systemd-bless-boot` can mark the
+  current entry good
+- `ab-mark-bad` marks the current counted entry bad immediately
 
-```bash
-sudo ab-status
-sudo ab-bless-boot   # only needed when AB_AUTO_BLESS=no
-```
+## Cloudbox / Oracle ARM testing
 
-See `docs/ab-systemd-boot-deploy.md` for the detailed workflow.
+The `cloudbox` overlay is intended for an ARM64 server-style machine and uses serial-console-
+friendly kernel flags through `hosts/cloudbox/kernel-cmdline.extra`.
 
-## Ansible cloudbox deploy path
+This is the cleanest place to validate the modern path because:
 
-There is now an Ansible playbook for the ARM64 server path under `ansible/`.
-It is intentionally opinionated:
+- it removes the desktop stack from the equation
+- you can rebuild and redeploy repeatedly
+- you can test the retained-version flow before migrating a workstation
 
-- it targets a machine called `cloudbox`
-- it expects an ARM64 Debian-style host
-- it builds the image **on the target host itself** with `--profile server --host cloudbox`
-- it deploys the inactive slot with `scripts/ab-flash.sh`
-- it reboots and then checks `ab-status`
-- it can optionally bless the new slot automatically after the post-reboot health check
+## Ansible
 
-Start with:
+The playbook under `ansible/playbooks/cloudbox-ab-deploy.yml` now follows the native model.
+It can do either of two things:
 
-```bash
-cp ansible/inventory.example.ini ansible/inventory.ini
-cp ansible/group_vars/cloudbox.yml.example ansible/group_vars/cloudbox.yml
-# edit inventory + variables
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/cloudbox-ab-deploy.yml
-```
+1. **bootstrap mode** — destructively prepare a blank/offline target disk
+2. **update mode** — build a new version and stage it with `systemd-sysupdate`
 
-## Bare-metal testing
+Bootstrap mode is for the first install only. Update mode is for all later deployments.
 
-This project still emits a whole-disk image (`Format=disk`).
-That is ideal for:
-- `mkosi vm`
-- `mkosi burn /dev/<disk>`
-- `dd` to a spare whole disk or USB device
+See `ansible/README.md` and `ansible/group_vars/cloudbox.yml.example`.
 
-It is **not** the long-term update format for writing directly into an already-existing
-single root partition in an A/B setup, because the image contains its own partition
-layout and EFI system partition.
+## Liquorix notes
 
-Get the image booting first in QEMU and on a spare disk. Then move the longer-term
-A/B rollout layer toward `systemd-sysupdate` / `mkosi sysupdate` with explicit
-transfer files.
+The `devbox` profile uses Liquorix on x86-64.
 
-See `docs/ab-workflow.md` for the longer-term direction.
+The `server` profile keeps Debian’s stock kernel path. The ARM64 `cloudbox` overlay uses
+`linux-image-arm64`.
+
+For the `devbox` profile we keep `dpkg` and `kmod` in the image and disable mkosi package-
+metadata cleanup. That avoids a Debian/apt cleanup edge case where purging `dpkg` can cause
+`kmod` auto-removal to fail because `kmod` maintainer scripts call
+`dpkg-maintscript-helper`.
+
+## Legacy manual flashing
+
+`scripts/ab-flash.sh` remains in the tree as a legacy/manual fallback path for local
+experimentation, but it is no longer the recommended design center of the repo.
+
+The recommended path is now:
+
+- `build.sh`
+- `bootstrap-ab-disk.sh` once
+- `sysupdate-local-update.sh` thereafter
+
+## Repo layout
+
+- `mkosi.sysupdate/` — native sysupdate transfer definitions
+- `deploy.repart/` — one-time disk layout for bootstrap
+- `scripts/bootstrap-ab-disk.sh` — destructive first install to a blank/offline target
+- `scripts/sysupdate-local-update.sh` — later in-place updates on an installed system
+- `scripts/export-sysupdate-artifacts.sh` — exports versioned root/UKI/BLS artifacts after build
+- `hosts/cloudbox/` — ARM64 server overlay
+- `hosts/evox2/` — example workstation overlay

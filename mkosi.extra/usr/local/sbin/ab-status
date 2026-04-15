@@ -4,92 +4,48 @@ set -euo pipefail
 # shellcheck source=/usr/local/libexec/ab-common
 source /usr/local/libexec/ab-common
 
-BRIEF=false
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --brief)
-      BRIEF=true
-      shift
-      ;;
-    -h|--help)
-      cat <<'USAGE'
-Usage: ab-status [--brief]
-
-Show the current A/B slot, deployment metadata, bootloader mode, and the
-shared slot-health status file when it is available.
-USAGE
-      exit 0
-      ;;
-    *)
-      echo "Unknown option: $1" >&2
-      exit 1
-      ;;
-  esac
-done
-
-if [[ ! -f "$AB_SLOT_CONF" ]]; then
-  if $BRIEF; then
-    echo "unknown"
-    exit 0
-  fi
-  echo "No /etc/ab-slot.conf present on this system."
-  exit 0
-fi
-
-ab_require_slot_conf
+ab_load_optional_env_file /usr/lib/os-release
+ab_load_optional_env_file /etc/os-release
 ab_load_optional_env_file "$AB_BUILD_INFO_PATH"
-ab_load_optional_env_file "$AB_DEPLOY_INFO_PATH"
+ab_load_optional_env_file "$AB_HEALTH_STATUS_PATH"
 
-if $BRIEF; then
-  printf '%s\n' "$AB_SLOT"
-  exit 0
-fi
+current_root="$(ab_current_root_source)"
+current_label="$(ab_current_root_partlabel)"
+current_uuid="$(ab_current_root_uuid)"
 
-printf 'Current slot:        %s\n' "$AB_SLOT"
-printf 'Bootloader mode:     %s\n' "${AB_BOOTLOADER:-unknown}"
-printf 'Current entry id:    %s\n' "$AB_ENTRY_ID"
-printf 'Other slot:          %s\n' "${AB_OTHER_SLOT:-unknown}"
-printf 'Other entry id:      %s\n' "${AB_OTHER_ENTRY_ID:-unknown}"
-printf 'Root device:         %s\n' "${AB_ROOT_DEVICE:-unknown}"
-printf 'Root UUID:           %s\n' "${AB_ROOT_UUID:-unknown}"
-printf 'ESP device:          %s\n' "$AB_ESP_DEVICE"
-printf 'UKI path:            %s\n' "${AB_UKI_PATH:-unknown}"
-printf 'Image sha256:        %s\n' "${AB_IMAGE_SHA256:-unknown}"
-printf 'Deployed at:         %s\n' "${AB_DEPLOYED_AT:-unknown}"
-printf 'Auto bless:          %s\n' "${AB_AUTO_BLESS:-no}"
-printf 'Health delay (sec):  %s\n' "${AB_HEALTH_DELAY_SECS:-20}"
-printf 'Reboot on failure:   %s\n' "${AB_REBOOT_ON_HEALTH_FAILURE:-no}"
+printf 'Current root source:   %s\n' "${current_root:-unknown}"
+printf 'Current root label:    %s\n' "${current_label:-unknown}"
+printf 'Current root UUID:     %s\n' "${current_uuid:-unknown}"
+printf 'IMAGE_ID:              %s\n' "${IMAGE_ID:-${AB_IMAGE_ID:-unknown}}"
+printf 'IMAGE_VERSION:         %s\n' "${IMAGE_VERSION:-${AB_IMAGE_VERSION:-unknown}}"
 
-if [[ -n "${AB_BUILD_TIME_UTC:-}" || -n "${AB_BUILD_PROFILE:-}" || -n "${AB_BUILD_GIT_REV:-}" ]]; then
+if [[ -n "${AB_BUILD_PROFILE:-}" || -n "${AB_BUILD_KERNEL_TRACK:-}" ]]; then
   echo
   echo 'Build metadata:'
-  printf '  Build time:        %s\n' "${AB_BUILD_TIME_UTC:-unknown}"
-  printf '  Profile:           %s\n' "${AB_BUILD_PROFILE:-unknown}"
-  printf '  Host overlay:      %s\n' "${AB_BUILD_HOST_OVERLAY:-none}"
-  printf '  Git revision:      %s\n' "${AB_BUILD_GIT_REV:-unknown}"
-  printf '  Git dirty:         %s\n' "${AB_BUILD_GIT_DIRTY:-unknown}"
-  printf '  Awesome revision:  %s\n' "${AB_BUILD_AWESOME_GIT_REV:-unknown}"
-  printf '  Kernel track:      %s\n' "${AB_BUILD_KERNEL_TRACK:-unknown}"
-  printf '  mkosi version:     %s\n' "${AB_BUILD_MKOSI_VERSION:-unknown}"
+  printf '  Profile:            %s\n' "${AB_BUILD_PROFILE:-unknown}"
+  printf '  Host overlay:       %s\n' "${AB_BUILD_HOST_OVERLAY:-none}"
+  printf '  Kernel track:       %s\n' "${AB_BUILD_KERNEL_TRACK:-unknown}"
+  printf '  Build time:         %s\n' "${AB_BUILD_TIME_UTC:-unknown}"
+  printf '  Git revision:       %s\n' "${AB_BUILD_GIT_REV:-unknown}"
+  printf '  Host kernel args:   %s\n' "${AB_HOST_KERNEL_ARGS:-none}"
 fi
 
-echo
-echo 'Shared A/B status:'
-if ab_open_state_dir 2>/dev/null; then
-  trap ab_close_state_dir EXIT
-  ab_load_state
-  printf '  Saved slot:        %s\n' "${AB_SAVED_SLOT:-unknown}"
-  printf '  Saved entry:       %s\n' "${AB_SAVED_ENTRY_ID:-unknown}"
-  printf '  Pending slot:      %s\n' "${AB_PENDING_SLOT:-none}"
-  printf '  Pending entry:     %s\n' "${AB_PENDING_ENTRY_ID:-none}"
-  printf '  Pending image:     %s\n' "${AB_PENDING_IMAGE_SHA256:-none}"
-  printf '  Last boot:         %s %s %s\n' "${AB_LAST_BOOT_SLOT:-unknown}" "${AB_LAST_BOOT_STATUS:-unknown}" "${AB_LAST_BOOT_AT:-unknown}"
-  printf '  Last good:         %s %s %s\n' "${AB_LAST_GOOD_SLOT:-unknown}" "${AB_LAST_GOOD_IMAGE_SHA256:-unknown}" "${AB_LAST_GOOD_AT:-unknown}"
-  printf '  Last bad:          %s %s %s\n' "${AB_LAST_BAD_SLOT:-unknown}" "${AB_LAST_BAD_REASON:-unknown}" "${AB_LAST_BAD_AT:-unknown}"
-  printf '  Last fallback:     %s -> %s at %s\n' "${AB_LAST_FALLBACK_FROM:-none}" "${AB_LAST_FALLBACK_TO:-none}" "${AB_LAST_FALLBACK_AT:-unknown}"
-  printf '  Last promotion:    %s %s %s\n' "${AB_LAST_PROMOTION_SLOT:-none}" "${AB_LAST_PROMOTION_MODE:-none}" "${AB_LAST_PROMOTION_AT:-unknown}"
-  printf '  Manual bless due:  %s %s\n' "${AB_LAST_MANUAL_PROMOTION_REQUIRED_SLOT:-none}" "${AB_LAST_MANUAL_PROMOTION_REQUIRED_AT:-unknown}"
-else
-  echo '  unavailable (run as root or mount the ESP first)'
+if [[ -n "${AB_HEALTH_LAST_STATUS:-}" ]]; then
+  echo
+  echo 'Last boot health result:'
+  printf '  Status:             %s\n' "${AB_HEALTH_LAST_STATUS:-unknown}"
+  printf '  Time:               %s\n' "${AB_HEALTH_LAST_AT:-unknown}"
+  printf '  Reason:             %s\n' "${AB_HEALTH_LAST_REASON:-none}"
+fi
+
+if command -v bootctl >/dev/null 2>&1; then
+  echo
+  echo 'bootctl list:'
+  bootctl list --no-pager 2>/dev/null || true
+fi
+
+if command -v systemd-sysupdate >/dev/null 2>&1; then
+  echo
+  echo 'Installed sysupdate versions:'
+  systemd-sysupdate list --offline 2>/dev/null || true
 fi

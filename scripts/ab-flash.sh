@@ -3,6 +3,8 @@ set -euo pipefail
 shopt -s nullglob
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/host-deps.sh
+source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
 IMAGE="$PROJECT_ROOT/mkosi.output/image.raw"
 CONFIG_FILE="$PROJECT_ROOT/ab-flash.conf"
 ASSUME_YES=false
@@ -10,6 +12,9 @@ ASSUME_YES=false
 usage() {
   cat <<'USAGE'
 Usage: sudo ./scripts/ab-flash.sh [options]
+
+LEGACY PATH: this script predates the native systemd-repart +
+systemd-sysupdate workflow. Keep it only as a manual fallback.
 
 Safely deploy the built mkosi image into the inactive A/B root slot on a
 UEFI + systemd-boot host, copy the slot UKIs into the shared ESP, install or
@@ -305,6 +310,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ $EUID -eq 0 ]] || die "ab-flash.sh must run as root"
+if ! ab_hostdeps_have_all_commands awk blkid bootctl findmnt install losetup lsblk mount rsync sha256sum umount; then
+  ab_hostdeps_ensure_packages "legacy A/B flash prerequisites" systemd-boot-tools systemd-boot-efi rsync util-linux || exit 1
+fi
+ab_hostdeps_ensure_commands "legacy A/B flash prerequisites" awk blkid bootctl findmnt install losetup lsblk mount rsync sha256sum umount || exit 1
+
 [[ -f "$CONFIG_FILE" ]] || die "config file not found: $CONFIG_FILE"
 [[ -f "$IMAGE" ]] || die "image file not found: $IMAGE"
 

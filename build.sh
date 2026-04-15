@@ -5,11 +5,19 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SECRETS_DIR="$PROJECT_ROOT/.mkosi-secrets"
 THIRD_PARTY_DIR="$PROJECT_ROOT/.mkosi-thirdparty"
 USERS_FILE="$PROJECT_ROOT/.users.json"
+# shellcheck source=scripts/lib/host-deps.sh
+source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
+# shellcheck source=scripts/lib/build-meta.sh
+source "$PROJECT_ROOT/scripts/lib/build-meta.sh"
 USERS_SAMPLE="$PROJECT_ROOT/.users.json.sample"
 PROFILE="devbox"
 HOST=""
 MKOSI_FORCE=""
 SYNC_HOST_IDS=true
+IMAGE_ID="${AB_IMAGE_ID:-debian-provisioning}"
+IMAGE_VERSION=""
+TARGET_ARCH=""
+HOST_KERNEL_ARGS=""
 
 HOST_USER_NAME="$(id -un)"
 HOST_UID="$(id -u)"
@@ -82,6 +90,37 @@ read_release_from_mkosi_conf() {
       exit
     }
   ' "$PROJECT_ROOT/mkosi.conf"
+}
+
+read_architecture_from_configs() {
+  local value=""
+  local file
+  for file in "$PROJECT_ROOT/mkosi.conf" "$PROJECT_ROOT/hosts/$HOST"/mkosi.conf.d/*.conf; do
+    [[ -f "$file" ]] || continue
+    value="$(awk -F= '
+      /^[[:space:]]*Architecture[[:space:]]*=/ {
+        v=$2
+        sub(/^[[:space:]]+/, "", v)
+        sub(/[[:space:]]+$/, "", v)
+        print v
+      }
+    ' "$file" | tail -n1)"
+    [[ -n "$value" ]] && TARGET_ARCH="$value"
+  done
+
+  if [[ -z "$TARGET_ARCH" ]]; then
+    TARGET_ARCH="x86-64"
+  fi
+}
+
+read_host_kernel_args() {
+  local path
+  path="$PROJECT_ROOT/hosts/$HOST/kernel-cmdline.extra"
+  if [[ -n "$HOST" && -f "$path" ]]; then
+    HOST_KERNEL_ARGS="$(tr '\n' ' ' < "$path" | xargs echo -n)"
+  else
+    HOST_KERNEL_ARGS=""
+  fi
 }
 
 fetch_url() {
@@ -271,7 +310,11 @@ render_build_info() {
     AB_BUILD_AWESOME_GIT_REV "$awesome_git_rev" \
     AB_BUILD_AWESOME_GIT_DIRTY "$awesome_git_dirty" \
     AB_BUILD_KERNEL_TRACK "$kernel_track" \
-    AB_BUILD_MKOSI_VERSION "$mkosi_version"
+    AB_BUILD_MKOSI_VERSION "$mkosi_version" \
+    AB_IMAGE_ID "$IMAGE_ID" \
+    AB_IMAGE_VERSION "$IMAGE_VERSION" \
+    AB_IMAGE_ARCH "$TARGET_ARCH" \
+    AB_HOST_KERNEL_ARGS "$HOST_KERNEL_ARGS"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -322,19 +365,17 @@ if [[ ! -f "$USERS_FILE" ]]; then
   exit 1
 fi
 
-if ! command -v mkosi >/dev/null 2>&1; then
-  echo "ERROR: mkosi is not installed or not on PATH" >&2
-  exit 1
+if ! ab_hostdeps_have_all_commands mkosi jq openssl sfdisk; then
+  ab_hostdeps_ensure_packages "build host prerequisites" mkosi jq openssl fdisk || exit 1
 fi
+ab_hostdeps_ensure_commands "build host prerequisites" mkosi jq openssl sfdisk || exit 1
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "ERROR: jq is required on the build host" >&2
-  exit 1
-fi
 
-if ! command -v openssl >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; then
-  echo "ERROR: need openssl or python3 on the build host for password hashing" >&2
-  exit 1
+if [[ "$PROFILE" == "devbox" ]]; then
+  if ! ab_hostdeps_have_all_commands curl; then
+    ab_hostdeps_ensure_packages "build host prerequisites for devbox" curl || exit 1
+  fi
+  ab_hostdeps_ensure_commands "build host prerequisites for devbox" curl || exit 1
 fi
 
 if [[ "$PROFILE" == "devbox" && ! -f "$PROJECT_ROOT/third-party/awesome/CMakeLists.txt" ]]; then
@@ -343,13 +384,27 @@ if [[ "$PROFILE" == "devbox" && ! -f "$PROJECT_ROOT/third-party/awesome/CMakeLis
   exit 1
 fi
 
+if [[ -n "$HOST" && ! -d "$PROJECT_ROOT/hosts/$HOST" ]]; then
+  echo "ERROR: host directory hosts/$HOST not found" >&2
+  exit 1
+fi
+
+IMAGE_VERSION="$($PROJECT_ROOT/mkosi.version)"
+read_architecture_from_configs
+read_host_kernel_args
+
 echo "==> Preparing first-boot provisioning data..."
 echo "==> Host UID/GID sync for matching user '$HOST_USER_NAME': $SYNC_HOST_IDS ($HOST_UID:$HOST_GID $HOST_PRIMARY_GROUP)"
+echo "==> Image identity: $IMAGE_ID version $IMAGE_VERSION arch $TARGET_ARCH"
 rm -rf "$SECRETS_DIR"
-install -d -m 0755 "$SECRETS_DIR/usr/local/etc" "$SECRETS_DIR/usr/local/share/ab-image-meta"
+install -d -m 0755 \
+  "$SECRETS_DIR/usr/local/etc" \
+  "$SECRETS_DIR/usr/local/share/ab-image-meta" \
+  "$SECRETS_DIR/usr/lib/sysupdate.d"
 render_users_conf "$SECRETS_DIR/usr/local/etc/users.conf"
 chmod 0600 "$SECRETS_DIR/usr/local/etc/users.conf"
 render_build_info "$SECRETS_DIR/usr/local/share/ab-image-meta/build-info.env"
+cp -a "$PROJECT_ROOT"/mkosi.sysupdate/*.transfer "$SECRETS_DIR/usr/lib/sysupdate.d/"
 
 EXTRA_ARGS=()
 if [[ "$PROFILE" == "devbox" ]]; then
@@ -360,10 +415,6 @@ fi
 
 if [[ -n "$HOST" ]]; then
   HOST_DIR="hosts/$HOST"
-  if [[ ! -d "$HOST_DIR" ]]; then
-    echo "ERROR: host directory $HOST_DIR not found" >&2
-    exit 1
-  fi
   echo "==> Including host-specific config for: $HOST"
   [[ -d "$HOST_DIR/mkosi.conf.d" ]] && EXTRA_ARGS+=("--include=$HOST_DIR/mkosi.conf.d")
   [[ -d "$HOST_DIR/mkosi.extra" ]] && EXTRA_ARGS+=("--extra-tree=$HOST_DIR/mkosi.extra:/")
@@ -378,16 +429,18 @@ CHECKSUM_INPUTS=(
   mkosi.finalize
   mkosi.prepare
   mkosi.extra
+  mkosi.sysupdate
+  deploy.repart
   hosts
   third-party
   docs
   scripts
   ansible
   .users.json
-  ab-flash.conf.sample
   build.sh
   run.sh
   clean.sh
+  mkosi.version
   README.md
 )
 
@@ -410,13 +463,82 @@ if [[ -f "$CHECKSUM_FILE" ]]; then
   fi
 fi
 
+find_built_disk_image() {
+  local expected="$1"
+  local candidate=""
+  local matches=()
+
+  if [[ -f "$expected" ]]; then
+    printf '%s\n' "$expected"
+    return 0
+  fi
+
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    matches+=("$candidate")
+  done < <(
+    find "$PROJECT_ROOT/mkosi.output" -maxdepth 1 -type f -name '*.raw' \
+      ! -name '*.root.raw' ! -name '*.vmlinuz.raw' ! -name '*.initrd.raw' | sort
+  )
+
+  if [[ ${#matches[@]} -eq 1 ]]; then
+    printf '%s\n' "${matches[0]}"
+    return 0
+  fi
+
+  if [[ ${#matches[@]} -gt 1 ]]; then
+    printf '%s\n' "$(ls -1t "${matches[@]}" | head -n1)"
+    return 0
+  fi
+
+  return 1
+}
+
+mkosi_args=("--profile=$PROFILE" "--image-id=$IMAGE_ID" "--image-version=$IMAGE_VERSION")
+
 echo "==> Starting mkosi build (profile: $PROFILE, force: ${MKOSI_FORCE:-none})..."
 if [[ -n "$MKOSI_FORCE" ]]; then
-  # shellcheck disable=SC2086
-  mkosi --profile="$PROFILE" $MKOSI_FORCE "${EXTRA_ARGS[@]}" build
+  # shellcheck disable=SC2206
+  force_args=($MKOSI_FORCE)
+  mkosi "${mkosi_args[@]}" "${force_args[@]}" "${EXTRA_ARGS[@]}" build
 else
-  mkosi --profile="$PROFILE" "${EXTRA_ARGS[@]}" build
+  mkosi "${mkosi_args[@]}" "${EXTRA_ARGS[@]}" build
 fi
+
+EXPECTED_IMAGE_PATH="$PROJECT_ROOT/mkosi.output/${IMAGE_ID}_${IMAGE_VERSION}.raw"
+BUILT_IMAGE_PATH="$(find_built_disk_image "$EXPECTED_IMAGE_PATH" || true)"
+if [[ -z "$BUILT_IMAGE_PATH" ]]; then
+  echo "ERROR: unable to locate built disk image in mkosi.output/" >&2
+  exit 1
+fi
+
+BUILT_IMAGE_BASENAME="$(basename "$BUILT_IMAGE_PATH")"
+
+echo "==> Exporting sysupdate artifacts..."
+"$PROJECT_ROOT/scripts/export-sysupdate-artifacts.sh" \
+  --image-id "$IMAGE_ID" \
+  --version "$IMAGE_VERSION" \
+  --arch "$TARGET_ARCH" \
+  --image "$BUILT_IMAGE_PATH" \
+  --output-dir "$PROJECT_ROOT/mkosi.output" \
+  --entry-title "Debian Provisioning" \
+  --extra-kernel-args "$HOST_KERNEL_ARGS"
+
+ab_buildmeta_write "$PROJECT_ROOT" \
+  AB_LAST_BUILD_IMAGE_ID "$IMAGE_ID" \
+  AB_LAST_BUILD_IMAGE_VERSION "$IMAGE_VERSION" \
+  AB_LAST_BUILD_PROFILE "$PROFILE" \
+  AB_LAST_BUILD_HOST "$HOST" \
+  AB_LAST_BUILD_ARCH "$TARGET_ARCH" \
+  AB_LAST_BUILD_IMAGE_BASENAME "$BUILT_IMAGE_BASENAME"
+
+ab_buildmeta_write_for "$PROJECT_ROOT" "$PROFILE" "$HOST" \
+  AB_LAST_BUILD_IMAGE_ID "$IMAGE_ID" \
+  AB_LAST_BUILD_IMAGE_VERSION "$IMAGE_VERSION" \
+  AB_LAST_BUILD_PROFILE "$PROFILE" \
+  AB_LAST_BUILD_HOST "$HOST" \
+  AB_LAST_BUILD_ARCH "$TARGET_ARCH" \
+  AB_LAST_BUILD_IMAGE_BASENAME "$BUILT_IMAGE_BASENAME"
 
 echo "$CURRENT_CHECKSUM" > "$CHECKSUM_FILE"
 echo "==> Build complete. Artifacts are in mkosi.output/"

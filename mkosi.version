@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -n "${AB_IMAGE_VERSION_OVERRIDE:-}" ]]; then
+  printf '%s\n' "$AB_IMAGE_VERSION_OVERRIDE"
+  exit 0
+fi
+
+printf '%(%Y%m%dT%H%M%SZ)T\n' -1

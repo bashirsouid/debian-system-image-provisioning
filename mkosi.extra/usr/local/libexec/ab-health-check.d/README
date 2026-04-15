@@ -1,5 +1,8 @@
-Drop executable health-check scripts in this directory when you want slot
-promotion to depend on application-specific checks.
+Additional boot-health hook scripts may be placed in this directory.
 
-Each executable file is run by `ab-slot-health.service` after the built-in
-"no failed systemd units" check. A non-zero exit code marks the slot unhealthy.
+Each executable file is run by `ab-health-gate.service` after the built-in
+"no failed units" check and before `boot-complete.target` is reached.
+
+Return status:
+- exit 0 -> hook passed
+- non-zero -> hook failed and the boot is not considered successful
