@@ -11,31 +11,33 @@ Use `--no-qemu-home-seed` if you want a completely bare VM home.
 There are really two different problems here, and they should be handled
 with different mechanisms.
 
-## 1. Real machines with dual-root updates
+## 1. Real machines with retained-root updates
 
-For workstation-style A/B deployments, `/home` should generally live outside the
-slot image on its own persistent partition or subvolume. The root slots should be
-replaceable; `/home` should not.
+For workstation-style retained-root deployments, `/home` should generally live
+outside the root image on its own persistent partition or subvolume. The root
+slots should be replaceable; `/home` should not.
 
-This tree already supports host-specific overlays via `--host NAME`, so the clean
-pattern is:
+The repo now prefers the **native GPT path** for that:
 
-- keep the base image generic
-- add a host-specific `/etc/fstab` only on machines that should mount external `/home`
-- keep servers or machines without persistent `/home` on the generic image
+- create `/home` as a GPT partition of type `home`
+- keep it on the same physical disk as the root partitions
+- let `systemd-gpt-auto-generator` mount it automatically on boot
 
-Example build:
+That is the layout the hardware-test USB installer now defaults to when you pick
+`rest` for `/home`.
 
-```bash
-./build.sh --profile devbox --host evox2
-```
+There is also a simple optional persistent data path baked into the image now:
 
-The example overlay in `hosts/evox2/` mounts a partition labeled `HOME` onto
-`/home` with `nofail,x-systemd.automount` so the machine can still boot if that
-partition is missing.
+- if a partition with `PARTLABEL=DATA` exists, it is mounted at `/mnt/data`
+- if no such partition exists, the `nofail` mount entry is ignored and boot
+  continues normally
 
-Adjust the source and filesystem type to match reality on the target machine.
-Using `UUID=` or `PARTUUID=` is stricter than `LABEL=` if you prefer that.
+You can still use host-specific overlays via `--host NAME` when you want a more
+opinionated machine-local storage layout, but the preferred golden path is now:
+
+- GPT `home` partition for `/home`
+- optional `DATA` partition for `/mnt/data`
+- retained root versions managed separately by `systemd-sysupdate`
 
 ## 2. QEMU compatibility testing against your host config
 

@@ -10,18 +10,25 @@ if ! ab_hostdeps_have_all_commands git; then
 fi
 ab_hostdeps_ensure_commands "third-party source update prerequisites" git || exit 1
 
+update_git_repo() {
+    local name="$1"
+    local url="$2"
+
+    echo "==> Checking ${name} source..."
+    if [ -d "$name/.git" ]; then
+        echo "==> Updating existing ${name} repository..."
+        git -C "$name" pull --ff-only
+    else
+        echo "==> Cloning ${name} repository..."
+        git clone --depth 1 "$url" "$name"
+    fi
+}
+
 cd "$PROJECT_ROOT"
 mkdir -p third-party
 cd third-party
 
-echo "==> Checking AwesomeWM source..."
-if [ -d "awesome/.git" ]; then
-    echo "==> Updating existing AwesomeWM repository..."
-    cd awesome
-    git pull
-else
-    echo "==> Cloning AwesomeWM repository..."
-    git clone --depth 1 https://github.com/awesomewm/awesome.git
-fi
+update_git_repo awesome https://github.com/awesomewm/awesome.git
+update_git_repo snd_hda_macbookpro https://github.com/davidjo/snd_hda_macbookpro.git
 
 echo "==> Third-party dependencies are up to date."

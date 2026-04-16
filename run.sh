@@ -132,7 +132,7 @@ if [[ -n "$IMAGE_VERSION" ]]; then
   args+=("--image-version=$IMAGE_VERSION")
 fi
 
-if [[ "$QEMU_HOME_SEED" == true && "$PROFILE" == "devbox" ]]; then
+if [[ "$QEMU_HOME_SEED" == true && ( "$PROFILE" == "devbox" || "$PROFILE" == "macbook" ) ]]; then
   SAMPLE_HOME_SEED="$PROJECT_ROOT/runtime-seeds/qemu-home"
   if [[ -d "$SAMPLE_HOME_SEED" ]]; then
     RUNTIME_TREES+=("$SAMPLE_HOME_SEED:/run/qemu-home-seed")
@@ -168,7 +168,7 @@ fi
 if [[ "$EPHEMERAL" == true ]]; then
   echo "==> Ephemeral VM snapshot enabled"
 fi
-if [[ "$QEMU_HOME_SEED" == true && "$PROFILE" == "devbox" ]]; then
+if [[ "$QEMU_HOME_SEED" == true && ( "$PROFILE" == "devbox" || "$PROFILE" == "macbook" ) ]]; then
   echo "==> QEMU sample home seed enabled"
 fi
 for spec in "${RUNTIME_TREES[@]}"; do

@@ -66,6 +66,24 @@ live_root_disk() {
   printf '%s\n' "$root_source"
 }
 
+device_or_children_mounted() {
+  local device="$1"
+  if findmnt -rn -S "$device" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ -b "$device" ]]; then
+    while read -r child; do
+      [[ -n "$child" ]] || continue
+      if findmnt -rn -S "$child" >/dev/null 2>&1; then
+        return 0
+      fi
+    done < <(lsblk -nrpo NAME "$device" | tail -n +2)
+  fi
+
+  return 1
+}
+
 ensure_safe_target() {
   local target_real root_disk
   target_real="$(readlink -f "$TARGET")"
@@ -75,8 +93,8 @@ ensure_safe_target() {
     die "refusing to repartition the currently running root disk: $target_real"
   fi
 
-  if [[ -b "$target_real" ]] && findmnt -rn -S "$target_real" >/dev/null 2>&1; then
-    die "refusing to use mounted block device: $target_real"
+  if [[ -b "$target_real" ]] && device_or_children_mounted "$target_real"; then
+    die "refusing to use mounted block device or a device with mounted partitions: $target_real"
   fi
 }
 

@@ -7,91 +7,146 @@ if [[ "${container:-}" != "mkosi" ]]; then
     exec mkosi-chroot "$CHROOT_SCRIPT" "$@"
 fi
 
-# The shared mkosi.build hook is invoked for every profile. The server profile
-# does not install AwesomeWM, so skip cleanly there.
-if ! command -v awesome >/dev/null 2>&1; then
-    echo "==> [BUILD] AwesomeWM package not present in this image; skipping source overlay build"
-    exit 0
-fi
+build_awesome_from_source() {
+    # The shared mkosi.build hook is invoked for every profile. The server profile
+    # does not install AwesomeWM, so skip cleanly there.
+    if ! command -v awesome >/dev/null 2>&1; then
+        echo "==> [BUILD] AwesomeWM package not present in this image; skipping source overlay build"
+        return 0
+    fi
 
-AWESOME_SRC="$SRCDIR/third-party/awesome"
-if [[ ! -d "$AWESOME_SRC/.git" && ! -f "$AWESOME_SRC/CMakeLists.txt" ]]; then
-    echo "ERROR: AwesomeWM source not found at $AWESOME_SRC" >&2
-    echo "Run ./update-3rd-party-deps.sh before building the devbox profile." >&2
-    exit 1
-fi
+    local awesome_src build_root build_path
+    local awesome_lua_version lua_bin lua_include_dir multiarch lua_library
 
-# mkosi's BUILDDIR is a shared top-level directory reused across builds. Do not
-# point CMake at that directory directly: Awesome links an executable named
-# "awesome", and a stale top-level directory with the same name then breaks the
-# link step with "cannot open output file awesome: Is a directory".
-BUILD_ROOT="${BUILDDIR:-$SRCDIR/.mkosi-awesome-build}"
-BUILD_PATH="$BUILD_ROOT/awesome-cmake"
-mkdir -p "$BUILD_ROOT"
+    awesome_src="$SRCDIR/third-party/awesome"
+    if [[ ! -d "$awesome_src/.git" && ! -f "$awesome_src/CMakeLists.txt" ]]; then
+        echo "ERROR: AwesomeWM source not found at $awesome_src" >&2
+        echo "Run ./update-3rd-party-deps.sh before building the devbox profile." >&2
+        exit 1
+    fi
 
-echo "==> [BUILD] resetting isolated AwesomeWM build dir: $BUILD_PATH"
-rm -rf "$BUILD_PATH"
-mkdir -p "$BUILD_PATH"
+    # mkosi's BUILDDIR is a shared top-level directory reused across builds. Do not
+    # point CMake at that directory directly: Awesome links an executable named
+    # "awesome", and a stale top-level directory with the same name then breaks the
+    # link step with "cannot open output file awesome: Is a directory".
+    build_root="${BUILDDIR:-$SRCDIR/.mkosi-awesome-build}"
+    build_path="$build_root/awesome-cmake"
+    mkdir -p "$build_root"
 
-# Awesome upstream explicitly documents pinning LUA_EXECUTABLE, LUA_LIBRARY and
-# LUA_INCLUDE_DIR when you need a specific Lua. Debian trixie ships Lua 5.3 and
-# 5.4, while Awesome upstream also warns that building from source often trips
-# over LGI/Lua version mismatches. Use 5.3 by default here because Debian's
-# lua-lgi package provides the Lua 5.3 LGI module path that Awesome checks.
-AWESOME_LUA_VERSION="${AWESOME_LUA_VERSION:-5.3}"
-LUA_BIN="$(command -v "lua${AWESOME_LUA_VERSION}" || true)"
+    echo "==> [BUILD] resetting isolated AwesomeWM build dir: $build_path"
+    rm -rf "$build_path"
+    mkdir -p "$build_path"
 
-if [[ -z "$LUA_BIN" || ! -x "$LUA_BIN" ]]; then
-    echo "ERROR: required Lua interpreter not found in PATH: lua${AWESOME_LUA_VERSION}" >&2
-    exit 1
-fi
+    # Awesome upstream explicitly documents pinning LUA_EXECUTABLE, LUA_LIBRARY and
+    # LUA_INCLUDE_DIR when you need a specific Lua. Debian trixie ships Lua 5.3 and
+    # 5.4, while Awesome upstream also warns that building from source often trips
+    # over LGI/Lua version mismatches. Use 5.3 by default here because Debian's
+    # lua-lgi package provides the Lua 5.3 LGI module path that Awesome checks.
+    awesome_lua_version="${AWESOME_LUA_VERSION:-5.3}"
+    lua_bin="$(command -v "lua${awesome_lua_version}" || true)"
 
-LUA_INCLUDE_DIR="/usr/include/lua${AWESOME_LUA_VERSION}"
-if [[ ! -f "$LUA_INCLUDE_DIR/lua.h" ]]; then
-    echo "ERROR: required Lua headers not found at $LUA_INCLUDE_DIR/lua.h" >&2
-    echo "       Ensure liblua${AWESOME_LUA_VERSION}-dev is installed for the build." >&2
-    exit 1
-fi
+    if [[ -z "$lua_bin" || ! -x "$lua_bin" ]]; then
+        echo "ERROR: required Lua interpreter not found in PATH: lua${awesome_lua_version}" >&2
+        exit 1
+    fi
 
-MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)"
-LUA_LIBRARY=""
-if [[ -n "$MULTIARCH" && -f "/usr/lib/$MULTIARCH/liblua${AWESOME_LUA_VERSION}.so" ]]; then
-    LUA_LIBRARY="/usr/lib/$MULTIARCH/liblua${AWESOME_LUA_VERSION}.so"
-else
-    LUA_LIBRARY="$(find /usr/lib -path "*/liblua${AWESOME_LUA_VERSION}.so" -print 2>/dev/null | head -n 1 || true)"
-fi
+    lua_include_dir="/usr/include/lua${awesome_lua_version}"
+    if [[ ! -f "$lua_include_dir/lua.h" ]]; then
+        echo "ERROR: required Lua headers not found at $lua_include_dir/lua.h" >&2
+        echo "       Ensure liblua${awesome_lua_version}-dev is installed for the build." >&2
+        exit 1
+    fi
 
-if [[ -z "$LUA_LIBRARY" || ! -f "$LUA_LIBRARY" ]]; then
-    echo "ERROR: required Lua shared library not found for Lua ${AWESOME_LUA_VERSION}" >&2
-    echo "       Looked for liblua${AWESOME_LUA_VERSION}.so under /usr/lib." >&2
-    exit 1
-fi
+    multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)"
+    lua_library=""
+    if [[ -n "$multiarch" && -f "/usr/lib/$multiarch/liblua${awesome_lua_version}.so" ]]; then
+        lua_library="/usr/lib/$multiarch/liblua${awesome_lua_version}.so"
+    else
+        lua_library="$(find /usr/lib -path "*/liblua${awesome_lua_version}.so" -print 2>/dev/null | head -n 1 || true)"
+    fi
 
-echo "==> [BUILD] preflighting LGI with $LUA_BIN"
-if ! "$LUA_BIN" -e 'pcall(require, "luarocks.loader"); require("lgi.version")' >/dev/null 2>&1; then
-    echo "ERROR: LGI is not importable by $LUA_BIN inside the build environment" >&2
-    echo "       Awesome requires lgi.version at build and runtime." >&2
-    echo "       Ensure lua-lgi is installed in Packages=." >&2
-    exit 1
-fi
+    if [[ -z "$lua_library" || ! -f "$lua_library" ]]; then
+        echo "ERROR: required Lua shared library not found for Lua ${awesome_lua_version}" >&2
+        echo "       Looked for liblua${awesome_lua_version}.so under /usr/lib." >&2
+        exit 1
+    fi
 
-echo "==> [BUILD] configuring AwesomeWM from source: $AWESOME_SRC"
-cmake \
-    -S "$AWESOME_SRC" \
-    -B "$BUILD_PATH" \
-    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DCMAKE_INSTALL_PREFIX=/usr \
-    -DSYSCONFDIR=/etc \
-    -DGENERATE_DOC=OFF \
-    -DGENERATE_MANPAGES=OFF \
-    -DLUA_EXECUTABLE="$LUA_BIN" \
-    -DLUA_LIBRARY="$LUA_LIBRARY" \
-    -DLUA_INCLUDE_DIR="$LUA_INCLUDE_DIR"
+    echo "==> [BUILD] preflighting LGI with $lua_bin"
+    if ! "$lua_bin" -e 'pcall(require, "luarocks.loader"); require("lgi.version")' >/dev/null 2>&1; then
+        echo "ERROR: LGI is not importable by $lua_bin inside the build environment" >&2
+        echo "       Awesome requires lgi.version at build and runtime." >&2
+        echo "       Ensure lua-lgi is installed in Packages=." >&2
+        exit 1
+    fi
 
-echo "==> [BUILD] compiling AwesomeWM ($(nproc) jobs)"
-cmake --build "$BUILD_PATH" -j "$(nproc)"
+    echo "==> [BUILD] configuring AwesomeWM from source: $awesome_src"
+    cmake \
+        -S "$awesome_src" \
+        -B "$build_path" \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DSYSCONFDIR=/etc \
+        -DGENERATE_DOC=OFF \
+        -DGENERATE_MANPAGES=OFF \
+        -DLUA_EXECUTABLE="$lua_bin" \
+        -DLUA_LIBRARY="$lua_library" \
+        -DLUA_INCLUDE_DIR="$lua_include_dir"
 
-echo "==> [BUILD] installing AwesomeWM into DESTDIR overlay"
-DESTDIR="$DESTDIR" cmake --install "$BUILD_PATH"
+    echo "==> [BUILD] compiling AwesomeWM ($(nproc) jobs)"
+    cmake --build "$build_path" -j "$(nproc)"
 
-echo "==> [BUILD] AwesomeWM source overlay installed successfully"
+    echo "==> [BUILD] installing AwesomeWM into DESTDIR overlay"
+    DESTDIR="$DESTDIR" cmake --install "$build_path"
+
+    echo "==> [BUILD] AwesomeWM source overlay installed successfully"
+}
+
+build_macbook_cs8409_driver() {
+    local audio_src target_kernel repo_tree repo_list_dir repo_key_dir
+    local module_path
+
+    audio_src="$SRCDIR/third-party/snd_hda_macbookpro"
+    [[ -f "$audio_src/install.cirrus.driver.sh" ]] || return 0
+
+    target_kernel="$({ find /lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null || true; } | grep 't2' | sort -V | tail -n1)"
+    if [[ -z "$target_kernel" ]]; then
+        echo "==> [BUILD] no t2 kernel detected in /lib/modules; skipping CS8409 driver overlay"
+        return 0
+    fi
+
+    echo "==> [BUILD] preparing CS8409 MacBook driver for kernel $target_kernel"
+
+    repo_tree="$SRCDIR/.mkosi-thirdparty/t2linux-sandbox"
+    if [[ -d "$repo_tree/etc/apt/sources.list.d" ]]; then
+        repo_list_dir="/etc/apt/sources.list.d"
+        mkdir -p "$repo_list_dir"
+        cp -a "$repo_tree/etc/apt/sources.list.d/." "$repo_list_dir/"
+    fi
+    if [[ -d "$repo_tree/etc/apt/trusted.gpg.d" ]]; then
+        repo_key_dir="/etc/apt/trusted.gpg.d"
+        mkdir -p "$repo_key_dir"
+        cp -a "$repo_tree/etc/apt/trusted.gpg.d/." "$repo_key_dir/"
+    fi
+
+    if [[ ! -d "/usr/src/linux-headers-$target_kernel" ]]; then
+        echo "==> [BUILD] installing matching kernel headers: linux-headers-$target_kernel"
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "linux-headers-$target_kernel"
+    fi
+
+    pushd "$audio_src" >/dev/null
+    echo "==> [BUILD] installing CS8409 DKMS override from $audio_src"
+    ./install.cirrus.driver.sh -k "$target_kernel" -i
+    popd >/dev/null
+
+    module_path="$(find "/lib/modules/$target_kernel/updates" -type f \( -name 'snd-hda-codec-cs8409.ko' -o -name 'snd-hda-codec-cs8409.ko.zst' \) -print | sort | head -n1 || true)"
+    if [[ -z "$module_path" ]]; then
+        echo "ERROR: CS8409 driver install did not produce an override module under /lib/modules/$target_kernel/updates" >&2
+        exit 1
+    fi
+
+    echo "==> [BUILD] CS8409 DKMS override installed at $module_path"
+}
+
+build_awesome_from_source
+build_macbook_cs8409_driver

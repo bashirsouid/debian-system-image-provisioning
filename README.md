@@ -52,12 +52,14 @@ into ROOT_B” script.
 ## Current goals
 
 - reproducible base images
-- source-built AwesomeWM for the `devbox` profile
+- source-built AwesomeWM for the `devbox` and `macbook` profiles
 - first-boot local user provisioning that works in rootless mkosi builds
 - Liquorix kernel for the x86-64 `devbox` path
+- a T2-oriented `macbook` desktop path for Intel 2019-era MacBook Pros
 - native retained-version updates with `systemd-sysupdate`
 - a server-only ARM64 `cloudbox` overlay
 - an Ansible playbook that can build and bootstrap/update `cloudbox`
+- a hardware-test USB workflow that boots the native retained-version stack on removable media
 
 ## Important assumptions and constraints
 
@@ -75,6 +77,8 @@ These are deliberate design constraints, not hidden gotchas:
   Specification entries instead of GRUB config
 - the `cloudbox` path is intentionally server-only: no desktop stack, no AwesomeWM, no
   Liquorix
+- the `macbook` path uses third-party T2 support packages and firmware repos during the build
+- hardware-test USBs are bootstrapped with the same native `systemd-repart` + `systemd-sysupdate` flow instead of using a separate installer format
 
 ## Host dependency auto-install
 
@@ -147,6 +151,68 @@ That overlay:
 - uses Debian’s stock `linux-image-arm64`
 - stays server-only
 
+### Intel T2 MacBook Pro build
+
+```bash
+./update-3rd-party-deps.sh
+cp .users.json.sample .users.json
+# edit .users.json
+./clean.sh --all
+./build.sh --profile macbook --host macbookpro13-2019-t2
+```
+
+This path is aimed at the 2019-era Intel 13-inch T2 MacBook Pro desktop workflow. It swaps out
+Liquorix for the t2linux kernel, keeps PipeWire on Debian's default stack, installs Apple
+Wi-Fi/Bluetooth firmware plus the T2 kernel packages, builds and installs the `snd_hda_macbookpro`
+CS8409 driver override into the image at build time, enables mkosi build-script network access
+for that host so the installer can fetch matching kernel sources, uses NetworkManager with Debian's
+`network-manager-iwd` integration, and enables a suspend workaround service for the Apple T2 /
+Broadcom module stack.
+
+Important limits to understand up front:
+
+- the current t2linux state page still describes Bluetooth as only partially working on some T2
+  models and notes BCM4377 interference issues on 2.4 GHz Wi-Fi
+- the same state page says the trackpad works but is not as good as on macOS
+- the current t2linux audio guide says experimental speaker DSP tuning is only available for the
+  16-inch 2019 MacBook Pro and should not be used on other models
+- `apple-t2-audio-config` is not the primary speaker fix on this 13-inch CS8409 path; the image now
+  builds the `snd_hda_macbookpro` override so sound does not depend on custom PipeWire tweaks
+- hibernation is not fully configured by default in this repo's retained-version layout yet because
+  that still needs swap + resume wiring
+
+See `hosts/macbookpro13-2019-t2/README.md` for the host-specific notes and service choices.
+
+### Hardware-test USB for real-machine bring-up
+
+After any successful build, you can turn the current version into a bootable
+hardware-test USB that uses the same native retained-version stack as the real
+install:
+
+```bash
+sudo ./scripts/write-live-test-usb.sh --target /dev/sdX
+```
+
+That USB will:
+
+- bootstrap itself with `systemd-repart` + `systemd-sysupdate`
+- boot the exact version you just built
+- include `/root/INSTALL-TO-INTERNAL-DISK.sh` so you can install to the machine's
+  internal disk after you have tested the actual hardware
+
+By default the USB bundle copies the current sysupdate artifacts rather than the
+full `image.raw`, because the native install path only needs the versioned root
+artifact, UKI, and BLS entry. Use `--embed-full-image` only if you explicitly
+want the raw whole-disk image copied onto the USB as well. If the installer
+bundle does not fit on the default USB root partition, rerun with a larger
+removable drive or increase the USB slot size with `--usb-root-size`.
+
+For the T2 MacBook workflow this is the recommended next step before touching the
+internal SSD. Boot the USB via Startup Manager, verify Wi-Fi/Bluetooth/audio/sleep
+on real hardware, and only then run the bundled installer against the internal disk.
+
+See `docs/live-test-usb.md` for the full flow.
+
 ## QEMU sample home seed
 
 `run.sh` defaults to an **ephemeral** VM and mounts `runtime-seeds/qemu-home/` into the guest
@@ -189,6 +255,16 @@ To disable automatic host-id syncing for the matching host username:
 
 For real retained-root machines, keep mutable workstation data **outside** the root image.
 That means `/home` should live on a separate persistent partition or subvolume.
+
+The preferred native layout now is:
+
+- a GPT `home` partition on the same disk as the retained root partitions for `/home`
+- an optional partition labeled `DATA` for `/mnt/data`
+
+The GPT `home` partition is auto-mounted by `systemd-gpt-auto-generator`, and the image
+ships an `fstab` entry that mounts `PARTLABEL=DATA` at `/mnt/data` with `nofail`, so the
+extra data partition is optional and survives future retained-version updates without per-slot
+manual edits.
 
 For QEMU testing, the repo intentionally does **not** mount your real host home by default.
 Instead it seeds a tiny sample AwesomeWM setup. When you want to compare with host config,
@@ -266,6 +342,38 @@ What that script does:
 2. creates the ESP + two empty root partitions with `systemd-repart`
 3. installs `systemd-boot` into the target ESP
 4. seeds the first retained version using `systemd-sysupdate` from `mkosi.output/`
+
+### Hardware-test USB on a removable drive
+
+For a real-machine smoke test before touching the internal disk, create a removable
+USB install using the same native stack:
+
+```bash
+sudo ./scripts/write-live-test-usb.sh --target /dev/sdX
+```
+
+This is intentionally **not** a separate ad-hoc installer image. The USB itself is
+bootstrapped with the same retained-version layout, and then a self-contained installer
+bundle is copied into `/root/ab-installer`. After booting from the USB you can run:
+
+```bash
+sudo /root/INSTALL-TO-INTERNAL-DISK.sh
+```
+
+The interactive helper can either:
+
+- wipe a target disk and create a fresh retained-version layout
+- or stage the bundled version onto an already bootstrapped target disk
+
+By default, a fresh install from the USB creates:
+
+- a 512M ESP
+- two retained root partitions of 8G each
+- a GPT `home` partition that takes the remaining space
+- no `DATA` partition unless you ask for one
+
+If you create a `DATA` partition, keep the partition label set to `DATA` so the built-in
+`/mnt/data` mount entry continues to work on later updates.
 
 ### Later in-place updates on an already bootstrapped machine
 
@@ -371,6 +479,8 @@ The recommended path is now:
 - `deploy.repart/` — one-time disk layout for bootstrap
 - `scripts/bootstrap-ab-disk.sh` — destructive first install to a blank/offline target
 - `scripts/sysupdate-local-update.sh` — later in-place updates on an installed system
+- `scripts/write-live-test-usb.sh` — bootstraps a removable hardware-test USB and copies an installer bundle onto it
+- `scripts/live-usb-install.sh` — interactive installer used from the booted hardware-test USB
 - `scripts/export-sysupdate-artifacts.sh` — exports versioned root/UKI/BLS artifacts after build
 - `hosts/cloudbox/` — ARM64 server overlay
 - `hosts/evox2/` — example workstation overlay

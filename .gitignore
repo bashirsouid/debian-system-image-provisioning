@@ -17,3 +17,4 @@ image.*
 artifacts/
 
 third-party/
+.mkosi-private/

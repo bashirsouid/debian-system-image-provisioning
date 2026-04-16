@@ -171,6 +171,43 @@ Signed-By: /usr/share/keyrings/liquorix-keyring.gpg
 SOURCE
 }
 
+prepare_t2linux_trees() {
+  local suite sandbox_root key_tmp keyring_path t2_list_path firmware_list_path
+
+  suite="$(read_release_from_mkosi_conf)"
+  if [[ -z "$suite" ]]; then
+    echo "ERROR: unable to determine Debian Release= from mkosi.conf" >&2
+    exit 1
+  fi
+
+  rm -rf "$THIRD_PARTY_DIR"
+
+  sandbox_root="$THIRD_PARTY_DIR/t2linux-sandbox"
+  install -d -m 0755 \
+    "$sandbox_root/etc/apt/sources.list.d" \
+    "$sandbox_root/etc/apt/trusted.gpg.d"
+
+  key_tmp="$(mktemp)"
+  trap 'rm -f "$key_tmp"' RETURN
+  fetch_url "https://adityagarg8.github.io/t2-ubuntu-repo/KEY.gpg" "$key_tmp"
+
+  keyring_path="$sandbox_root/etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg"
+  gpg --dearmor --yes --output "$keyring_path" "$key_tmp"
+
+  t2_list_path="$sandbox_root/etc/apt/sources.list.d/t2.list"
+  fetch_url "https://adityagarg8.github.io/t2-ubuntu-repo/t2.list" "$t2_list_path"
+  printf '%s
+' "deb [signed-by=/etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg] https://github.com/AdityaGarg8/t2-ubuntu-repo/releases/download/${suite} ./" >> "$t2_list_path"
+
+  firmware_list_path="$sandbox_root/etc/apt/sources.list.d/apple-firmware.list"
+  cat > "$firmware_list_path" <<SOURCE
+deb [signed-by=/etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg] https://github.com/AdityaGarg8/Apple-Firmware/releases/download/debian ./
+SOURCE
+
+  rm -f "$key_tmp"
+  trap - RETURN
+}
+
 render_users_conf() {
   local output="$1"
   : > "$output"
@@ -296,6 +333,7 @@ render_build_info() {
   awesome_git_dirty="$(git_dirty "$PROJECT_ROOT/third-party/awesome")"
   kernel_track="debian"
   [[ "$PROFILE" == "devbox" ]] && kernel_track="liquorix"
+  [[ "$PROFILE" == "macbook" ]] && kernel_track="t2linux"
   mkosi_version="$(mkosi --version 2>/dev/null | head -n1 || true)"
   host_overlay="${HOST:-none}"
 
@@ -371,15 +409,28 @@ fi
 ab_hostdeps_ensure_commands "build host prerequisites" mkosi jq openssl sfdisk || exit 1
 
 
-if [[ "$PROFILE" == "devbox" ]]; then
+if [[ "$PROFILE" == "devbox" || "$PROFILE" == "macbook" ]]; then
   if ! ab_hostdeps_have_all_commands curl; then
-    ab_hostdeps_ensure_packages "build host prerequisites for devbox" curl || exit 1
+    ab_hostdeps_ensure_packages "build host prerequisites for desktop profiles" curl || exit 1
   fi
-  ab_hostdeps_ensure_commands "build host prerequisites for devbox" curl || exit 1
+  ab_hostdeps_ensure_commands "build host prerequisites for desktop profiles" curl || exit 1
 fi
 
-if [[ "$PROFILE" == "devbox" && ! -f "$PROJECT_ROOT/third-party/awesome/CMakeLists.txt" ]]; then
-  echo "ERROR: devbox profile requires third-party/awesome" >&2
+if [[ "$PROFILE" == "macbook" ]]; then
+  if ! ab_hostdeps_have_all_commands gpg; then
+    ab_hostdeps_ensure_packages "build host prerequisites for macbook profile" gpg || exit 1
+  fi
+  ab_hostdeps_ensure_commands "build host prerequisites for macbook profile" gpg || exit 1
+fi
+
+if [[ ( "$PROFILE" == "devbox" || "$PROFILE" == "macbook" ) && ! -f "$PROJECT_ROOT/third-party/awesome/CMakeLists.txt" ]]; then
+  echo "ERROR: desktop profiles require third-party/awesome" >&2
+  echo "Run ./update-3rd-party-deps.sh first." >&2
+  exit 1
+fi
+
+if [[ "$PROFILE" == "macbook" && ! -f "$PROJECT_ROOT/third-party/snd_hda_macbookpro/install.cirrus.driver.sh" ]]; then
+  echo "ERROR: macbook profile requires third-party/snd_hda_macbookpro" >&2
   echo "Run ./update-3rd-party-deps.sh first." >&2
   exit 1
 fi
@@ -411,6 +462,14 @@ if [[ "$PROFILE" == "devbox" ]]; then
   echo "==> Preparing Liquorix repository metadata for devbox..."
   prepare_liquorix_trees
   EXTRA_ARGS+=("--sandbox-tree=$THIRD_PARTY_DIR/liquorix-sandbox:/")
+fi
+
+if [[ "$PROFILE" == "macbook" ]]; then
+  echo "==> Preparing t2linux and Apple firmware repository metadata for macbook..."
+  prepare_t2linux_trees
+  EXTRA_ARGS+=("--sandbox-tree=$THIRD_PARTY_DIR/t2linux-sandbox:/")
+  EXTRA_ARGS+=("--extra-tree=$THIRD_PARTY_DIR/t2linux-sandbox:/")
+  EXTRA_ARGS+=("--extra-tree=$PROJECT_ROOT/third-party/snd_hda_macbookpro:/usr/local/src/snd_hda_macbookpro")
 fi
 
 if [[ -n "$HOST" ]]; then
