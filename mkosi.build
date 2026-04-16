@@ -101,6 +101,25 @@ build_awesome_from_source() {
     echo "==> [BUILD] AwesomeWM source overlay installed successfully"
 }
 
+find_cs8409_override_module() {
+    local kernel="$1"
+    local path=""
+
+    path="$(find "/lib/modules/$kernel/updates" -type f -name 'snd-hda-codec-cs8409.ko*' -print 2>/dev/null | sort | head -n1 || true)"
+    if [[ -n "$path" ]]; then
+        printf '%s\n' "$path"
+        return 0
+    fi
+
+    path="$(modinfo -k "$kernel" -F filename snd_hda_codec_cs8409 2>/dev/null || true)"
+    if [[ "$path" == /lib/modules/"$kernel"/updates/* ]]; then
+        printf '%s\n' "$path"
+        return 0
+    fi
+
+    return 1
+}
+
 patch_macbook_driver_tree() {
     local tree="$1"
     local module_version="$2"
@@ -199,9 +218,10 @@ build_macbook_cs8409_driver() {
 
     popd >/dev/null
 
-    module_path="$(find "/lib/modules/$target_kernel/updates" -type f \( -name 'snd-hda-codec-cs8409.ko' -o -name 'snd-hda-codec-cs8409.ko.zst' \) -print | sort | head -n1 || true)"
+    module_path="$(find_cs8409_override_module "$target_kernel" || true)"
     if [[ -z "$module_path" ]]; then
         echo "ERROR: CS8409 driver install did not produce an override module under /lib/modules/$target_kernel/updates" >&2
+        echo "       Looked for snd-hda-codec-cs8409.ko* recursively under /lib/modules/$target_kernel/updates." >&2
         exit 1
     fi
 

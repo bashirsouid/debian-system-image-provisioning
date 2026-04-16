@@ -16,6 +16,25 @@ if [[ ! -d "$source_dir" || ! -f "$source_dir/install.cirrus.driver.sh" ]]; then
     exit 1
 fi
 
+find_cs8409_override_module() {
+    local kernel="$1"
+    local path=""
+
+    path="$(find "/lib/modules/$kernel/updates" -type f -name 'snd-hda-codec-cs8409.ko*' -print 2>/dev/null | sort | head -n1 || true)"
+    if [[ -n "$path" ]]; then
+        printf '%s\n' "$path"
+        return 0
+    fi
+
+    path="$(modinfo -k "$kernel" -F filename snd_hda_codec_cs8409 2>/dev/null || true)"
+    if [[ "$path" == /lib/modules/"$kernel"/updates/* ]]; then
+        printf '%s\n' "$path"
+        return 0
+    fi
+
+    return 1
+}
+
 patch_driver_tree() {
     local tree="$1"
 
@@ -68,7 +87,7 @@ popd >/dev/null
 depmod -a
 
 echo
-modinfo -F filename snd_hda_codec_cs8409 2>/dev/null || true
+find_cs8409_override_module "$kernel" || modinfo -k "$kernel" -F filename snd_hda_codec_cs8409 2>/dev/null || true
 echo
 echo "If sound is still missing immediately after this run, reboot once and test with:"
 echo "  speaker-test -t wav -l 1"
