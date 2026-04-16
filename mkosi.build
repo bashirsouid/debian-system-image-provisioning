@@ -103,7 +103,7 @@ build_awesome_from_source() {
 
 build_macbook_cs8409_driver() {
     local audio_src target_kernel repo_tree repo_list_dir repo_key_dir
-    local module_path
+    local module_path dkms_src module_name module_version
 
     audio_src="$SRCDIR/third-party/snd_hda_macbookpro"
     [[ -f "$audio_src/install.cirrus.driver.sh" ]] || return 0
@@ -134,9 +134,32 @@ build_macbook_cs8409_driver() {
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "linux-headers-$target_kernel"
     fi
 
-    pushd "$audio_src" >/dev/null
-    echo "==> [BUILD] installing CS8409 DKMS override from $audio_src"
-    ./install.cirrus.driver.sh -k "$target_kernel" -i
+    module_name="snd_hda_macbookpro"
+    module_version="0.1"
+    dkms_src="/usr/src/${module_name}-${module_version}"
+
+    echo "==> [BUILD] staging CS8409 DKMS source at $dkms_src"
+    rm -rf "$dkms_src"
+    mkdir -p "$dkms_src"
+    cp -a "$audio_src/." "$dkms_src/"
+
+    pushd "$dkms_src" >/dev/null
+
+    echo "==> [BUILD] preparing DKMS source tree for kernel $target_kernel"
+    ./install.cirrus.driver.sh -k "$target_kernel" --dkms
+
+    echo "==> [BUILD] removing any stale DKMS registrations for $module_name/$module_version"
+    dkms remove -m "$module_name" -v "$module_version" --all >/dev/null 2>&1 || true
+
+    echo "==> [BUILD] adding DKMS module for $module_name/$module_version"
+    dkms add -m "$module_name" -v "$module_version"
+
+    echo "==> [BUILD] building DKMS module for target kernel $target_kernel"
+    dkms build -m "$module_name" -v "$module_version" -k "$target_kernel" --force
+
+    echo "==> [BUILD] installing DKMS module for target kernel $target_kernel"
+    dkms install -m "$module_name" -v "$module_version" -k "$target_kernel" --force
+
     popd >/dev/null
 
     module_path="$(find "/lib/modules/$target_kernel/updates" -type f \( -name 'snd-hda-codec-cs8409.ko' -o -name 'snd-hda-codec-cs8409.ko.zst' \) -print | sort | head -n1 || true)"
