@@ -18,6 +18,12 @@ artifacts/
 
 third-party/
 .mkosi-private/
+*.patch
+
+# Local machine and deployment state
+ab-flash.conf
+ansible/inventory.ini
+ansible/group_vars/cloudbox.yml
 
 # Local machine and deployment state
 ab-flash.conf
