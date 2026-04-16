@@ -43,7 +43,7 @@ need_cmd() {
 confirm_or_abort() {
   [[ "$ASSUME_YES" == true ]] && return 0
   local answer
-  printf 'About to destroy partition data on %s. Continue? [y/N] ' "$TARGET"
+  printf 'About to destroy partition data on %s and replace it with the layout shown above. Continue? [y/N] ' "$TARGET"
   read -r answer
   case "${answer,,}" in
     y|yes) return 0 ;;
@@ -148,6 +148,31 @@ console-mode keep
 EOF2
 }
 
+
+preview_repartition_layout() {
+  local target_real output
+  target_real="$(readlink -f "$TARGET")"
+  echo "==> Planned partition layout for $TARGET"
+  output="$(systemd-repart --dry-run=yes --empty=force --definitions="$REPART_DIR" "$target_real" 2>&1 || true)"
+  printf '%s\n' "$output" | sed '/^Refusing to repartition, please re-run with --dry-run=no\.$/d'
+}
+
+wait_for_esp_partition() {
+  local part="" attempt
+  for attempt in $(seq 1 10); do
+    part="$(find_esp_partition || true)"
+    if [[ -n "$part" ]]; then
+      printf '%s\n' "$part"
+      return 0
+    fi
+    if command -v udevadm >/dev/null 2>&1; then
+      udevadm settle || true
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target)
@@ -204,40 +229,10 @@ need_cmd mount
 need_cmd losetup
 need_cmd install
 
-preview_repart_layout() {
-  echo "==> Planned partition layout for $TARGET"
-  systemd-repart --dry-run=yes --empty=force --definitions="$REPART_DIR" "$TARGET_FOR_SYSUPDATE" || true
-}
-
-wait_for_esp_partition() {
-  local part="" i
-  if command -v udevadm >/dev/null 2>&1; then
-    udevadm settle >/dev/null 2>&1 || true
-  fi
-  if command -v partprobe >/dev/null 2>&1; then
-    partprobe "$DISK_DEVICE" >/dev/null 2>&1 || true
-  fi
-  if command -v blockdev >/dev/null 2>&1; then
-    blockdev --rereadpt "$DISK_DEVICE" >/dev/null 2>&1 || true
-  fi
-  for i in $(seq 1 20); do
-    part="$(find_esp_partition || true)"
-    if [[ -n "$part" ]]; then
-      printf '%s\n' "$part"
-      return 0
-    fi
-    if command -v udevadm >/dev/null 2>&1; then
-      udevadm settle --timeout=5 >/dev/null 2>&1 || true
-    fi
-    sleep 0.5
-  done
-  return 1
-}
-
 ensure_safe_target
-resolve_disk_device
-preview_repart_layout
+preview_repartition_layout
 confirm_or_abort
+resolve_disk_device
 
 echo "==> Repartitioning $TARGET with systemd-repart"
 systemd-repart --dry-run=no --empty=force --definitions="$REPART_DIR" "$TARGET_FOR_SYSUPDATE"
@@ -248,12 +243,12 @@ if [[ -n "${LOOPDEV:-}" ]]; then
   DISK_DEVICE="$LOOPDEV"
 fi
 
-ESP_PART="$(wait_for_esp_partition)" || die "unable to locate ESP partition after repart (partition table was written, but the ESP node did not appear in time)"
+ESP_PART="$(wait_for_esp_partition)" || die "unable to locate ESP partition after repart"
 ESP_MOUNT="$(mktemp -d /tmp/ab-esp.XXXXXX)"
 mount "$ESP_PART" "$ESP_MOUNT"
 
 echo "==> Installing systemd-boot into target ESP"
-bootctl --esp-path="$ESP_MOUNT" --install-source=host install
+SYSTEMD_RELAX_ESP_CHECKS=1 bootctl --esp-path="$ESP_MOUNT" --no-variables install
 write_loader_conf "$ESP_MOUNT/loader/loader.conf"
 
 echo "==> Seeding first system version with systemd-sysupdate"

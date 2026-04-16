@@ -190,7 +190,7 @@ hardware-test USB that uses the same native retained-version stack as the real
 install:
 
 ```bash
-sudo ./scripts/write-live-test-usb.sh --target /dev/sdX
+sudo ./scripts/write-live-test-usb.sh --target /dev/sdX --profile macbook --host macbookpro13-2019-t2
 ```
 
 That USB will:
