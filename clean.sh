@@ -58,11 +58,11 @@ echo "==> Cleaning build artifacts..."
 
 if $ALL; then
   echo "==> Thorough cleanup (--all)..."
-  mkosi clean -f -f
+  mkosi -f -f clean
   rm -rf mkosi.cache mkosi.builddir mkosi.output .mkosi-secrets .mkosi-thirdparty .config-checksum image image.*
 elif $DEEP; then
   echo "==> Deep cleanup (--deep)..."
-  mkosi clean -f
+  mkosi -f clean
 else
   mkosi clean
 fi

@@ -5,19 +5,25 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SECRETS_DIR="$PROJECT_ROOT/.mkosi-secrets"
 THIRD_PARTY_DIR="$PROJECT_ROOT/.mkosi-thirdparty"
 USERS_FILE="$PROJECT_ROOT/.users.json"
+USERS_SAMPLE="$PROJECT_ROOT/.users.json.sample"
 # shellcheck source=scripts/lib/host-deps.sh
 source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
 # shellcheck source=scripts/lib/build-meta.sh
 source "$PROJECT_ROOT/scripts/lib/build-meta.sh"
-USERS_SAMPLE="$PROJECT_ROOT/.users.json.sample"
+
 PROFILE="devbox"
 HOST=""
+PROFILE_SET=false
+HOST_SET=false
+BUILD_ALL=false
+FORCE_REBUILD=false
 MKOSI_FORCE=""
 SYNC_HOST_IDS=true
-IMAGE_ID="${AB_IMAGE_ID:-debian-provisioning}"
+BASE_IMAGE_ID="${AB_IMAGE_ID:-debian-provisioning}"
 IMAGE_VERSION=""
 TARGET_ARCH=""
 HOST_KERNEL_ARGS=""
+CURRENT_CHECKSUM=""
 
 HOST_USER_NAME="$(id -un)"
 HOST_UID="$(id -u)"
@@ -33,6 +39,13 @@ Options:
   --host NAME              include host-specific overlay from hosts/NAME/
   --force                  pass mkosi -f
   --clean                  pass mkosi -f -f
+  --force-rebuild          clean all generated state, refresh managed third-party
+                           checkouts from clean clones, then rebuild
+  --all                    build the standard target matrix in one invocation:
+                             devbox
+                             devbox --host evox2
+                             server --host cloudbox
+                             macbook --host macbookpro13-2019-t2
   --sync-host-ids=yes|no   when username matches the invoking host user,
                            copy that user's uid/gid/group into the image
 USAGE
@@ -95,6 +108,8 @@ read_release_from_mkosi_conf() {
 read_architecture_from_configs() {
   local value=""
   local file
+  TARGET_ARCH=""
+
   for file in "$PROJECT_ROOT/mkosi.conf" "$PROJECT_ROOT/hosts/$HOST"/mkosi.conf.d/*.conf; do
     [[ -f "$file" ]] || continue
     value="$(awk -F= '
@@ -196,13 +211,13 @@ prepare_t2linux_trees() {
 
   t2_list_path="$sandbox_root/etc/apt/sources.list.d/t2.list"
   fetch_url "https://adityagarg8.github.io/t2-ubuntu-repo/t2.list" "$t2_list_path"
-  printf '%s
-' "deb [signed-by=/etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg] https://github.com/AdityaGarg8/t2-ubuntu-repo/releases/download/${suite} ./" >> "$t2_list_path"
+  printf '%s\n' "deb [signed-by=/etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg] https://github.com/AdityaGarg8/t2-ubuntu-repo/releases/download/${suite} ./" >> "$t2_list_path"
 
   firmware_list_path="$sandbox_root/etc/apt/sources.list.d/apple-firmware.list"
   cat > "$firmware_list_path" <<SOURCE
-deb [signed-by=/etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg] https://github.com/AdityaGarg8/Apple-Firmware/releases/download/debian ./
+Deb [signed-by=/etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg] https://github.com/AdityaGarg8/Apple-Firmware/releases/download/debian ./
 SOURCE
+  sed -i '1s/^Deb /deb /' "$firmware_list_path"
 
   rm -f "$key_tmp"
   trap - RETURN
@@ -321,6 +336,10 @@ write_env_kv() {
 
 render_build_info() {
   local output="$1"
+  local image_id="$2"
+  local image_version="$3"
+  local target_arch="$4"
+  local host_kernel_args="$5"
   local build_time build_user build_host build_git_rev build_git_dirty
   local awesome_git_rev awesome_git_dirty kernel_track mkosi_version host_overlay
 
@@ -349,178 +368,149 @@ render_build_info() {
     AB_BUILD_AWESOME_GIT_DIRTY "$awesome_git_dirty" \
     AB_BUILD_KERNEL_TRACK "$kernel_track" \
     AB_BUILD_MKOSI_VERSION "$mkosi_version" \
-    AB_IMAGE_ID "$IMAGE_ID" \
-    AB_IMAGE_VERSION "$IMAGE_VERSION" \
-    AB_IMAGE_ARCH "$TARGET_ARCH" \
-    AB_HOST_KERNEL_ARGS "$HOST_KERNEL_ARGS"
+    AB_IMAGE_ID "$image_id" \
+    AB_IMAGE_VERSION "$image_version" \
+    AB_IMAGE_ARCH "$target_arch" \
+    AB_HOST_KERNEL_ARGS "$host_kernel_args"
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --profile)
-      PROFILE="${2:?missing profile name}"
-      shift 2
-      ;;
-    --host)
-      HOST="${2:?missing host name}"
-      shift 2
-      ;;
-    --force)
-      MKOSI_FORCE="-f"
-      shift
-      ;;
-    --clean)
-      MKOSI_FORCE="-f -f"
-      shift
-      ;;
-    --sync-host-ids=yes|--sync-host-ids=true)
-      SYNC_HOST_IDS=true
-      shift
-      ;;
-    --sync-host-ids=no|--sync-host-ids=false)
-      SYNC_HOST_IDS=false
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown option: $1" >&2
-      usage >&2
-      exit 1
-      ;;
-  esac
-done
+profile_needs_awesome() {
+  [[ "$1" == "devbox" || "$1" == "macbook" ]]
+}
 
-cd "$PROJECT_ROOT"
-mkdir -p mkosi.output
+profile_needs_macbook_audio() {
+  [[ "$1" == "macbook" ]]
+}
 
-if [[ ! -f "$USERS_FILE" ]]; then
-  echo "WARNING: $USERS_FILE missing. Creating from sample..."
-  cp "$USERS_SAMPLE" "$USERS_FILE"
-  echo "IMPORTANT: edit $USERS_FILE and set your passwords before building."
-  exit 1
-fi
+profile_needs_managed_third_party() {
+  profile_needs_awesome "$1" || profile_needs_macbook_audio "$1"
+}
 
-if ! ab_hostdeps_have_all_commands mkosi jq openssl sfdisk; then
-  ab_hostdeps_ensure_packages "build host prerequisites" mkosi jq openssl fdisk || exit 1
-fi
-ab_hostdeps_ensure_commands "build host prerequisites" mkosi jq openssl sfdisk || exit 1
+sanitize_image_component() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-'
+}
 
+image_id_for_target() {
+  local base="$1"
+  local profile="$2"
+  local host="$3"
 
-if [[ "$PROFILE" == "devbox" || "$PROFILE" == "macbook" ]]; then
-  if ! ab_hostdeps_have_all_commands curl; then
-    ab_hostdeps_ensure_packages "build host prerequisites for desktop profiles" curl || exit 1
+  if [[ "$BUILD_ALL" == false ]]; then
+    printf '%s\n' "$base"
+    return 0
   fi
-  ab_hostdeps_ensure_commands "build host prerequisites for desktop profiles" curl || exit 1
-fi
 
-if [[ "$PROFILE" == "macbook" ]]; then
-  if ! ab_hostdeps_have_all_commands gpg; then
-    ab_hostdeps_ensure_packages "build host prerequisites for macbook profile" gpg || exit 1
+  local suffix
+  suffix="$(sanitize_image_component "$profile")"
+  if [[ -n "$host" ]]; then
+    suffix+="-$(sanitize_image_component "$host")"
   fi
-  ab_hostdeps_ensure_commands "build host prerequisites for macbook profile" gpg || exit 1
-fi
+  printf '%s-%s\n' "$base" "$suffix"
+}
 
-if [[ ( "$PROFILE" == "devbox" || "$PROFILE" == "macbook" ) && ! -f "$PROJECT_ROOT/third-party/awesome/CMakeLists.txt" ]]; then
-  echo "ERROR: desktop profiles require third-party/awesome" >&2
-  echo "Run ./update-3rd-party-deps.sh first." >&2
-  exit 1
-fi
+compute_config_checksum() {
+  local path
+  local inputs=(
+    mkosi.conf
+    mkosi.conf.d
+    mkosi.profiles
+    mkosi.build
+    mkosi.finalize
+    mkosi.prepare
+    mkosi.extra
+    mkosi.sysupdate
+    deploy.repart
+    hosts
+    third-party
+    docs
+    scripts
+    ansible
+    .users.json
+    build.sh
+    run.sh
+    clean.sh
+    mkosi.version
+    README.md
+    update-3rd-party-deps.sh
+  )
+  local existing=()
 
-if [[ "$PROFILE" == "macbook" && ! -f "$PROJECT_ROOT/third-party/snd_hda_macbookpro/install.cirrus.driver.sh" ]]; then
-  echo "ERROR: macbook profile requires third-party/snd_hda_macbookpro" >&2
-  echo "Run ./update-3rd-party-deps.sh first." >&2
-  exit 1
-fi
-
-if [[ -n "$HOST" && ! -d "$PROJECT_ROOT/hosts/$HOST" ]]; then
-  echo "ERROR: host directory hosts/$HOST not found" >&2
-  exit 1
-fi
-
-IMAGE_VERSION="$($PROJECT_ROOT/mkosi.version)"
-read_architecture_from_configs
-read_host_kernel_args
-
-echo "==> Preparing first-boot provisioning data..."
-echo "==> Host UID/GID sync for matching user '$HOST_USER_NAME': $SYNC_HOST_IDS ($HOST_UID:$HOST_GID $HOST_PRIMARY_GROUP)"
-echo "==> Image identity: $IMAGE_ID version $IMAGE_VERSION arch $TARGET_ARCH"
-rm -rf "$SECRETS_DIR"
-install -d -m 0755 \
-  "$SECRETS_DIR/usr/local/etc" \
-  "$SECRETS_DIR/usr/local/share/ab-image-meta" \
-  "$SECRETS_DIR/usr/lib/sysupdate.d"
-render_users_conf "$SECRETS_DIR/usr/local/etc/users.conf"
-chmod 0600 "$SECRETS_DIR/usr/local/etc/users.conf"
-render_build_info "$SECRETS_DIR/usr/local/share/ab-image-meta/build-info.env"
-cp -a "$PROJECT_ROOT"/mkosi.sysupdate/*.transfer "$SECRETS_DIR/usr/lib/sysupdate.d/"
-
-EXTRA_ARGS=()
-if [[ "$PROFILE" == "devbox" ]]; then
-  echo "==> Preparing Liquorix repository metadata for devbox..."
-  prepare_liquorix_trees
-  EXTRA_ARGS+=("--sandbox-tree=$THIRD_PARTY_DIR/liquorix-sandbox:/")
-fi
-
-if [[ "$PROFILE" == "macbook" ]]; then
-  echo "==> Preparing t2linux and Apple firmware repository metadata for macbook..."
-  prepare_t2linux_trees
-  EXTRA_ARGS+=("--sandbox-tree=$THIRD_PARTY_DIR/t2linux-sandbox:/")
-  EXTRA_ARGS+=("--extra-tree=$THIRD_PARTY_DIR/t2linux-sandbox:/")
-  EXTRA_ARGS+=("--extra-tree=$PROJECT_ROOT/third-party/snd_hda_macbookpro:/usr/local/src/snd_hda_macbookpro")
-fi
-
-if [[ -n "$HOST" ]]; then
-  HOST_DIR="hosts/$HOST"
-  echo "==> Including host-specific config for: $HOST"
-  [[ -d "$HOST_DIR/mkosi.conf.d" ]] && EXTRA_ARGS+=("--include=$HOST_DIR/mkosi.conf.d")
-  [[ -d "$HOST_DIR/mkosi.extra" ]] && EXTRA_ARGS+=("--extra-tree=$HOST_DIR/mkosi.extra:/")
-fi
-
-CHECKSUM_FILE=".config-checksum"
-CHECKSUM_INPUTS=(
-  mkosi.conf
-  mkosi.conf.d
-  mkosi.profiles
-  mkosi.build
-  mkosi.finalize
-  mkosi.prepare
-  mkosi.extra
-  mkosi.sysupdate
-  deploy.repart
-  hosts
-  third-party
-  docs
-  scripts
-  ansible
-  .users.json
-  build.sh
-  run.sh
-  clean.sh
-  mkosi.version
-  README.md
-)
-
-existing_inputs=()
-for path in "${CHECKSUM_INPUTS[@]}"; do
-  [[ -e "$path" ]] && existing_inputs+=("$path")
-done
-
-CURRENT_CHECKSUM="$({
-  for path in "${existing_inputs[@]}"; do
-    find "$path" -type f -print0
+  for path in "${inputs[@]}"; do
+    [[ -e "$path" ]] && existing+=("$path")
   done
-} | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
 
-if [[ -f "$CHECKSUM_FILE" ]]; then
-  OLD_CHECKSUM="$(cat "$CHECKSUM_FILE")"
-  if [[ "$CURRENT_CHECKSUM" != "$OLD_CHECKSUM" && -z "$MKOSI_FORCE" ]]; then
-    echo "==> Configuration changed. Automatically setting --force..."
-    MKOSI_FORCE="-f"
+  CURRENT_CHECKSUM="$({
+    for path in "${existing[@]}"; do
+      find "$path" -type f -print0
+    done
+  } | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
+}
+
+ensure_base_hostdeps() {
+  if ! ab_hostdeps_have_all_commands mkosi jq openssl sfdisk; then
+    ab_hostdeps_ensure_packages "build host prerequisites" mkosi jq openssl fdisk || exit 1
   fi
-fi
+  ab_hostdeps_ensure_commands "build host prerequisites" mkosi jq openssl sfdisk || exit 1
+}
+
+ensure_profile_hostdeps() {
+  local profile="$1"
+
+  ensure_base_hostdeps
+
+  if profile_needs_awesome "$profile"; then
+    if ! ab_hostdeps_have_all_commands curl; then
+      ab_hostdeps_ensure_packages "build host prerequisites for desktop profiles" curl || exit 1
+    fi
+    ab_hostdeps_ensure_commands "build host prerequisites for desktop profiles" curl || exit 1
+  fi
+
+  if profile_needs_macbook_audio "$profile"; then
+    if ! ab_hostdeps_have_all_commands gpg; then
+      ab_hostdeps_ensure_packages "build host prerequisites for macbook profile" gpg || exit 1
+    fi
+    ab_hostdeps_ensure_commands "build host prerequisites for macbook profile" gpg || exit 1
+  fi
+}
+
+ensure_managed_sources_once() {
+  local mode="$1"
+  local needs_any=false
+  local target profile host missing=false
+
+  for target in "${BUILD_TARGETS[@]}"; do
+    profile="${target%%|*}"
+    host="${target#*|}"
+    if profile_needs_managed_third_party "$profile"; then
+      needs_any=true
+      break
+    fi
+  done
+
+  [[ "$needs_any" == true ]] || return 0
+
+  if [[ "$mode" == "fresh" ]]; then
+    echo "==> Refreshing managed third-party sources from clean clones..."
+    "$PROJECT_ROOT/update-3rd-party-deps.sh" --fresh
+    return 0
+  fi
+
+  for target in "${BUILD_TARGETS[@]}"; do
+    profile="${target%%|*}"
+    host="${target#*|}"
+    if profile_needs_awesome "$profile" && [[ ! -f "$PROJECT_ROOT/third-party/awesome/CMakeLists.txt" ]]; then
+      missing=true
+    fi
+    if profile_needs_macbook_audio "$profile" && [[ ! -f "$PROJECT_ROOT/third-party/snd_hda_macbookpro/install.cirrus.driver.sh" ]]; then
+      missing=true
+    fi
+  done
+
+  if [[ "$missing" == true ]]; then
+    echo "==> Bootstrapping managed third-party sources..."
+    "$PROJECT_ROOT/update-3rd-party-deps.sh"
+  fi
+}
 
 find_built_disk_image() {
   local expected="$1"
@@ -553,51 +543,227 @@ find_built_disk_image() {
   return 1
 }
 
-mkosi_args=("--profile=$PROFILE" "--image-id=$IMAGE_ID" "--image-version=$IMAGE_VERSION")
+build_target() {
+  local target_profile="$1"
+  local target_host="$2"
+  local target_image_id target_force
+  local host_dir checksum_file old_checksum built_image_path built_image_basename expected_image_path
+  local extra_args=() mkosi_args=()
 
-echo "==> Starting mkosi build (profile: $PROFILE, force: ${MKOSI_FORCE:-none})..."
-if [[ -n "$MKOSI_FORCE" ]]; then
-  # shellcheck disable=SC2206
-  force_args=($MKOSI_FORCE)
-  mkosi "${mkosi_args[@]}" "${force_args[@]}" "${EXTRA_ARGS[@]}" build
-else
-  mkosi "${mkosi_args[@]}" "${EXTRA_ARGS[@]}" build
-fi
+  PROFILE="$target_profile"
+  HOST="$target_host"
+  TARGET_ARCH=""
+  HOST_KERNEL_ARGS=""
+  target_force="$MKOSI_FORCE"
+  target_image_id="$(image_id_for_target "$BASE_IMAGE_ID" "$PROFILE" "$HOST")"
 
-EXPECTED_IMAGE_PATH="$PROJECT_ROOT/mkosi.output/${IMAGE_ID}_${IMAGE_VERSION}.raw"
-BUILT_IMAGE_PATH="$(find_built_disk_image "$EXPECTED_IMAGE_PATH" || true)"
-if [[ -z "$BUILT_IMAGE_PATH" ]]; then
-  echo "ERROR: unable to locate built disk image in mkosi.output/" >&2
+  ensure_profile_hostdeps "$PROFILE"
+
+  if [[ -n "$HOST" && ! -d "$PROJECT_ROOT/hosts/$HOST" ]]; then
+    echo "ERROR: host directory hosts/$HOST not found" >&2
+    exit 1
+  fi
+
+  if profile_needs_awesome "$PROFILE" && [[ ! -f "$PROJECT_ROOT/third-party/awesome/CMakeLists.txt" ]]; then
+    echo "ERROR: desktop profiles require third-party/awesome" >&2
+    echo "Run ./update-3rd-party-deps.sh or ./build.sh --force-rebuild ..." >&2
+    exit 1
+  fi
+
+  if profile_needs_macbook_audio "$PROFILE" && [[ ! -f "$PROJECT_ROOT/third-party/snd_hda_macbookpro/install.cirrus.driver.sh" ]]; then
+    echo "ERROR: macbook profile requires third-party/snd_hda_macbookpro" >&2
+    echo "Run ./update-3rd-party-deps.sh or ./build.sh --force-rebuild ..." >&2
+    exit 1
+  fi
+
+  read_architecture_from_configs
+  read_host_kernel_args
+
+  echo "==> Preparing first-boot provisioning data for profile=$PROFILE${HOST:+ host=$HOST}..."
+  echo "==> Host UID/GID sync for matching user '$HOST_USER_NAME': $SYNC_HOST_IDS ($HOST_UID:$HOST_GID $HOST_PRIMARY_GROUP)"
+  echo "==> Image identity: $target_image_id version $IMAGE_VERSION arch $TARGET_ARCH"
+  rm -rf "$SECRETS_DIR"
+  install -d -m 0755 \
+    "$SECRETS_DIR/usr/local/etc" \
+    "$SECRETS_DIR/usr/local/share/ab-image-meta" \
+    "$SECRETS_DIR/usr/lib/sysupdate.d"
+  render_users_conf "$SECRETS_DIR/usr/local/etc/users.conf"
+  chmod 0600 "$SECRETS_DIR/usr/local/etc/users.conf"
+  render_build_info "$SECRETS_DIR/usr/local/share/ab-image-meta/build-info.env" "$target_image_id" "$IMAGE_VERSION" "$TARGET_ARCH" "$HOST_KERNEL_ARGS"
+  cp -a "$PROJECT_ROOT"/mkosi.sysupdate/*.transfer "$SECRETS_DIR/usr/lib/sysupdate.d/"
+
+  if [[ "$PROFILE" == "devbox" ]]; then
+    echo "==> Preparing Liquorix repository metadata for devbox..."
+    prepare_liquorix_trees
+    extra_args+=("--sandbox-tree=$THIRD_PARTY_DIR/liquorix-sandbox:/")
+  fi
+
+  if [[ "$PROFILE" == "macbook" ]]; then
+    echo "==> Preparing t2linux and Apple firmware repository metadata for macbook..."
+    prepare_t2linux_trees
+    extra_args+=("--sandbox-tree=$THIRD_PARTY_DIR/t2linux-sandbox:/")
+    extra_args+=("--extra-tree=$THIRD_PARTY_DIR/t2linux-sandbox:/")
+    extra_args+=("--extra-tree=$PROJECT_ROOT/third-party/snd_hda_macbookpro:/usr/local/src/snd_hda_macbookpro")
+  fi
+
+  if [[ -n "$HOST" ]]; then
+    host_dir="hosts/$HOST"
+    echo "==> Including host-specific config for: $HOST"
+    [[ -d "$host_dir/mkosi.conf.d" ]] && extra_args+=("--include=$host_dir/mkosi.conf.d")
+    [[ -d "$host_dir/mkosi.extra" ]] && extra_args+=("--extra-tree=$host_dir/mkosi.extra:/")
+  fi
+
+  checksum_file="$PROJECT_ROOT/.config-checksum"
+  if [[ -f "$checksum_file" && -z "$target_force" ]]; then
+    old_checksum="$(cat "$checksum_file")"
+    if [[ "$CURRENT_CHECKSUM" != "$old_checksum" ]]; then
+      echo "==> Configuration changed. Automatically setting --force for this target..."
+      target_force="-f"
+    fi
+  fi
+
+  mkosi_args=("--profile=$PROFILE" "--image-id=$target_image_id" "--image-version=$IMAGE_VERSION")
+
+  echo "==> Starting mkosi build (profile: $PROFILE${HOST:+, host: $HOST}, force: ${target_force:-none})..."
+  if [[ -n "$target_force" ]]; then
+    # shellcheck disable=SC2206
+    local force_args=($target_force)
+    mkosi "${mkosi_args[@]}" "${force_args[@]}" "${extra_args[@]}" build
+  else
+    mkosi "${mkosi_args[@]}" "${extra_args[@]}" build
+  fi
+
+  expected_image_path="$PROJECT_ROOT/mkosi.output/${target_image_id}_${IMAGE_VERSION}.raw"
+  built_image_path="$(find_built_disk_image "$expected_image_path" || true)"
+  if [[ -z "$built_image_path" ]]; then
+    echo "ERROR: unable to locate built disk image in mkosi.output/ for $target_image_id" >&2
+    exit 1
+  fi
+
+  built_image_basename="$(basename "$built_image_path")"
+
+  echo "==> Exporting sysupdate artifacts for $target_image_id..."
+  "$PROJECT_ROOT/scripts/export-sysupdate-artifacts.sh" \
+    --image-id "$target_image_id" \
+    --version "$IMAGE_VERSION" \
+    --arch "$TARGET_ARCH" \
+    --image "$built_image_path" \
+    --output-dir "$PROJECT_ROOT/mkosi.output" \
+    --entry-title "Debian Provisioning ($PROFILE${HOST:+/$HOST})" \
+    --extra-kernel-args "$HOST_KERNEL_ARGS"
+
+  ab_buildmeta_write "$PROJECT_ROOT" \
+    AB_LAST_BUILD_IMAGE_ID "$target_image_id" \
+    AB_LAST_BUILD_IMAGE_VERSION "$IMAGE_VERSION" \
+    AB_LAST_BUILD_PROFILE "$PROFILE" \
+    AB_LAST_BUILD_HOST "$HOST" \
+    AB_LAST_BUILD_ARCH "$TARGET_ARCH" \
+    AB_LAST_BUILD_IMAGE_BASENAME "$built_image_basename"
+
+  ab_buildmeta_write_for "$PROJECT_ROOT" "$PROFILE" "$HOST" \
+    AB_LAST_BUILD_IMAGE_ID "$target_image_id" \
+    AB_LAST_BUILD_IMAGE_VERSION "$IMAGE_VERSION" \
+    AB_LAST_BUILD_PROFILE "$PROFILE" \
+    AB_LAST_BUILD_HOST "$HOST" \
+    AB_LAST_BUILD_ARCH "$TARGET_ARCH" \
+    AB_LAST_BUILD_IMAGE_BASENAME "$built_image_basename"
+}
+
+BUILD_TARGETS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile)
+      PROFILE="${2:?missing profile name}"
+      PROFILE_SET=true
+      shift 2
+      ;;
+    --host)
+      HOST="${2:?missing host name}"
+      HOST_SET=true
+      shift 2
+      ;;
+    --force)
+      MKOSI_FORCE="-f"
+      shift
+      ;;
+    --clean)
+      MKOSI_FORCE="-f -f"
+      shift
+      ;;
+    --force-rebuild)
+      FORCE_REBUILD=true
+      shift
+      ;;
+    --all)
+      BUILD_ALL=true
+      shift
+      ;;
+    --sync-host-ids=yes|--sync-host-ids=true)
+      SYNC_HOST_IDS=true
+      shift
+      ;;
+    --sync-host-ids=no|--sync-host-ids=false)
+      SYNC_HOST_IDS=false
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ "$BUILD_ALL" == true && ( "$PROFILE_SET" == true || "$HOST_SET" == true ) ]]; then
+  echo "ERROR: --all cannot be combined with explicit --profile or --host" >&2
   exit 1
 fi
 
-BUILT_IMAGE_BASENAME="$(basename "$BUILT_IMAGE_PATH")"
+cd "$PROJECT_ROOT"
+mkdir -p mkosi.output
 
-echo "==> Exporting sysupdate artifacts..."
-"$PROJECT_ROOT/scripts/export-sysupdate-artifacts.sh" \
-  --image-id "$IMAGE_ID" \
-  --version "$IMAGE_VERSION" \
-  --arch "$TARGET_ARCH" \
-  --image "$BUILT_IMAGE_PATH" \
-  --output-dir "$PROJECT_ROOT/mkosi.output" \
-  --entry-title "Debian Provisioning" \
-  --extra-kernel-args "$HOST_KERNEL_ARGS"
+if [[ ! -f "$USERS_FILE" ]]; then
+  echo "WARNING: $USERS_FILE missing. Creating from sample..."
+  cp "$USERS_SAMPLE" "$USERS_FILE"
+  echo "IMPORTANT: edit $USERS_FILE and set your passwords before building."
+  exit 1
+fi
 
-ab_buildmeta_write "$PROJECT_ROOT" \
-  AB_LAST_BUILD_IMAGE_ID "$IMAGE_ID" \
-  AB_LAST_BUILD_IMAGE_VERSION "$IMAGE_VERSION" \
-  AB_LAST_BUILD_PROFILE "$PROFILE" \
-  AB_LAST_BUILD_HOST "$HOST" \
-  AB_LAST_BUILD_ARCH "$TARGET_ARCH" \
-  AB_LAST_BUILD_IMAGE_BASENAME "$BUILT_IMAGE_BASENAME"
+ensure_base_hostdeps
 
-ab_buildmeta_write_for "$PROJECT_ROOT" "$PROFILE" "$HOST" \
-  AB_LAST_BUILD_IMAGE_ID "$IMAGE_ID" \
-  AB_LAST_BUILD_IMAGE_VERSION "$IMAGE_VERSION" \
-  AB_LAST_BUILD_PROFILE "$PROFILE" \
-  AB_LAST_BUILD_HOST "$HOST" \
-  AB_LAST_BUILD_ARCH "$TARGET_ARCH" \
-  AB_LAST_BUILD_IMAGE_BASENAME "$BUILT_IMAGE_BASENAME"
+if [[ "$BUILD_ALL" == true ]]; then
+  BUILD_TARGETS=(
+    "devbox|"
+    "devbox|evox2"
+    "server|cloudbox"
+    "macbook|macbookpro13-2019-t2"
+  )
+else
+  BUILD_TARGETS=("$PROFILE|$HOST")
+fi
 
-echo "$CURRENT_CHECKSUM" > "$CHECKSUM_FILE"
+if [[ "$FORCE_REBUILD" == true ]]; then
+  echo "==> Force rebuild requested. Cleaning generated build state first..."
+  "$PROJECT_ROOT/clean.sh" --all
+  if [[ -z "$MKOSI_FORCE" ]]; then
+    MKOSI_FORCE="-f"
+  fi
+  ensure_managed_sources_once fresh
+else
+  ensure_managed_sources_once normal
+fi
+
+IMAGE_VERSION="${AB_IMAGE_VERSION:-$($PROJECT_ROOT/mkosi.version)}"
+compute_config_checksum
+
+for target in "${BUILD_TARGETS[@]}"; do
+  build_target "${target%%|*}" "${target#*|}"
+done
+
+echo "$CURRENT_CHECKSUM" > "$PROJECT_ROOT/.config-checksum"
 echo "==> Build complete. Artifacts are in mkosi.output/"

@@ -108,7 +108,7 @@ build_macbook_cs8409_driver() {
     audio_src="$SRCDIR/third-party/snd_hda_macbookpro"
     [[ -f "$audio_src/install.cirrus.driver.sh" ]] || return 0
 
-    target_kernel="$({ find /lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null || true; } | grep 't2' | sort -V | tail -n1)"
+    target_kernel="$(find /lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | awk '/t2/ { print }' | sort -V | tail -n1 || true)"
     if [[ -z "$target_kernel" ]]; then
         echo "==> [BUILD] no t2 kernel detected in /lib/modules; skipping CS8409 driver overlay"
         return 0
