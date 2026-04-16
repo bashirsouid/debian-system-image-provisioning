@@ -42,11 +42,10 @@ Options:
   --force-rebuild          clean all generated state, refresh managed third-party
                            checkouts from clean clones, then rebuild
   --all                    build the standard target matrix in one invocation:
-                             devbox                 -> devbox_<version>.raw
-                             devbox --host evox2   -> evox2_<version>.raw
-                             server --host cloudbox -> cloudbox_<version>.raw
+                             devbox
+                             devbox --host evox2
+                             server --host cloudbox
                              macbook --host macbookpro13-2019-t2
-                                                   -> macbookpro13-2019-t2_<version>.raw
   --sync-host-ids=yes|no   when username matches the invoking host user,
                            copy that user's uid/gid/group into the image
 USAGE
@@ -375,6 +374,28 @@ render_build_info() {
     AB_HOST_KERNEL_ARGS "$host_kernel_args"
 }
 
+render_sysupdate_transfers() {
+  local output_dir="$1"
+  local image_id="$2"
+  local src dest image_id_escaped
+
+  install -d -m 0755 "$output_dir"
+  image_id_escaped="$(printf '%s' "$image_id" | sed 's/[\/&]/\\&/g')"
+
+  shopt -s nullglob
+  local transfers=("$PROJECT_ROOT"/mkosi.sysupdate/*.transfer)
+  shopt -u nullglob
+  (( ${#transfers[@]} > 0 )) || {
+    echo "ERROR: no *.transfer files found in $PROJECT_ROOT/mkosi.sysupdate" >&2
+    exit 1
+  }
+
+  for src in "${transfers[@]}"; do
+    dest="$output_dir/$(basename "$src")"
+    sed "s/debian-provisioning/${image_id_escaped}/g" "$src" > "$dest"
+  done
+}
+
 profile_needs_awesome() {
   [[ "$1" == "devbox" || "$1" == "macbook" ]]
 }
@@ -395,35 +416,18 @@ image_id_for_target() {
   local base="$1"
   local profile="$2"
   local host="$3"
-  local prefix=""
 
-  if [[ -n "$host" ]]; then
-    prefix="$(sanitize_image_component "$host")"
-  elif [[ -n "$profile" ]]; then
-    prefix="$(sanitize_image_component "$profile")"
-  fi
-
-  if [[ -z "$prefix" ]]; then
-    printf '%s\n' "$(sanitize_image_component "$base")"
+  if [[ "$BUILD_ALL" == false ]]; then
+    printf '%s\n' "$base"
     return 0
   fi
 
-  if [[ -n "$base" && "$base" != "debian-provisioning" ]]; then
-    printf '%s-%s\n' "$prefix" "$(sanitize_image_component "$base")"
-  else
-    printf '%s\n' "$prefix"
-  fi
-}
-
-entry_title_for_target() {
-  local profile="$1"
-  local host="$2"
-
+  local suffix
+  suffix="$(sanitize_image_component "$profile")"
   if [[ -n "$host" ]]; then
-    printf '%s (%s)\n' "$host" "$profile"
-  else
-    printf '%s\n' "$profile"
+    suffix+="-$(sanitize_image_component "$host")"
   fi
+  printf '%s-%s\n' "$base" "$suffix"
 }
 
 compute_config_checksum() {
@@ -608,7 +612,7 @@ build_target() {
   render_users_conf "$SECRETS_DIR/usr/local/etc/users.conf"
   chmod 0600 "$SECRETS_DIR/usr/local/etc/users.conf"
   render_build_info "$SECRETS_DIR/usr/local/share/ab-image-meta/build-info.env" "$target_image_id" "$IMAGE_VERSION" "$TARGET_ARCH" "$HOST_KERNEL_ARGS"
-  cp -a "$PROJECT_ROOT"/mkosi.sysupdate/*.transfer "$SECRETS_DIR/usr/lib/sysupdate.d/"
+  render_sysupdate_transfers "$SECRETS_DIR/usr/lib/sysupdate.d" "$target_image_id"
 
   if [[ "$PROFILE" == "devbox" ]]; then
     echo "==> Preparing Liquorix repository metadata for devbox..."
@@ -667,7 +671,7 @@ build_target() {
     --arch "$TARGET_ARCH" \
     --image "$built_image_path" \
     --output-dir "$PROJECT_ROOT/mkosi.output" \
-    --entry-title "$(entry_title_for_target "$PROFILE" "$HOST")" \
+    --entry-title "Debian Provisioning ($PROFILE${HOST:+/$HOST})" \
     --extra-kernel-args "$HOST_KERNEL_ARGS"
 
   ab_buildmeta_write "$PROJECT_ROOT" \

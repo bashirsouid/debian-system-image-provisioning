@@ -23,8 +23,6 @@ IMAGE_ID=""
 IMAGE_VERSION=""
 IMAGE_ARCH=""
 IMAGE_BASENAME=""
-IMAGE_ID_OVERRIDE=""
-IMAGE_VERSION_OVERRIDE=""
 
 usage() {
   cat <<'USAGE'
@@ -44,8 +42,6 @@ Options:
                         (default: /root/ab-installer)
   --profile NAME        load build metadata for a specific profile
   --host NAME           load build metadata for a specific host overlay
-  --image-id ID         override the selected build image id
-  --image-version VER   override the selected build image version
   --loader-timeout N    loader menu timeout to write to the USB ESP (default: 3)
   --usb-esp-size SIZE   override the ESP size used for the USB bootstrap
   --usb-root-size SIZE  override the per-slot root size used for the USB bootstrap
@@ -68,6 +64,7 @@ cleanup() {
   [[ -n "${ROOT_MOUNT:-}" ]] && mountpoint -q "$ROOT_MOUNT" && umount "$ROOT_MOUNT"
   [[ -n "${ROOT_MOUNT:-}" && -d "$ROOT_MOUNT" ]] && rmdir "$ROOT_MOUNT"
   [[ -n "${TEMP_REPART_DIR:-}" && -d "$TEMP_REPART_DIR" ]] && rm -rf "$TEMP_REPART_DIR"
+  [[ -n "${TEMP_DEFINITIONS_DIR:-}" && -d "$TEMP_DEFINITIONS_DIR" ]] && rm -rf "$TEMP_DEFINITIONS_DIR"
   if [[ -n "${LOOPDEV:-}" ]]; then
     losetup -d "$LOOPDEV" >/dev/null 2>&1 || true
   fi
@@ -86,18 +83,40 @@ load_build_metadata() {
   IMAGE_ARCH="${AB_LAST_BUILD_ARCH:-}"
   IMAGE_BASENAME="${AB_LAST_BUILD_IMAGE_BASENAME:-}"
 
-  if [[ -n "$IMAGE_ID_OVERRIDE" ]]; then
-    IMAGE_ID="$IMAGE_ID_OVERRIDE"
-  fi
-  if [[ -n "$IMAGE_VERSION_OVERRIDE" ]]; then
-    IMAGE_VERSION="$IMAGE_VERSION_OVERRIDE"
-    IMAGE_BASENAME="${IMAGE_ID}_${IMAGE_VERSION}.raw"
-  fi
-
   [[ -n "$IMAGE_ID" ]] || die "saved build metadata is missing AB_LAST_BUILD_IMAGE_ID"
   [[ -n "$IMAGE_VERSION" ]] || die "saved build metadata is missing AB_LAST_BUILD_IMAGE_VERSION"
   [[ -n "$IMAGE_ARCH" ]] || die "saved build metadata is missing AB_LAST_BUILD_ARCH"
   [[ -n "$IMAGE_BASENAME" ]] || die "saved build metadata is missing AB_LAST_BUILD_IMAGE_BASENAME"
+}
+
+prepare_sysupdate_definitions_dir() {
+  local src dest image_id_escaped
+
+  [[ -d "$DEFINITIONS_DIR" ]] || die "definitions directory not found: $DEFINITIONS_DIR"
+  TEMP_DEFINITIONS_DIR="$(mktemp -d /tmp/ab-sysupdate-defs.XXXXXX)"
+  GENERATED_DEFINITIONS_DIR="$TEMP_DEFINITIONS_DIR"
+  image_id_escaped="$(printf '%s' "$IMAGE_ID" | sed 's/[\/&]/\\&/g')"
+
+  shopt -s nullglob
+  local matches=("$DEFINITIONS_DIR"/*.transfer)
+  shopt -u nullglob
+  (( ${#matches[@]} > 0 )) || die "no *.transfer files found in $DEFINITIONS_DIR"
+
+  for src in "${matches[@]}"; do
+    dest="$TEMP_DEFINITIONS_DIR/$(basename "$src")"
+    sed "s/debian-provisioning/${image_id_escaped}/g" "$src" > "$dest"
+  done
+}
+
+print_selected_build() {
+  local artifact_prefix="$IMAGE_ID""_""$IMAGE_VERSION""_""$IMAGE_ARCH"
+  echo "==> Selected build artifacts"
+  echo "    Profile:        ${PROFILE:-${AB_LAST_BUILD_PROFILE:-}}"
+  echo "    Host:           ${HOST:-${AB_LAST_BUILD_HOST:-}}"
+  echo "    Image id:       $IMAGE_ID"
+  echo "    Image version:  $IMAGE_VERSION"
+  echo "    Artifact prefix:$artifact_prefix"
+  echo "    Disk image:     $SOURCE_DIR/$IMAGE_BASENAME"
 }
 
 resolve_disk_device() {
@@ -158,7 +177,7 @@ required_bundle_files() {
     "$PROJECT_ROOT/scripts/sysupdate-local-update.sh" \
     "$PROJECT_ROOT/scripts/lib/host-deps.sh"
 
-  find "$PROJECT_ROOT/mkosi.sysupdate" -maxdepth 1 -type f -name '*.transfer' -print
+  find "${GENERATED_DEFINITIONS_DIR:-$PROJECT_ROOT/mkosi.sysupdate}" -maxdepth 1 -type f -name '*.transfer' -print
   find "$PROJECT_ROOT/deploy.repart" -maxdepth 1 -type f -name '*.conf' -print
 
   if [[ -f "$SOURCE_DIR/.latest-build.env" ]]; then
@@ -216,35 +235,32 @@ prepare_bootstrap_repart_dir() {
 
   TEMP_REPART_DIR="$(mktemp -d /tmp/ab-usb-repart.XXXXXX)"
   write_fixed_partition_conf "$TEMP_REPART_DIR/00-esp.conf" esp ESP "${USB_ESP_SIZE:-512M}" vfat
-  write_fixed_partition_conf "$TEMP_REPART_DIR/10-root-a.conf" root _empty "${USB_ROOT_SIZE:-8G}"
-  write_fixed_partition_conf "$TEMP_REPART_DIR/11-root-b.conf" root _empty "${USB_ROOT_SIZE:-8G}"
+  write_fixed_partition_conf "$TEMP_REPART_DIR/10-root-a.conf" root _empty "${USB_ROOT_SIZE:-8G}" ext4
+  write_fixed_partition_conf "$TEMP_REPART_DIR/11-root-b.conf" root _empty "${USB_ROOT_SIZE:-8G}" ext4
   BOOTSTRAP_REPART_DIR="$TEMP_REPART_DIR"
 }
 
-
-print_selected_build() {
-  local prefix="$IMAGE_ID""_""$IMAGE_VERSION""_""$IMAGE_ARCH"
-  echo "==> Selected build artifacts"
-  echo "    Profile:        ${PROFILE:-${AB_LAST_BUILD_PROFILE:-unknown}}"
-  echo "    Host:           ${HOST:-${AB_LAST_BUILD_HOST:-none}}"
-  echo "    Image id:       $IMAGE_ID"
-  echo "    Image version:  $IMAGE_VERSION"
-  echo "    Artifact prefix:$prefix"
-  echo "    Disk image:     $SOURCE_DIR/$IMAGE_BASENAME"
-}
-
 wait_for_seeded_root_partition() {
-  local part="" attempt
-  for attempt in $(seq 1 10); do
+  local part="" i
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm settle >/dev/null 2>&1 || true
+  fi
+  if command -v partprobe >/dev/null 2>&1; then
+    partprobe "$DISK_DEVICE" >/dev/null 2>&1 || true
+  fi
+  if command -v blockdev >/dev/null 2>&1; then
+    blockdev --rereadpt "$DISK_DEVICE" >/dev/null 2>&1 || true
+  fi
+  for i in $(seq 1 20); do
     part="$(find_seeded_root_partition || true)"
     if [[ -n "$part" ]]; then
       printf '%s\n' "$part"
       return 0
     fi
     if command -v udevadm >/dev/null 2>&1; then
-      udevadm settle || true
+      udevadm settle --timeout=5 >/dev/null 2>&1 || true
     fi
-    sleep 1
+    sleep 0.5
   done
   return 1
 }
@@ -270,7 +286,7 @@ copy_bundle() {
   copy_file_preserving_layout "$PROJECT_ROOT/scripts/lib/host-deps.sh" "$bundle_root/scripts/lib/host-deps.sh"
   chmod 0755 "$bundle_root/scripts/bootstrap-ab-disk.sh" "$bundle_root/scripts/live-usb-install.sh" "$bundle_root/scripts/sysupdate-local-update.sh"
 
-  cp -a "$PROJECT_ROOT/mkosi.sysupdate/." "$bundle_root/mkosi.sysupdate/"
+  cp -a "${GENERATED_DEFINITIONS_DIR:-$PROJECT_ROOT/mkosi.sysupdate}/." "$bundle_root/mkosi.sysupdate/"
   cp -a "$PROJECT_ROOT/deploy.repart/." "$bundle_root/deploy.repart/"
 
   local prefix="$IMAGE_ID""_""$IMAGE_VERSION""_""$IMAGE_ARCH"
@@ -353,14 +369,6 @@ while [[ $# -gt 0 ]]; do
       HOST="${2:?missing host name}"
       shift 2
       ;;
-    --image-id)
-      IMAGE_ID_OVERRIDE="${2:?missing image id}"
-      shift 2
-      ;;
-    --image-version)
-      IMAGE_VERSION_OVERRIDE="${2:?missing image version}"
-      shift 2
-      ;;
     --loader-timeout)
       LOADER_TIMEOUT="${2:?missing loader timeout}"
       shift 2
@@ -400,16 +408,21 @@ done
 if ! ab_hostdeps_have_all_commands systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df; then
   ab_hostdeps_ensure_packages "hardware test USB prerequisites" systemd-container systemd-repart systemd-boot-tools systemd-boot-efi dosfstools fdisk util-linux || exit 1
 fi
-ab_hostdeps_ensure_commands "hardware test USB prerequisites" systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df || exit 1
+ab_hostdeps_ensure_commands "hardware test USB prerequisites" systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df || {
+  echo "==> If this host still cannot provide systemd-sysupdate, use a newer Debian/systemd host for the native USB workflow." >&2
+  echo "==> Fast fallback for a hardware smoke test: write the built .raw image directly to the USB instead of using the native installer USB flow." >&2
+  exit 1
+}
 
 load_build_metadata
+prepare_sysupdate_definitions_dir
+print_selected_build
 need_cmd losetup
 need_cmd lsblk
 need_cmd mount
 need_cmd install
 need_cmd df
 
-print_selected_build
 [[ -f "$SOURCE_DIR/$IMAGE_BASENAME" ]] || die "built disk image not found: $SOURCE_DIR/$IMAGE_BASENAME"
 
 prepare_bootstrap_repart_dir
@@ -417,7 +430,7 @@ prepare_bootstrap_repart_dir
 bootstrap_args=(
   --target "$TARGET"
   --source-dir "$SOURCE_DIR"
-  --definitions "$DEFINITIONS_DIR"
+  --definitions "$GENERATED_DEFINITIONS_DIR"
   --repart-dir "$BOOTSTRAP_REPART_DIR"
   --loader-timeout "$LOADER_TIMEOUT"
 )
@@ -427,7 +440,7 @@ echo "==> Bootstrapping hardware test USB on $TARGET"
 "$PROJECT_ROOT/scripts/bootstrap-ab-disk.sh" "${bootstrap_args[@]}"
 
 resolve_disk_device
-ROOT_PART="$(wait_for_seeded_root_partition)" || die "unable to locate the seeded root partition on $TARGET"
+ROOT_PART="$(wait_for_seeded_root_partition)" || die "unable to locate the seeded root partition on $TARGET (the USB was bootstrapped, but the newly-seeded root partition did not appear in time)"
 ROOT_MOUNT="$(mktemp -d /tmp/ab-live-root.XXXXXX)"
 mount "$ROOT_PART" "$ROOT_MOUNT"
 
