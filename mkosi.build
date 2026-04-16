@@ -101,6 +101,44 @@ build_awesome_from_source() {
     echo "==> [BUILD] AwesomeWM source overlay installed successfully"
 }
 
+patch_macbook_driver_tree() {
+    local tree="$1"
+    local module_version="$2"
+
+    [[ -f "$tree/install.cirrus.driver.sh" ]] || {
+        echo "ERROR: missing install.cirrus.driver.sh under $tree" >&2
+        exit 1
+    }
+
+    echo "==> [BUILD] patching upstream installer to honor explicit -k kernel selection"
+    {
+        while IFS= read -r line; do
+            if [[ "$line" == 'UNAME=${1:-$(uname -r)}' ]]; then
+                printf '%s\n' 'if [[ -z "${UNAME:-}" ]]; then'
+                printf '%s\n' '    UNAME=${1:-$(uname -r)}'
+                printf '%s\n' 'fi'
+            else
+                printf '%s\n' "$line"
+            fi
+        done < "$tree/install.cirrus.driver.sh"
+    } > "$tree/install.cirrus.driver.sh.tmp"
+    mv "$tree/install.cirrus.driver.sh.tmp" "$tree/install.cirrus.driver.sh"
+
+    echo "==> [BUILD] patching DKMS metadata for newer kernels and GCC"
+    cat > "$tree/dkms.conf" <<EOF2
+PACKAGE_NAME="snd_hda_macbookpro"
+PACKAGE_VERSION="$module_version"
+PRE_BUILD="install.cirrus.driver.sh -k \$kernelver --dkms"
+MAKE="make KERNELRELEASE=\${kernelver} KDIR=/lib/modules/\${kernelver}/build M=\${dkms_tree}/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/build/build/hda CFLAGS_MODULE='-DAPPLE_PINSENSE_FIXUP -DAPPLE_CODECS -DCONFIG_SND_HDA_RECONFIG=1 -Wno-unused-variable -Wno-unused-function -Wno-error -Wno-incompatible-pointer-types'"
+BUILT_MODULE_NAME[0]="snd-hda-codec-cs8409"
+BUILT_MODULE_LOCATION[0]="build/hda/codecs/cirrus"
+DEST_MODULE_LOCATION[0]="/updates/codecs/cirrus"
+AUTOINSTALL="yes"
+EOF2
+
+    chmod +x "$tree/install.cirrus.driver.sh"
+}
+
 build_macbook_cs8409_driver() {
     local audio_src target_kernel repo_tree repo_list_dir repo_key_dir
     local module_path dkms_src module_name module_version
@@ -128,10 +166,11 @@ build_macbook_cs8409_driver() {
         cp -a "$repo_tree/etc/apt/trusted.gpg.d/." "$repo_key_dir/"
     fi
 
-    if [[ ! -d "/usr/src/linux-headers-$target_kernel" ]]; then
-        echo "==> [BUILD] installing matching kernel headers: linux-headers-$target_kernel"
+    if [[ ! -d "/usr/src/linux-headers-$target_kernel" ]] || ! command -v wget >/dev/null 2>&1 || ! command -v openssl >/dev/null 2>&1; then
+        echo "==> [BUILD] installing CS8409 build prerequisites for kernel $target_kernel"
         apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "linux-headers-$target_kernel"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            patch wget openssl ca-certificates xz-utils "linux-headers-$target_kernel"
     fi
 
     module_name="snd_hda_macbookpro"
@@ -142,11 +181,9 @@ build_macbook_cs8409_driver() {
     rm -rf "$dkms_src"
     mkdir -p "$dkms_src"
     cp -a "$audio_src/." "$dkms_src/"
+    patch_macbook_driver_tree "$dkms_src" "$module_version"
 
     pushd "$dkms_src" >/dev/null
-
-    echo "==> [BUILD] preparing DKMS source tree for kernel $target_kernel"
-    ./install.cirrus.driver.sh -k "$target_kernel" --dkms
 
     echo "==> [BUILD] removing any stale DKMS registrations for $module_name/$module_version"
     dkms remove -m "$module_name" -v "$module_version" --all >/dev/null 2>&1 || true

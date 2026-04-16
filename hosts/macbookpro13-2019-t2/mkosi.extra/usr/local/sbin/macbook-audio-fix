@@ -6,20 +6,63 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 kernel="$(uname -r)"
+module_name="snd_hda_macbookpro"
+module_version="0.1"
 source_dir="/usr/local/src/snd_hda_macbookpro"
-header_dir="/usr/src/linux-headers-$kernel"
+dkms_src="/usr/src/${module_name}-${module_version}"
 
 if [[ ! -d "$source_dir" || ! -f "$source_dir/install.cirrus.driver.sh" ]]; then
     echo "ERROR: bundled snd_hda_macbookpro source not found at $source_dir" >&2
     exit 1
 fi
 
+patch_driver_tree() {
+    local tree="$1"
+
+    {
+        while IFS= read -r line; do
+            if [[ "$line" == 'UNAME=${1:-$(uname -r)}' ]]; then
+                printf '%s\n' 'if [[ -z "${UNAME:-}" ]]; then'
+                printf '%s\n' '    UNAME=${1:-$(uname -r)}'
+                printf '%s\n' 'fi'
+            else
+                printf '%s\n' "$line"
+            fi
+        done < "$tree/install.cirrus.driver.sh"
+    } > "$tree/install.cirrus.driver.sh.tmp"
+    mv "$tree/install.cirrus.driver.sh.tmp" "$tree/install.cirrus.driver.sh"
+
+    cat > "$tree/dkms.conf" <<EOF2
+PACKAGE_NAME="$module_name"
+PACKAGE_VERSION="$module_version"
+PRE_BUILD="install.cirrus.driver.sh -k \$kernelver --dkms"
+MAKE="make KERNELRELEASE=\${kernelver} KDIR=/lib/modules/\${kernelver}/build M=\${dkms_tree}/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/build/build/hda CFLAGS_MODULE='-DAPPLE_PINSENSE_FIXUP -DAPPLE_CODECS -DCONFIG_SND_HDA_RECONFIG=1 -Wno-unused-variable -Wno-unused-function -Wno-error -Wno-incompatible-pointer-types'"
+BUILT_MODULE_NAME[0]="snd-hda-codec-cs8409"
+BUILT_MODULE_LOCATION[0]="build/hda/codecs/cirrus"
+DEST_MODULE_LOCATION[0]="/updates/codecs/cirrus"
+AUTOINSTALL="yes"
+EOF2
+
+    chmod +x "$tree/install.cirrus.driver.sh"
+}
+
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    dkms build-essential patch wget "linux-headers-$kernel"
+    dkms build-essential patch wget openssl ca-certificates xz-utils \
+    "linux-headers-$kernel"
 
-pushd "$source_dir" >/dev/null
-./install.cirrus.driver.sh -k "$kernel" -i
+rm -rf "$dkms_src"
+mkdir -p "$dkms_src"
+cp -a "$source_dir/." "$dkms_src/"
+patch_driver_tree "$dkms_src"
+
+pushd "$dkms_src" >/dev/null
+
+dkms remove -m "$module_name" -v "$module_version" --all >/dev/null 2>&1 || true
+dkms add -m "$module_name" -v "$module_version"
+dkms build -m "$module_name" -v "$module_version" -k "$kernel" --force
+dkms install -m "$module_name" -v "$module_version" -k "$kernel" --force
+
 popd >/dev/null
 
 depmod -a
