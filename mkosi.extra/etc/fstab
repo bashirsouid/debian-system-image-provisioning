@@ -1,0 +1,4 @@
+# Optional persistent data partition shared across retained versions.
+# If a GPT partition labeled DATA exists, mount it at /mnt/data. The nofail
+# flag keeps systems without a DATA partition bootable.
+PARTLABEL=DATA /mnt/data ext4 defaults,nofail,x-systemd.device-timeout=10s 0 2

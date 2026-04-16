@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+modprobe_bin="$(command -v modprobe 2>/dev/null || true)"
+rmmod_bin="$(command -v rmmod 2>/dev/null || true)"
+[[ -n "$modprobe_bin" ]] || modprobe_bin=/usr/sbin/modprobe
+[[ -n "$rmmod_bin" ]] || rmmod_bin=/usr/sbin/rmmod
+
+maybe_modprobe() {
+    "$modprobe_bin" "$1" >/dev/null 2>&1 || "$modprobe_bin" "${1//-/_}" >/dev/null 2>&1 || true
+}
+
+maybe_modprobe_remove() {
+    "$modprobe_bin" -r "$1" >/dev/null 2>&1 || "$modprobe_bin" -r "${1//-/_}" >/dev/null 2>&1 || true
+}
+
+maybe_force_rmmod() {
+    "$rmmod_bin" -f "$1" >/dev/null 2>&1 || "$rmmod_bin" -f "${1//-/_}" >/dev/null 2>&1 || true
+}
+
+case "${1:-}" in
+    pre)
+        maybe_modprobe_remove brcmfmac_wcc
+        maybe_modprobe_remove brcmfmac
+        maybe_force_rmmod apple-bce
+        maybe_force_rmmod hid-appletb-kbd
+        maybe_force_rmmod hid-appletb-bl
+        ;;
+    post)
+        sleep 2
+        maybe_modprobe apple-bce
+        sleep 2
+        maybe_modprobe hid-appletb-bl
+        maybe_modprobe hid-appletb-kbd
+        maybe_modprobe brcmfmac
+        maybe_modprobe brcmfmac_wcc
+        ;;
+    *)
+        echo "usage: $0 pre|post" >&2
+        exit 2
+        ;;
+esac

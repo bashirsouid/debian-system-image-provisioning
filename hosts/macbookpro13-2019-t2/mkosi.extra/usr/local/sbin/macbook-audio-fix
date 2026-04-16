@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then
+    exec sudo "$0" "$@"
+fi
+
+kernel="$(uname -r)"
+source_dir="/usr/local/src/snd_hda_macbookpro"
+header_dir="/usr/src/linux-headers-$kernel"
+
+if [[ ! -d "$source_dir" || ! -f "$source_dir/install.cirrus.driver.sh" ]]; then
+    echo "ERROR: bundled snd_hda_macbookpro source not found at $source_dir" >&2
+    exit 1
+fi
+
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    dkms build-essential patch wget "linux-headers-$kernel"
+
+pushd "$source_dir" >/dev/null
+./install.cirrus.driver.sh -k "$kernel" -i
+popd >/dev/null
+
+depmod -a
+
+echo
+modinfo -F filename snd_hda_codec_cs8409 2>/dev/null || true
+echo
+echo "If sound is still missing immediately after this run, reboot once and test with:"
+echo "  speaker-test -t wav -l 1"

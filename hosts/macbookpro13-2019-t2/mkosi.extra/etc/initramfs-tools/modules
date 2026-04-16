@@ -1,0 +1,4 @@
+# Required modules for getting the built-in Apple T2 keyboard/bridge devices online early.
+snd
+snd_pcm
+apple-bce

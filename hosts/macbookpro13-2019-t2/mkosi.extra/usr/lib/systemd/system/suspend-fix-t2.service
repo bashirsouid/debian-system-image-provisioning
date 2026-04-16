@@ -1,0 +1,13 @@
+[Unit]
+Description=Reload Apple T2 bridge and Broadcom modules across suspend/resume
+Before=sleep.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/t2-suspend-workaround pre
+ExecStop=/usr/local/libexec/t2-suspend-workaround post
+
+[Install]
+WantedBy=sleep.target
