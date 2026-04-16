@@ -2,7 +2,7 @@
 
 ab_hostdeps_normalize_path() {
   local dir
-  for dir in /usr/local/sbin /usr/sbin /sbin; do
+  for dir in /usr/local/sbin /usr/sbin /sbin /usr/lib/systemd /lib/systemd; do
     case ":$PATH:" in
       *":$dir:"*) ;;
       *) PATH="$PATH:$dir" ;;
@@ -36,10 +36,48 @@ ab_hostdeps_auto_install_enabled() {
   esac
 }
 
+ab_hostdeps_resolve_command() {
+
+  local cmd="$1"
+  local candidate
+
+  if command -v "$cmd" >/dev/null 2>&1; then
+    command -v "$cmd"
+    return 0
+  fi
+
+  for candidate in \
+    "/usr/bin/$cmd" \
+    "/usr/sbin/$cmd" \
+    "/usr/lib/systemd/$cmd" \
+    "/lib/systemd/$cmd"
+  do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+ab_hostdeps_have_package_installed() {
+
+  local pkg="$1"
+  local status
+
+  if ! ab_hostdeps_is_debian_like || ! command -v dpkg-query >/dev/null 2>&1; then
+    return 1
+  fi
+
+  status="$(dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null || true)"
+  [[ "$status" == "install ok installed" ]]
+}
+
 ab_hostdeps_have_all_commands() {
   local cmd
   for cmd in "$@"; do
-    command -v "$cmd" >/dev/null 2>&1 || return 1
+    ab_hostdeps_resolve_command "$cmd" >/dev/null 2>&1 || return 1
   done
   return 0
 }
@@ -164,11 +202,17 @@ ab_hostdeps_ensure_commands() {
   local missing=()
   local cmd
   for cmd in "$@"; do
-    command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+    ab_hostdeps_resolve_command "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
   done
 
   if [[ ${#missing[@]} -gt 0 ]]; then
     ab_hostdeps_log "$context: missing required commands: ${missing[*]}"
+
+    if [[ " ${missing[*]} " == *" systemd-sysupdate "* ]] && ab_hostdeps_have_package_installed systemd-container; then
+      ab_hostdeps_log "$context: systemd-container is installed but systemd-sysupdate is still unavailable."
+      ab_hostdeps_log "$context: this usually means the host systemd stack is older than the native sysupdate workflow expects, or the binary lives outside the default PATH."
+    fi
+
     return 1
   fi
 

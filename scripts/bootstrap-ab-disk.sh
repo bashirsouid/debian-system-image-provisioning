@@ -204,9 +204,40 @@ need_cmd mount
 need_cmd losetup
 need_cmd install
 
+preview_repart_layout() {
+  echo "==> Planned partition layout for $TARGET"
+  systemd-repart --dry-run=yes --empty=force --definitions="$REPART_DIR" "$TARGET_FOR_SYSUPDATE" || true
+}
+
+wait_for_esp_partition() {
+  local part="" i
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm settle >/dev/null 2>&1 || true
+  fi
+  if command -v partprobe >/dev/null 2>&1; then
+    partprobe "$DISK_DEVICE" >/dev/null 2>&1 || true
+  fi
+  if command -v blockdev >/dev/null 2>&1; then
+    blockdev --rereadpt "$DISK_DEVICE" >/dev/null 2>&1 || true
+  fi
+  for i in $(seq 1 20); do
+    part="$(find_esp_partition || true)"
+    if [[ -n "$part" ]]; then
+      printf '%s\n' "$part"
+      return 0
+    fi
+    if command -v udevadm >/dev/null 2>&1; then
+      udevadm settle --timeout=5 >/dev/null 2>&1 || true
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
 ensure_safe_target
-confirm_or_abort
 resolve_disk_device
+preview_repart_layout
+confirm_or_abort
 
 echo "==> Repartitioning $TARGET with systemd-repart"
 systemd-repart --dry-run=no --empty=force --definitions="$REPART_DIR" "$TARGET_FOR_SYSUPDATE"
@@ -217,7 +248,7 @@ if [[ -n "${LOOPDEV:-}" ]]; then
   DISK_DEVICE="$LOOPDEV"
 fi
 
-ESP_PART="$(find_esp_partition)" || die "unable to locate ESP partition after repart"
+ESP_PART="$(wait_for_esp_partition)" || die "unable to locate ESP partition after repart (partition table was written, but the ESP node did not appear in time)"
 ESP_MOUNT="$(mktemp -d /tmp/ab-esp.XXXXXX)"
 mount "$ESP_PART" "$ESP_MOUNT"
 

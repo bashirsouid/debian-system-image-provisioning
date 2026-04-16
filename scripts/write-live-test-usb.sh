@@ -209,6 +209,31 @@ prepare_bootstrap_repart_dir() {
   BOOTSTRAP_REPART_DIR="$TEMP_REPART_DIR"
 }
 
+wait_for_seeded_root_partition() {
+  local part="" i
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm settle >/dev/null 2>&1 || true
+  fi
+  if command -v partprobe >/dev/null 2>&1; then
+    partprobe "$DISK_DEVICE" >/dev/null 2>&1 || true
+  fi
+  if command -v blockdev >/dev/null 2>&1; then
+    blockdev --rereadpt "$DISK_DEVICE" >/dev/null 2>&1 || true
+  fi
+  for i in $(seq 1 20); do
+    part="$(find_seeded_root_partition || true)"
+    if [[ -n "$part" ]]; then
+      printf '%s\n' "$part"
+      return 0
+    fi
+    if command -v udevadm >/dev/null 2>&1; then
+      udevadm settle --timeout=5 >/dev/null 2>&1 || true
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
 copy_bundle() {
   local bundle_root="$ROOT_MOUNT$BUNDLE_DIR"
   local required avail headroom
@@ -352,7 +377,11 @@ done
 if ! ab_hostdeps_have_all_commands systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df; then
   ab_hostdeps_ensure_packages "hardware test USB prerequisites" systemd-container systemd-repart systemd-boot-tools systemd-boot-efi dosfstools fdisk util-linux || exit 1
 fi
-ab_hostdeps_ensure_commands "hardware test USB prerequisites" systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df || exit 1
+ab_hostdeps_ensure_commands "hardware test USB prerequisites" systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df || {
+  echo "==> If this host still cannot provide systemd-sysupdate, use a newer Debian/systemd host for the native USB workflow." >&2
+  echo "==> Fast fallback for a hardware smoke test: write the built .raw image directly to the USB instead of using the native installer USB flow." >&2
+  exit 1
+}
 
 load_build_metadata
 need_cmd losetup
@@ -378,7 +407,7 @@ echo "==> Bootstrapping hardware test USB on $TARGET"
 "$PROJECT_ROOT/scripts/bootstrap-ab-disk.sh" "${bootstrap_args[@]}"
 
 resolve_disk_device
-ROOT_PART="$(find_seeded_root_partition)" || die "unable to locate the seeded root partition on $TARGET"
+ROOT_PART="$(wait_for_seeded_root_partition)" || die "unable to locate the seeded root partition on $TARGET (the USB was bootstrapped, but the newly-seeded root partition did not appear in time)"
 ROOT_MOUNT="$(mktemp -d /tmp/ab-live-root.XXXXXX)"
 mount "$ROOT_PART" "$ROOT_MOUNT"
 

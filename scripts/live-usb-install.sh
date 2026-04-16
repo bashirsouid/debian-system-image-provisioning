@@ -402,7 +402,11 @@ done
 if ! ab_hostdeps_have_all_commands systemd-sysupdate systemd-repart bootctl lsblk findmnt; then
   ab_hostdeps_ensure_packages "live USB install prerequisites" systemd-container systemd-repart systemd-boot-tools systemd-boot-efi dosfstools fdisk util-linux || exit 1
 fi
-ab_hostdeps_ensure_commands "live USB install prerequisites" systemd-sysupdate systemd-repart bootctl lsblk findmnt || exit 1
+ab_hostdeps_ensure_commands "live USB install prerequisites" systemd-sysupdate systemd-repart bootctl lsblk findmnt || {
+  echo "==> The live USB installer requires systemd-sysupdate on the running USB system." >&2
+  echo "==> If you are seeing this on the build host, you are running the wrong script: use write-live-test-usb.sh on the host and live-usb-install.sh only after booting from that USB." >&2
+  exit 1
+}
 
 need_cmd systemd-sysupdate
 need_cmd lsblk
