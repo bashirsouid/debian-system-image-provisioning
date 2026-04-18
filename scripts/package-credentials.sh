@@ -24,6 +24,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 SECRETS_DIR="${REPO_ROOT}/.mkosi-secrets"
 EXTRA_DIR="${REPO_ROOT}/mkosi.extra"
 
+NON_INTERACTIVE="${AB_NON_INTERACTIVE:-false}"
 HOST=""
 USER_NAME=""
 
@@ -31,6 +32,7 @@ while (($#)); do
     case "$1" in
         --host) HOST="$2"; shift 2 ;;
         --user) USER_NAME="$2"; shift 2 ;;
+        --non-interactive) NON_INTERACTIVE=true; shift ;;
         -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
         *) fail "unknown arg: $1" ;;
     esac
@@ -78,10 +80,64 @@ fi
 chmod 0400 "${CRED_SECRET}"
 
 SDC_ARGS=(--with-key=host)
+FALLBACK_TO_HOST_KEY=0
 if systemd-creds --help 2>&1 | grep -q -- --host-key-path; then
     SDC_ARGS+=(--host-key-path "${CRED_SECRET}")
 else
-    fail "this host's systemd-creds is too old (need --host-key-path). Upgrade systemd (trixie 254+)."
+    warn "This host's systemd-creds is too old for --host-key-path (per-image keys)."
+    warn "We can fallback to using this host's master secret key instead, but the finished"
+    warn "image will share a master key with this machine. This is a security risk."
+    echo "" >&2
+
+    # Check for sudo availability if we need to copy the host secret.
+    SUDO_AVAILABLE=0
+    if command -v sudo >/dev/null 2>&1; then
+        SUDO_AVAILABLE=1
+    fi
+
+    if [[ "${NON_INTERACTIVE}" == "true" ]]; then
+        if [[ "${FORCE_HOST_KEY:-}" == "1" ]]; then
+            log "FORCE_HOST_KEY=1 detected; proceeding with host secret fallback in non-interactive mode."
+            FALLBACK_TO_HOST_KEY=1
+        else
+            warn "Non-interactive mode: skipping host-key fallback. Image may be broken."
+            fail "Upgrade systemd (trixie 254+) or build interactively to accept the risk."
+        fi
+    elif [[ "${FORCE_HOST_KEY:-}" == "1" ]]; then
+        log "FORCE_HOST_KEY=1 detected; proceeding with host secret fallback."
+        FALLBACK_TO_HOST_KEY=1
+    elif [[ -t 0 ]]; then
+        if [[ "${SUDO_AVAILABLE}" == "0" ]]; then
+            warn "sudo is NOT available; cannot copy host secret even if accepted. Skipping prompt."
+            fail "Upgrade systemd (trixie 254+) or install sudo."
+        fi
+
+        REPLY="n"
+        if read -t 30 -p "[package-credentials] Continue using host secret? [y/N] " -n 1 -r >&2; then
+            echo "" >&2
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                FALLBACK_TO_HOST_KEY=1
+            else
+                fail "User rejected fallback. Upgrade systemd (trixie 254+) or build in a container."
+            fi
+        else
+            echo "" >&2
+            fail "Interactive prompt timed out (30s). Defaulting to No. Upgrade systemd."
+        fi
+    else
+        fail "Terminal not interactive and --host-key-path missing. Upgrade systemd (trixie 254+) or build in an interactive terminal."
+    fi
+fi
+
+if (( FALLBACK_TO_HOST_KEY )); then
+    HOST_SECRET="/var/lib/systemd/credential.secret"
+    if [[ ! -f "${HOST_SECRET}" ]]; then
+        fail "Host secret ${HOST_SECRET} missing. Run 'sudo systemd-creds setup' first."
+    fi
+    log "copying host secret to image (requires sudo)..."
+    sudo cp "${HOST_SECRET}" "${CRED_SECRET}"
+    sudo chown "$(id -u):$(id -g)" "${CRED_SECRET}"
+    chmod 0400 "${CRED_SECRET}"
 fi
 
 encrypt_credential() {

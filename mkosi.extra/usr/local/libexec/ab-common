@@ -69,3 +69,72 @@ ab_write_kv_file() {
   chmod 0644 "$tmp"
   mv "$tmp" "$path"
 }
+
+ab_require_slot_conf() {
+  local conf="/etc/ab-slot.conf"
+  [[ -f "$conf" ]] || ab_die "$conf not found"
+  # shellcheck disable=SC1090
+  source "$conf"
+}
+
+ab_open_state_dir() {
+  [[ -n "${AB_ESP_DEVICE:-}" ]] || ab_die "AB_ESP_DEVICE not set; run ab_require_slot_conf first"
+  [[ -n "${AB_STATE_ESP_DIR:-}" ]] || ab_die "AB_STATE_ESP_DIR not set; run ab_require_slot_conf first"
+
+  AB_ESP_MOUNTPOINT="$(findmnt -nro TARGET -S "$AB_ESP_DEVICE" | head -n1 || true)"
+  AB_ESP_MOUNTED_BY_US=false
+
+  if [[ -z "$AB_ESP_MOUNTPOINT" ]]; then
+    AB_ESP_MOUNTPOINT="/run/ab-esp"
+    mkdir -p "$AB_ESP_MOUNTPOINT"
+    mount "$AB_ESP_DEVICE" "$AB_ESP_MOUNTPOINT"
+    AB_ESP_MOUNTED_BY_US=true
+  fi
+
+  AB_STATE_DIR="$AB_ESP_MOUNTPOINT$AB_STATE_ESP_DIR"
+  mkdir -p "$AB_STATE_DIR"
+}
+
+ab_close_state_dir() {
+  if [[ "${AB_ESP_MOUNTED_BY_US:-false}" == true && -n "${AB_ESP_MOUNTPOINT:-}" ]]; then
+    umount "$AB_ESP_MOUNTPOINT"
+    AB_ESP_MOUNTED_BY_US=false
+  fi
+}
+
+ab_load_state() {
+  [[ -n "${AB_STATE_DIR:-}" ]] || ab_die "AB_STATE_DIR not set; run ab_open_state_dir first"
+  local path="$AB_STATE_DIR/status.env"
+  ab_load_optional_env_file "$path"
+}
+
+ab_save_state() {
+  [[ -n "${AB_STATE_DIR:-}" ]] || ab_die "AB_STATE_DIR not set; run ab_open_state_dir first"
+  local path="$AB_STATE_DIR/status.env"
+  ab_write_kv_file "$path" \
+    AB_STATE_VERSION "${AB_STATE_VERSION:-2}" \
+    AB_SAVED_SLOT "${AB_SAVED_SLOT:-}" \
+    AB_SAVED_ENTRY_ID "${AB_SAVED_ENTRY_ID:-}" \
+    AB_PENDING_SLOT "${AB_PENDING_SLOT:-}" \
+    AB_PENDING_ENTRY_ID "${AB_PENDING_ENTRY_ID:-}" \
+    AB_PENDING_IMAGE_SHA256 "${AB_PENDING_IMAGE_SHA256:-}" \
+    AB_PENDING_DEPLOYED_AT "${AB_PENDING_DEPLOYED_AT:-}" \
+    AB_LAST_BOOT_SLOT "${AB_LAST_BOOT_SLOT:-}" \
+    AB_LAST_BOOT_STATUS "${AB_LAST_BOOT_STATUS:-}" \
+    AB_LAST_BOOT_AT "${AB_LAST_BOOT_AT:-}" \
+    AB_LAST_GOOD_SLOT "${AB_LAST_GOOD_SLOT:-}" \
+    AB_LAST_GOOD_IMAGE_SHA256 "${AB_LAST_GOOD_IMAGE_SHA256:-}" \
+    AB_LAST_GOOD_AT "${AB_LAST_GOOD_AT:-}" \
+    AB_LAST_BAD_SLOT "${AB_LAST_BAD_SLOT:-}" \
+    AB_LAST_BAD_IMAGE_SHA256 "${AB_LAST_BAD_IMAGE_SHA256:-}" \
+    AB_LAST_BAD_REASON "${AB_LAST_BAD_REASON:-}" \
+    AB_LAST_BAD_AT "${AB_LAST_BAD_AT:-}" \
+    AB_LAST_FALLBACK_FROM "${AB_LAST_FALLBACK_FROM:-}" \
+    AB_LAST_FALLBACK_TO "${AB_LAST_FALLBACK_TO:-}" \
+    AB_LAST_FALLBACK_AT "${AB_LAST_FALLBACK_AT:-}" \
+    AB_LAST_PROMOTION_SLOT "${AB_LAST_PROMOTION_SLOT:-}" \
+    AB_LAST_PROMOTION_MODE "${AB_LAST_PROMOTION_MODE:-}" \
+    AB_LAST_PROMOTION_AT "${AB_LAST_PROMOTION_AT:-}" \
+    AB_LAST_MANUAL_PROMOTION_REQUIRED_SLOT "${AB_LAST_MANUAL_PROMOTION_REQUIRED_SLOT:-}" \
+    AB_LAST_MANUAL_PROMOTION_REQUIRED_AT "${AB_LAST_MANUAL_PROMOTION_REQUIRED_AT:-}"
+}

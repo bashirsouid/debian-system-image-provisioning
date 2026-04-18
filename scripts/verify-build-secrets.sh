@@ -30,10 +30,11 @@ HOST=""
 
 while (($#)); do
     case "$1" in
-        --strict)  STRICT="yes"; shift ;;
-        --profile) PROFILE="$2"; shift 2 ;;
-        --host)    HOST="$2"; shift 2 ;;
-        -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+        --strict)          STRICT="yes"; shift ;;
+        --profile)         PROFILE="$2"; shift 2 ;;
+        --host)            HOST="$2"; shift 2 ;;
+        --non-interactive) shift ;;
+        -h|--help)         sed -n '2,25p' "$0"; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -83,7 +84,10 @@ fi
 mode="$(stat -c '%a' "${SECRETS_DIR}")"
 case "${mode}" in
     700|750|500) : ;;
-    *) fail_hard "${SECRETS_DIR} has permissions ${mode}. Run: chmod 700 ${SECRETS_DIR}" ;;
+    *)
+        info "fixing ${SECRETS_DIR} perms (${mode} -> 700)"
+        chmod 700 "${SECRETS_DIR}"
+        ;;
 esac
 
 if git -C "${REPO_ROOT}" ls-files --error-unmatch .mkosi-secrets >/dev/null 2>&1; then
@@ -109,7 +113,11 @@ check_file_perms() {
     m="$(stat -c '%a' "${path}")"
     case "${m}" in
         400|440|600|640) return 0 ;;
-        *) echo "file perms ${m} (expected 0400/0440/0600/0640) on ${path}" >&2; return 1 ;;
+        *)
+            info "fixing ${path} perms (${m} -> 0600)"
+            chmod 0600 "${path}"
+            return 0
+            ;;
     esac
 }
 

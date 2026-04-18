@@ -47,3 +47,4 @@ mkosi.extra/etc/apt/keyrings/*.asc
 
 # Local lint/test scratch
 .shellcheck-cache/
+

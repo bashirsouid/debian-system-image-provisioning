@@ -25,6 +25,7 @@ IMAGE_VERSION=""
 TARGET_ARCH=""
 HOST_KERNEL_ARGS=""
 CURRENT_CHECKSUM=""
+NON_INTERACTIVE=false
 
 HOST_USER_NAME="$(id -un)"
 HOST_UID="$(id -u)"
@@ -49,6 +50,7 @@ Options:
                              macbook --host macbookpro13-2019-t2
   --sync-host-ids=yes|no   when username matches the invoking host user,
                            copy that user's uid/gid/group into the image
+  --non-interactive        disable all interactive prompts (default to No)
 USAGE
 }
 
@@ -730,6 +732,10 @@ while [[ $# -gt 0 ]]; do
       SYNC_HOST_IDS=false
       shift
       ;;
+    --non-interactive)
+      NON_INTERACTIVE=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -778,6 +784,7 @@ if [[ "${AB_SKIP_OVERLAY_GATES:-no}" != "yes" ]]; then
         [[ "${STRICT_SECRETS:-no}" == "yes" ]] && verify_args+=(--strict)
         [[ "$PROFILE_SET" == true ]] && verify_args+=(--profile "$PROFILE")
         [[ "$HOST_SET"    == true ]] && verify_args+=(--host "$HOST")
+        [[ "$NON_INTERACTIVE" == true ]] && verify_args+=("--non-interactive")
         "$PROJECT_ROOT/scripts/verify-build-secrets.sh" "${verify_args[@]}"
     fi
 
@@ -789,6 +796,8 @@ if [[ "${AB_SKIP_OVERLAY_GATES:-no}" != "yes" ]]; then
         echo "==> Packaging remote-access credentials..."
         pkg_args=()
         [[ "$HOST_SET" == true ]] && pkg_args+=(--host "$HOST")
+        [[ "$NON_INTERACTIVE" == true ]] && pkg_args+=("--non-interactive")
+        [[ "$NON_INTERACTIVE" == true ]] && export AB_NON_INTERACTIVE=1
         "$PROJECT_ROOT/scripts/package-credentials.sh" "${pkg_args[@]}"
     fi
 
@@ -799,6 +808,7 @@ if [[ "${AB_SKIP_OVERLAY_GATES:-no}" != "yes" ]]; then
         echo "==> Packaging alert credentials..."
         pkg_args=()
         [[ "$HOST_SET" == true ]] && pkg_args+=(--host "$HOST")
+        [[ "$NON_INTERACTIVE" == true ]] && pkg_args+=("--non-interactive")
         "$PROJECT_ROOT/scripts/package-alert-credentials.sh" "${pkg_args[@]}"
     fi
 

@@ -37,8 +37,12 @@ record_fallback_if_needed() {
   local now="$1"
 
   if [[ -n "$AB_PENDING_SLOT" && "$AB_PENDING_SLOT" != "$AB_SLOT" ]]; then
+    # These variables are part of the A/B state and are saved by ab_save_state.
+    # shellcheck disable=SC2034
     AB_LAST_FALLBACK_FROM="$AB_PENDING_SLOT"
+    # shellcheck disable=SC2034
     AB_LAST_FALLBACK_TO="$AB_SLOT"
+    # shellcheck disable=SC2034
     AB_LAST_FALLBACK_AT="$now"
     AB_PENDING_SLOT=""
     AB_PENDING_ENTRY_ID=""
@@ -82,12 +86,20 @@ main() {
   fi
 
   if ! check_no_failed_units || ! run_health_hooks; then
+    # These variables are part of the A/B state and are saved by ab_save_state.
+    # shellcheck disable=SC2034
     AB_LAST_BOOT_SLOT="$AB_SLOT"
+    # shellcheck disable=SC2034
     AB_LAST_BOOT_STATUS="unhealthy"
+    # shellcheck disable=SC2034
     AB_LAST_BOOT_AT="$now"
+    # shellcheck disable=SC2034
     AB_LAST_BAD_SLOT="$AB_SLOT"
+    # shellcheck disable=SC2034
     AB_LAST_BAD_IMAGE_SHA256="${AB_IMAGE_SHA256:-}"
+    # shellcheck disable=SC2034
     AB_LAST_BAD_REASON="$HEALTH_REASON"
+    # shellcheck disable=SC2034
     AB_LAST_BAD_AT="$now"
     ab_save_state
     echo "A/B slot health check failed: $HEALTH_REASON" >&2
@@ -95,32 +107,49 @@ main() {
     exit 1
   fi
 
+  # These variables are part of the A/B state and are saved by ab_save_state.
+  # shellcheck disable=SC2034
   AB_LAST_BOOT_SLOT="$AB_SLOT"
+  # shellcheck disable=SC2034
   AB_LAST_BOOT_STATUS="healthy"
+  # shellcheck disable=SC2034
   AB_LAST_BOOT_AT="$now"
+  # shellcheck disable=SC2034
   AB_LAST_GOOD_SLOT="$AB_SLOT"
+  # shellcheck disable=SC2034
   AB_LAST_GOOD_IMAGE_SHA256="${AB_IMAGE_SHA256:-}"
+  # shellcheck disable=SC2034
   AB_LAST_GOOD_AT="$now"
 
   if [[ -n "$AB_PENDING_SLOT" && "$AB_PENDING_SLOT" == "$AB_SLOT" ]]; then
     if ab_truthy "$AB_AUTO_BLESS"; then
       command -v bootctl >/dev/null 2>&1 || ab_die "bootctl not found"
       bootctl --esp-path="$AB_ESP_MOUNTPOINT" set-default "$AB_ENTRY_ID"
+      # shellcheck disable=SC2034
       AB_SAVED_SLOT="$AB_SLOT"
+      # shellcheck disable=SC2034
       AB_SAVED_ENTRY_ID="$AB_ENTRY_ID"
+      # shellcheck disable=SC2034
       AB_LAST_PROMOTION_SLOT="$AB_SLOT"
+      # shellcheck disable=SC2034
       AB_LAST_PROMOTION_MODE="auto"
+      # shellcheck disable=SC2034
       AB_LAST_PROMOTION_AT="$now"
       AB_LAST_MANUAL_PROMOTION_REQUIRED_SLOT=""
       AB_LAST_MANUAL_PROMOTION_REQUIRED_AT=""
     else
+      # shellcheck disable=SC2034
       AB_LAST_MANUAL_PROMOTION_REQUIRED_SLOT="$AB_SLOT"
+      # shellcheck disable=SC2034
       AB_LAST_MANUAL_PROMOTION_REQUIRED_AT="$now"
     fi
 
     AB_PENDING_SLOT=""
+    # shellcheck disable=SC2034
     AB_PENDING_ENTRY_ID=""
+    # shellcheck disable=SC2034
     AB_PENDING_IMAGE_SHA256=""
+    # shellcheck disable=SC2034
     AB_PENDING_DEPLOYED_AT=""
   fi
 
