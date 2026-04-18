@@ -95,7 +95,7 @@ CLOUDFLARE_URL="https://pkg.cloudflare.com/cloudflare-main.gpg"
 # NOTE: Cloudflare rotates signing keys occasionally. Re-verify from
 # their current official docs before every major rebuild, and update
 # this fingerprint if it has rotated.
-CLOUDFLARE_FP="FBA8C0EE63617C5EED695C43254B391D8CACCBF8"
+CLOUDFLARE_FP="CC94B39C77AE7342A68B89628A682D308D4E5E73"
 
 # -----------------------------------------------------------------------
 # Tailscale apt signing key.

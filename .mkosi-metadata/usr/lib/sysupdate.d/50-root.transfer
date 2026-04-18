@@ -1,0 +1,17 @@
+[Transfer]
+ProtectVersion=%A
+
+[Source]
+Type=regular-file
+Path=/
+PathRelativeTo=explicit
+MatchPattern=debian-provisioning_@v_%a.root.raw
+
+[Target]
+Type=partition
+Path=auto
+MatchPattern=debian-provisioning_@v
+MatchPartitionType=root
+PartitionGrowFileSystem=yes
+ReadOnly=no
+InstancesMax=2

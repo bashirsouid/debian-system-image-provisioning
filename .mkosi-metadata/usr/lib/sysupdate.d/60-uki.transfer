@@ -1,0 +1,16 @@
+[Transfer]
+ProtectVersion=%A
+
+[Source]
+Type=regular-file
+Path=/
+PathRelativeTo=explicit
+MatchPattern=debian-provisioning_@v_%a.efi
+
+[Target]
+Type=regular-file
+Path=/EFI/Linux
+PathRelativeTo=boot
+MatchPattern=debian-provisioning_@v_%a.efi
+Mode=0644
+InstancesMax=2

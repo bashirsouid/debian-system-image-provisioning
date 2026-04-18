@@ -132,7 +132,8 @@ fi
 if (( FALLBACK_TO_HOST_KEY )); then
     HOST_SECRET="/var/lib/systemd/credential.secret"
     if [[ ! -f "${HOST_SECRET}" ]]; then
-        fail "Host secret ${HOST_SECRET} missing. Run 'sudo systemd-creds setup' first."
+        log "Host secret missing. Generating automatically via 'sudo systemd-creds setup'..."
+        sudo systemd-creds setup || fail "Failed to generate host secret. Run 'sudo systemd-creds setup' manually."
     fi
     log "copying host secret to image (requires sudo)..."
     sudo cp "${HOST_SECRET}" "${CRED_SECRET}"
@@ -143,7 +144,12 @@ fi
 encrypt_credential() {
     local name="$1" src="$2" dest="$3"
     log "encrypting ${name} -> ${dest}"
-    systemd-creds encrypt "${SDC_ARGS[@]}" --name="${name}" "${src}" "${dest}"
+    if (( FALLBACK_TO_HOST_KEY )); then
+        sudo systemd-creds encrypt "${SDC_ARGS[@]}" --name="${name}" "${src}" "${dest}"
+        sudo chown "$(id -u):$(id -g)" "${dest}"
+    else
+        systemd-creds encrypt "${SDC_ARGS[@]}" --name="${name}" "${src}" "${dest}"
+    fi
     chmod 0600 "${dest}"
 }
 

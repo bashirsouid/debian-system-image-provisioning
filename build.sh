@@ -607,15 +607,18 @@ build_target() {
   echo "==> Preparing first-boot provisioning data for profile=$PROFILE${HOST:+ host=$HOST}..."
   echo "==> Host UID/GID sync for matching user '$HOST_USER_NAME': $SYNC_HOST_IDS ($HOST_UID:$HOST_GID $HOST_PRIMARY_GROUP)"
   echo "==> Image identity: $target_image_id version $IMAGE_VERSION arch $TARGET_ARCH"
-  rm -rf "$SECRETS_DIR"
+  METADATA_DIR="$PROJECT_ROOT/.mkosi-metadata"
+  rm -rf "$METADATA_DIR"
   install -d -m 0755 \
-    "$SECRETS_DIR/usr/local/etc" \
-    "$SECRETS_DIR/usr/local/share/ab-image-meta" \
-    "$SECRETS_DIR/usr/lib/sysupdate.d"
-  render_users_conf "$SECRETS_DIR/usr/local/etc/users.conf"
-  chmod 0600 "$SECRETS_DIR/usr/local/etc/users.conf"
-  render_build_info "$SECRETS_DIR/usr/local/share/ab-image-meta/build-info.env" "$target_image_id" "$IMAGE_VERSION" "$TARGET_ARCH" "$HOST_KERNEL_ARGS"
-  render_sysupdate_transfers "$SECRETS_DIR/usr/lib/sysupdate.d" "$target_image_id"
+    "$METADATA_DIR/usr/local/etc" \
+    "$METADATA_DIR/usr/local/share/ab-image-meta" \
+    "$METADATA_DIR/usr/lib/sysupdate.d"
+  render_users_conf "$METADATA_DIR/usr/local/etc/users.conf"
+  chmod 0600 "$METADATA_DIR/usr/local/etc/users.conf"
+  render_build_info "$METADATA_DIR/usr/local/share/ab-image-meta/build-info.env" "$target_image_id" "$IMAGE_VERSION" "$TARGET_ARCH" "$HOST_KERNEL_ARGS"
+  render_sysupdate_transfers "$METADATA_DIR/usr/lib/sysupdate.d" "$target_image_id"
+  extra_args+=("--extra-tree=$METADATA_DIR:/")
+  extra_args+=("--sandbox-tree=$PROJECT_ROOT/mkosi.extra:/")
 
   if [[ "$PROFILE" == "devbox" ]]; then
     echo "==> Preparing Liquorix repository metadata for devbox..."

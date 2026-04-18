@@ -36,6 +36,25 @@ mkdir -p "${CREDSTORE}"
 
 HOST="${1:-}"
 [[ "${HOST}" == "--host" ]] && { HOST="$2"; shift 2; } || HOST=""
+while (($#)); do
+    case "$1" in
+        *) shift ;;
+    esac
+done
+
+SDC_ARGS=(--with-key=host)
+FALLBACK_TO_HOST_KEY=0
+if systemd-creds --help 2>&1 | grep -q -- --host-key-path; then
+    SDC_ARGS+=(--host-key-path "${CRED_SECRET}")
+else
+    # We assume package-credentials.sh already prompted and generated it
+    # if it reached this script.
+    FALLBACK_TO_HOST_KEY=1
+    HOST_SECRET="/var/lib/systemd/credential.secret"
+    if [[ ! -f "${HOST_SECRET}" ]]; then
+        fail "Host secret missing but needed for fallback. This shouldn't happen if package-credentials.sh ran first."
+    fi
+fi
 
 resolve_secret() {
     local name="$1"
@@ -74,11 +93,12 @@ encrypt_one() {
     fi
 
     log "encrypting ${name} -> ${CREDSTORE}/${name}"
-    systemd-creds encrypt \
-        --with-key=host \
-        --host-key-path "${CRED_SECRET}" \
-        --name="${name}" \
-        "${path}" "${CREDSTORE}/${name}"
+    if (( FALLBACK_TO_HOST_KEY )); then
+        sudo systemd-creds encrypt "${SDC_ARGS[@]}" --name="${name}" "${path}" "${CREDSTORE}/${name}"
+        sudo chown "$(id -u):$(id -g)" "${CREDSTORE}/${name}"
+    else
+        systemd-creds encrypt "${SDC_ARGS[@]}" --name="${name}" "${path}" "${CREDSTORE}/${name}"
+    fi
     chmod 0600 "${CREDSTORE}/${name}"
 }
 
