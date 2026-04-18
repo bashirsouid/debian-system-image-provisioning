@@ -33,6 +33,7 @@ while (($#)); do
         --host) HOST="$2"; shift 2 ;;
         --user) USER_NAME="$2"; shift 2 ;;
         --non-interactive) NON_INTERACTIVE=true; shift ;;
+        --out) EXTRA_DIR="$2"; shift 2 ;;
         -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
         *) fail "unknown arg: $1" ;;
     esac

@@ -5,12 +5,12 @@ ProtectVersion=%A
 Type=regular-file
 Path=/
 PathRelativeTo=explicit
-MatchPattern=debian-provisioning_@v_%a.root.raw
+MatchPattern=debian-provisioning-devbox_@v_%a.root.raw
 
 [Target]
 Type=partition
 Path=auto
-MatchPattern=debian-provisioning_@v
+MatchPattern=debian-provisioning-devbox_@v
 MatchPartitionType=root
 PartitionGrowFileSystem=yes
 ReadOnly=no

@@ -78,4 +78,7 @@ cd third-party
 update_git_repo awesome https://github.com/awesomewm/awesome.git
 update_git_repo snd_hda_macbookpro https://github.com/davidjo/snd_hda_macbookpro.git
 
+echo "==> Fetching third-party GPG keys..."
+"$PROJECT_ROOT/scripts/fetch-third-party-keys.sh"
+
 echo "==> Third-party dependencies are up to date."

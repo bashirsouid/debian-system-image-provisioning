@@ -501,7 +501,7 @@ ensure_profile_hostdeps() {
 ensure_managed_sources_once() {
   local mode="$1"
   local needs_any=false
-  local target profile host missing=false
+  local target profile host missing_deps=false missing_keys=false
 
   for target in "${BUILD_TARGETS[@]}"; do
     profile="${target%%|*}"
@@ -512,26 +512,40 @@ ensure_managed_sources_once() {
     fi
   done
 
-  [[ "$needs_any" == true ]] || return 0
-
   if [[ "$mode" == "fresh" ]]; then
-    echo "==> Refreshing managed third-party sources from clean clones..."
-    "$PROJECT_ROOT/update-3rd-party-deps.sh" --fresh
+    echo "==> Refreshing third-party GPG keys..."
+    "$PROJECT_ROOT/scripts/fetch-third-party-keys.sh"
+
+    if [[ "$needs_any" == true ]]; then
+      echo "==> Refreshing managed third-party sources from clean clones..."
+      "$PROJECT_ROOT/update-3rd-party-deps.sh" --fresh
+    fi
     return 0
   fi
 
-  for target in "${BUILD_TARGETS[@]}"; do
-    profile="${target%%|*}"
-    host="${target#*|}"
-    if profile_needs_awesome "$profile" && [[ ! -f "$PROJECT_ROOT/third-party/awesome/CMakeLists.txt" ]]; then
-      missing=true
-    fi
-    if profile_needs_macbook_audio "$profile" && [[ ! -f "$PROJECT_ROOT/third-party/snd_hda_macbookpro/install.cirrus.driver.sh" ]]; then
-      missing=true
-    fi
-  done
+  if [[ ! -f "$PROJECT_ROOT/mkosi.extra/etc/apt/keyrings/cloudflare-main.gpg" || ! -f "$PROJECT_ROOT/mkosi.extra/etc/apt/keyrings/tailscale-archive-keyring.gpg" ]]; then
+    missing_keys=true
+  fi
 
-  if [[ "$missing" == true ]]; then
+  if [[ "$needs_any" == true ]]; then
+    for target in "${BUILD_TARGETS[@]}"; do
+      profile="${target%%|*}"
+      host="${target#*|}"
+      if profile_needs_awesome "$profile" && [[ ! -f "$PROJECT_ROOT/third-party/awesome/CMakeLists.txt" ]]; then
+        missing_deps=true
+      fi
+      if profile_needs_macbook_audio "$profile" && [[ ! -f "$PROJECT_ROOT/third-party/snd_hda_macbookpro/install.cirrus.driver.sh" ]]; then
+        missing_deps=true
+      fi
+    done
+  fi
+
+  if [[ "$missing_keys" == true ]]; then
+    echo "==> Bootstrapping third-party GPG keys..."
+    "$PROJECT_ROOT/scripts/fetch-third-party-keys.sh"
+  fi
+
+  if [[ "$missing_deps" == true ]]; then
     echo "==> Bootstrapping managed third-party sources..."
     "$PROJECT_ROOT/update-3rd-party-deps.sh"
   fi
@@ -617,6 +631,28 @@ build_target() {
   chmod 0600 "$METADATA_DIR/usr/local/etc/users.conf"
   render_build_info "$METADATA_DIR/usr/local/share/ab-image-meta/build-info.env" "$target_image_id" "$IMAGE_VERSION" "$TARGET_ARCH" "$HOST_KERNEL_ARGS"
   render_sysupdate_transfers "$METADATA_DIR/usr/lib/sysupdate.d" "$target_image_id"
+
+  if [[ "${AB_SKIP_OVERLAY_GATES:-no}" != "yes" ]]; then
+      if [[ -d "$PROJECT_ROOT/.mkosi-secrets" && -x "$PROJECT_ROOT/scripts/package-credentials.sh" ]]; then
+          echo "==> Packaging remote-access credentials for profile=$PROFILE${HOST:+ host=$HOST}..."
+          pkg_args=()
+          [[ -n "$HOST" ]] && pkg_args+=(--host "$HOST")
+          [[ "$NON_INTERACTIVE" == true ]] && pkg_args+=("--non-interactive")
+          [[ "$NON_INTERACTIVE" == true ]] && export AB_NON_INTERACTIVE=1
+          pkg_args+=(--out "$METADATA_DIR")
+          "$PROJECT_ROOT/scripts/package-credentials.sh" "${pkg_args[@]}"
+      fi
+
+      if [[ -d "$PROJECT_ROOT/.mkosi-secrets" && -x "$PROJECT_ROOT/scripts/package-alert-credentials.sh" ]]; then
+          echo "==> Packaging alert credentials for profile=$PROFILE${HOST:+ host=$HOST}..."
+          pkg_args=()
+          [[ -n "$HOST" ]] && pkg_args+=(--host "$HOST")
+          [[ "$NON_INTERACTIVE" == true ]] && pkg_args+=("--non-interactive")
+          pkg_args+=(--out "$METADATA_DIR")
+          "$PROJECT_ROOT/scripts/package-alert-credentials.sh" "${pkg_args[@]}"
+      fi
+  fi
+
   extra_args+=("--extra-tree=$METADATA_DIR:/")
   extra_args+=("--sandbox-tree=$PROJECT_ROOT/mkosi.extra:/")
 
@@ -789,30 +825,6 @@ if [[ "${AB_SKIP_OVERLAY_GATES:-no}" != "yes" ]]; then
         [[ "$HOST_SET"    == true ]] && verify_args+=(--host "$HOST")
         [[ "$NON_INTERACTIVE" == true ]] && verify_args+=("--non-interactive")
         "$PROJECT_ROOT/scripts/verify-build-secrets.sh" "${verify_args[@]}"
-    fi
-
-    # Encrypt tailscale/cloudflared/ssh credentials into the image.
-    # Writes the per-image credential.secret that package-alert-credentials
-    # reuses, so this MUST run first.
-    if [[ -d "$PROJECT_ROOT/.mkosi-secrets" && \
-          -x "$PROJECT_ROOT/scripts/package-credentials.sh" ]]; then
-        echo "==> Packaging remote-access credentials..."
-        pkg_args=()
-        [[ "$HOST_SET" == true ]] && pkg_args+=(--host "$HOST")
-        [[ "$NON_INTERACTIVE" == true ]] && pkg_args+=("--non-interactive")
-        [[ "$NON_INTERACTIVE" == true ]] && export AB_NON_INTERACTIVE=1
-        "$PROJECT_ROOT/scripts/package-credentials.sh" "${pkg_args[@]}"
-    fi
-
-    # Encrypt sendgrid / pagerduty / healthchecks.io credentials.
-    # Reuses the per-image credential.secret.
-    if [[ -d "$PROJECT_ROOT/.mkosi-secrets" && \
-          -x "$PROJECT_ROOT/scripts/package-alert-credentials.sh" ]]; then
-        echo "==> Packaging alert credentials..."
-        pkg_args=()
-        [[ "$HOST_SET" == true ]] && pkg_args+=(--host "$HOST")
-        [[ "$NON_INTERACTIVE" == true ]] && pkg_args+=("--non-interactive")
-        "$PROJECT_ROOT/scripts/package-alert-credentials.sh" "${pkg_args[@]}"
     fi
 
 fi

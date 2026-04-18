@@ -26,6 +26,16 @@ fail() { printf '[package-alerts] ERROR: %s\n' "$*" >&2; exit 1; }
 REPO_ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 SECRETS_DIR="${REPO_ROOT}/.mkosi-secrets"
 EXTRA_DIR="${REPO_ROOT}/mkosi.extra"
+HOST="${1:-}"
+[[ "${HOST}" == "--host" ]] && { HOST="$2"; shift 2; } || HOST=""
+while (($#)); do
+    case "$1" in
+        --host) HOST="$2"; shift 2 ;;
+        --out) EXTRA_DIR="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+
 CREDSTORE="${EXTRA_DIR}/etc/credstore.encrypted"
 CRED_SECRET="${EXTRA_DIR}/var/lib/systemd/credential.secret"
 
@@ -33,14 +43,6 @@ CRED_SECRET="${EXTRA_DIR}/var/lib/systemd/credential.secret"
 [[ -f "${CRED_SECRET}" ]] || fail "${CRED_SECRET} missing. Run scripts/package-credentials.sh FIRST so the per-image key exists."
 
 mkdir -p "${CREDSTORE}"
-
-HOST="${1:-}"
-[[ "${HOST}" == "--host" ]] && { HOST="$2"; shift 2; } || HOST=""
-while (($#)); do
-    case "$1" in
-        *) shift ;;
-    esac
-done
 
 SDC_ARGS=(--with-key=host)
 FALLBACK_TO_HOST_KEY=0
