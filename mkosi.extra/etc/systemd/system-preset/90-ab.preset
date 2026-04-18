@@ -10,3 +10,4 @@ enable nftables.service
 enable systemd-resolved.service
 enable systemd-timesyncd.service
 enable systemd-oomd.service
+enable ab-runtime-validate-firstboot.service

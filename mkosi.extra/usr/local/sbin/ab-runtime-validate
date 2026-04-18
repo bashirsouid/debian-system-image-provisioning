@@ -1,0 +1,434 @@
+#!/usr/bin/env bash
+# /usr/local/sbin/ab-runtime-validate
+#
+# Tests that the features configured into this image actually work
+# on the running host. Distinct from ab-monitor (which runs every
+# 5 minutes forever): this runs once on first boot, once per sysupdate
+# deployment, and on demand when you want to sanity-check.
+#
+# Tests performed (each is a separate function so failures are
+# isolated):
+#
+#   SSH         - sshd listening on :22, at least one authorized key
+#   Tailscale   - auth key valid (tailscaled reaches Running state)
+#                 NB: catches 90-day auth key expiry - if the key
+#                 revokes/expires, tailscale up returns "key expired"
+#                 within seconds of this test running.
+#   Cloudflared - tunnel reaches readyConnections >= 1 within 60s
+#   SendGrid    - sends a single "ab-runtime-validate" probe email
+#                 to the configured AB_MONITOR_EMAIL_TO. You WILL
+#                 receive this on first boot. Pass --no-probe-email
+#                 to skip.
+#   PagerDuty   - sends a trigger + resolve pair with dedup_key
+#                 "<host>-runtime-validate-probe". PD shows the incident
+#                 self-resolved in ~3s. Pass --no-probe-page to skip.
+#   Healthchecks.io
+#               - pings the /start endpoint (not /fail so we do not
+#                 alarm you during first-boot validation).
+#
+# Outputs:
+#
+#   /var/lib/ab-runtime-validate/last-run.json    machine-readable
+#   /var/lib/ab-runtime-validate/last-run.txt     human-readable
+#   journal structured fields under tag ab-runtime-validate
+#   optional final email summary (if SendGrid is configured)
+#
+# Exit code:
+#   0  all CONFIGURED features passed
+#   1  at least one CONFIGURED feature failed
+#   2  usage / internal error
+#
+# If a feature is not configured (secret absent), it is skipped, not
+# failed.
+
+set -uo pipefail
+
+STATE_DIR=/var/lib/ab-runtime-validate
+JSON_OUT="${STATE_DIR}/last-run.json"
+TXT_OUT="${STATE_DIR}/last-run.txt"
+FIRSTBOOT_MARKER="${STATE_DIR}/first-boot-done"
+
+SEND_PROBE_EMAIL="yes"
+SEND_PROBE_PAGE="yes"
+SEND_SUMMARY_EMAIL="yes"
+QUIET="no"
+MODE="interactive"   # interactive | first-boot
+
+while (($#)); do
+    case "$1" in
+        --no-probe-email)    SEND_PROBE_EMAIL="no"; shift ;;
+        --no-probe-page)     SEND_PROBE_PAGE="no"; shift ;;
+        --no-summary-email)  SEND_SUMMARY_EMAIL="no"; shift ;;
+        --first-boot)        MODE="first-boot"; shift ;;
+        --quiet|-q)          QUIET="yes"; shift ;;
+        -h|--help)
+            sed -n '2,42p' "$0"
+            exit 0
+            ;;
+        *) echo "unknown arg: $1" >&2; exit 2 ;;
+    esac
+done
+
+if [[ $EUID -ne 0 ]]; then
+    echo "must run as root" >&2
+    exit 2
+fi
+
+install -d -m 0700 "${STATE_DIR}"
+
+HOST="$(hostname -s)"
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+BOOTED_SINCE="$(uptime -s 2>/dev/null || echo unknown)"
+
+# Per-test status tracking
+declare -A RESULT  # pass | fail | skip
+declare -A DETAIL
+for k in ssh tailscale cloudflared sendgrid pagerduty healthchecks; do
+    RESULT[$k]="skip"
+    DETAIL[$k]="not configured on this image"
+done
+
+say() { [[ "${QUIET}" == "yes" ]] || printf '%s\n' "$*" >&2; }
+
+log_structured() {
+    # systemd-cat with structured metadata for journalctl filtering
+    local severity="$1" key="$2" summary="$3" details="$4"
+    {
+        printf 'MESSAGE=ab-runtime-validate %s: %s — %s\n' "$severity" "$key" "$summary"
+        printf 'PRIORITY=%s\n' "$(case "$severity" in FAIL) echo 3;; WARN) echo 4;; PASS) echo 6;; *) echo 5;; esac)"
+        printf 'AB_VALIDATE_KEY=%s\n' "$key"
+        printf 'AB_VALIDATE_RESULT=%s\n' "${severity,,}"
+        printf 'AB_VALIDATE_DETAILS=%s\n' "$details"
+    } | logger --journald 2>/dev/null || logger -t ab-runtime-validate "$severity $key $summary"
+}
+
+pass() { RESULT[$1]="pass"; DETAIL[$1]="$2"; say "  [PASS] $1 — $2"; log_structured PASS "$1" "$2" ""; }
+fail() { RESULT[$1]="fail"; DETAIL[$1]="$2"; say "  [FAIL] $1 — $2"; log_structured FAIL "$1" "$2" ""; }
+skip() { RESULT[$1]="skip"; DETAIL[$1]="$2"; say "  [skip] $1 — $2"; }
+
+# ===========================================================================
+# Tests
+# ===========================================================================
+
+test_ssh() {
+    say "testing ssh..."
+    local unit="ssh.service"
+    if ! systemctl is-active --quiet ssh.service; then
+        if ! systemctl is-active --quiet sshd.service; then
+            fail ssh "neither ssh.service nor sshd.service is active"
+            return
+        fi
+        unit="sshd.service"
+    fi
+    if ! sshd -t 2>/dev/null; then
+        fail ssh "sshd -t rejected the config"
+        return
+    fi
+    local port
+    port="$(sshd -T 2>/dev/null | awk '/^port / {print $2; exit}')"
+    port="${port:-22}"
+    if command -v ss >/dev/null && ! ss -H -tln "sport = :${port}" | grep -q LISTEN; then
+        fail ssh "nothing listening on TCP/${port}"
+        return
+    fi
+    local keycount=0
+    for f in /etc/ssh/authorized_keys.d/*; do
+        [[ -f "$f" ]] || continue
+        keycount=$((keycount + $(grep -cE '^(sk-|ssh-|ecdsa-)' "$f" 2>/dev/null || echo 0)))
+    done
+    if (( keycount == 0 )); then
+        fail ssh "no authorized keys installed under /etc/ssh/authorized_keys.d/"
+        return
+    fi
+    pass ssh "listening on :${port}, ${keycount} authorized key(s), ${unit} active"
+}
+
+test_tailscale() {
+    say "testing tailscale..."
+    if [[ ! -f /etc/credstore.encrypted/tailscale-authkey ]]; then
+        skip tailscale "tailscale-authkey not configured at build time"
+        return
+    fi
+    if ! command -v tailscale >/dev/null; then
+        fail tailscale "tailscale binary missing"
+        return
+    fi
+    if ! systemctl is-active --quiet tailscaled.service; then
+        fail tailscale "tailscaled.service inactive"
+        return
+    fi
+    # The tailscale-up.service should have run already on first boot.
+    # Give it up to 60s if we are running on first-boot mode.
+    local attempts=12
+    [[ "${MODE}" == "first-boot" ]] && attempts=60
+    local state=""
+    for _ in $(seq 1 "${attempts}"); do
+        state="$(tailscale status --json 2>/dev/null | jq -r '.BackendState // "Unknown"')"
+        [[ "${state}" == "Running" ]] && break
+        sleep 1
+    done
+    case "${state}" in
+        Running)
+            local ip4
+            ip4="$(tailscale ip -4 2>/dev/null | head -n1)"
+            pass tailscale "Running; tailnet IPv4 ${ip4:-<none>}"
+            ;;
+        NeedsLogin)
+            fail tailscale "auth key invalid or EXPIRED (90-day key? regenerate and rebuild)"
+            ;;
+        *)
+            fail tailscale "BackendState=${state} after ${attempts}s"
+            ;;
+    esac
+}
+
+test_cloudflared() {
+    say "testing cloudflared..."
+    if [[ ! -f /etc/credstore.encrypted/cloudflared-token ]]; then
+        skip cloudflared "cloudflared-token not configured at build time"
+        return
+    fi
+    if ! systemctl is-active --quiet cloudflared.service; then
+        fail cloudflared "cloudflared.service inactive"
+        return
+    fi
+    local attempts=20
+    [[ "${MODE}" == "first-boot" ]] && attempts=60
+    local body="" status=0 ready=0
+    for _ in $(seq 1 "${attempts}"); do
+        body="$(curl --silent --max-time 3 http://127.0.0.1:45123/ready 2>/dev/null || true)"
+        if [[ -n "${body}" ]]; then
+            status="$(jq -r '.status // 0' <<<"${body}" 2>/dev/null || echo 0)"
+            ready="$(jq -r '.readyConnections // 0' <<<"${body}" 2>/dev/null || echo 0)"
+            if [[ "${status}" == "200" && "${ready}" -ge 1 ]]; then break; fi
+        fi
+        sleep 1
+    done
+    if [[ "${status}" == "200" && "${ready}" -ge 1 ]]; then
+        pass cloudflared "tunnel up, ${ready} ready connection(s)"
+    else
+        fail cloudflared "no ready connections after ${attempts}s (token revoked? or upstream blocking WARP protocol?)"
+    fi
+}
+
+test_sendgrid() {
+    say "testing sendgrid..."
+    if [[ ! -f /etc/credstore.encrypted/sendgrid-api-key ]]; then
+        skip sendgrid "sendgrid-api-key not configured at build time"
+        return
+    fi
+    if [[ "${SEND_PROBE_EMAIL}" != "yes" ]]; then
+        skip sendgrid "probe email disabled via --no-probe-email"
+        return
+    fi
+    # Run via systemd-run with credential so we can actually read the API key.
+    local http_code
+    http_code="$(systemd-run --pipe --wait --collect \
+        --property=LoadCredentialEncrypted=sendgrid-api-key:/etc/credstore.encrypted/sendgrid-api-key \
+        --property=EnvironmentFile=-/etc/default/ab-monitor \
+        /bin/bash -c '
+            key="$(cat "$CREDENTIALS_DIRECTORY/sendgrid-api-key")"
+            payload=$(jq -n \
+                --arg to "${AB_MONITOR_EMAIL_TO:-}" \
+                --arg from "${AB_MONITOR_EMAIL_FROM:-}" \
+                --arg host "'"${HOST}"'" \
+                --arg ts "'"${NOW}"'" \
+                "{personalizations:[{to:[{email:\$to}]}], from:{email:\$from}, subject:(\"[\" + \$host + \"] ab-runtime-validate probe (\" + \$ts + \")\"), content:[{type:\"text/plain\", value:(\"Runtime validation probe from \" + \$host + \" at \" + \$ts + \".\\nIf you received this, SendGrid is working.\\n\")}]}")
+            if [[ -z "${AB_MONITOR_EMAIL_TO:-}" || -z "${AB_MONITOR_EMAIL_FROM:-}" ]]; then
+                echo 000
+                exit 0
+            fi
+            curl --silent --max-time 10 --output /dev/null --write-out "%{http_code}" \
+                -X POST https://api.sendgrid.com/v3/mail/send \
+                -H "Authorization: Bearer $key" \
+                -H "Content-Type: application/json" \
+                --data-raw "$payload"
+        ' 2>/dev/null || echo 000)"
+    case "${http_code}" in
+        202|200) pass sendgrid "probe email accepted by API (HTTP ${http_code})" ;;
+        000)     fail sendgrid "no HTTP response (EMAIL_TO/FROM unset in /etc/default/ab-monitor?)" ;;
+        401|403) fail sendgrid "API rejected credentials (HTTP ${http_code} — regenerate key)" ;;
+        *)       fail sendgrid "unexpected HTTP ${http_code}" ;;
+    esac
+}
+
+test_pagerduty() {
+    say "testing pagerduty..."
+    if [[ ! -f /etc/credstore.encrypted/pagerduty-routing-key ]]; then
+        skip pagerduty "pagerduty-routing-key not configured at build time"
+        return
+    fi
+    if [[ "${SEND_PROBE_PAGE}" != "yes" ]]; then
+        skip pagerduty "probe page disabled via --no-probe-page"
+        return
+    fi
+    local trigger_code resolve_code
+    trigger_code="$(systemd-run --pipe --wait --collect \
+        --property=LoadCredentialEncrypted=pagerduty-routing-key:/etc/credstore.encrypted/pagerduty-routing-key \
+        /bin/bash -c '
+            key="$(cat "$CREDENTIALS_DIRECTORY/pagerduty-routing-key")"
+            payload=$(jq -n \
+                --arg rk "$key" \
+                --arg dk "'"${HOST}"'-runtime-validate-probe" \
+                --arg host "'"${HOST}"'" \
+                --arg ts "'"${NOW}"'" \
+                "{routing_key:\$rk, event_action:\"trigger\", dedup_key:\$dk, payload:{summary:\"ab-runtime-validate probe\", source:\$host, severity:\"info\", timestamp:\$ts, component:\"runtime-validate\", group:\"validate\", class:\"probe\"}}")
+            curl --silent --max-time 10 --output /dev/null --write-out "%{http_code}" \
+                -X POST https://events.pagerduty.com/v2/enqueue \
+                -H "Content-Type: application/json" \
+                --data-raw "$payload"
+        ' 2>/dev/null || echo 000)"
+
+    if [[ "${trigger_code}" != "202" ]]; then
+        fail pagerduty "trigger got HTTP ${trigger_code}"
+        return
+    fi
+    sleep 3
+    resolve_code="$(systemd-run --pipe --wait --collect \
+        --property=LoadCredentialEncrypted=pagerduty-routing-key:/etc/credstore.encrypted/pagerduty-routing-key \
+        /bin/bash -c '
+            key="$(cat "$CREDENTIALS_DIRECTORY/pagerduty-routing-key")"
+            payload=$(jq -n --arg rk "$key" --arg dk "'"${HOST}"'-runtime-validate-probe" \
+                "{routing_key:\$rk, event_action:\"resolve\", dedup_key:\$dk}")
+            curl --silent --max-time 10 --output /dev/null --write-out "%{http_code}" \
+                -X POST https://events.pagerduty.com/v2/enqueue \
+                -H "Content-Type: application/json" --data-raw "$payload"
+        ' 2>/dev/null || echo 000)"
+
+    if [[ "${resolve_code}" == "202" ]]; then
+        pass pagerduty "trigger + resolve both HTTP 202"
+    else
+        fail pagerduty "trigger ok but resolve got HTTP ${resolve_code} (incident may stay open)"
+    fi
+}
+
+test_healthchecks() {
+    say "testing healthchecks.io..."
+    if [[ ! -f /etc/credstore.encrypted/healthchecks-ping-url ]]; then
+        skip healthchecks "healthchecks-ping-url not configured at build time"
+        return
+    fi
+    local http_code
+    http_code="$(systemd-run --pipe --wait --collect \
+        --property=LoadCredentialEncrypted=healthchecks-ping-url:/etc/credstore.encrypted/healthchecks-ping-url \
+        /bin/bash -c '
+            url="$(cat "$CREDENTIALS_DIRECTORY/healthchecks-ping-url")"
+            url="${url%$'"'"'\n'"'"'}"
+            curl --silent --max-time 10 --output /dev/null --write-out "%{http_code}" \
+                --data "ab-runtime-validate probe from '"${HOST}"'" \
+                "${url}/start"
+        ' 2>/dev/null || echo 000)"
+    case "${http_code}" in
+        200) pass healthchecks "ping/start accepted (HTTP 200)" ;;
+        *)   fail healthchecks "unexpected HTTP ${http_code}" ;;
+    esac
+}
+
+# ===========================================================================
+# Run all tests
+# ===========================================================================
+
+say "ab-runtime-validate on ${HOST} at ${NOW}"
+say "mode: ${MODE}"
+say ""
+
+test_ssh
+test_tailscale
+test_cloudflared
+test_sendgrid
+test_pagerduty
+test_healthchecks
+
+# ===========================================================================
+# Write outputs
+# ===========================================================================
+
+# JSON output
+{
+    printf '{\n'
+    printf '  "host": "%s",\n' "${HOST}"
+    printf '  "timestamp": "%s",\n' "${NOW}"
+    printf '  "mode": "%s",\n' "${MODE}"
+    printf '  "booted_since": "%s",\n' "${BOOTED_SINCE}"
+    printf '  "results": {\n'
+    first=1
+    for k in ssh tailscale cloudflared sendgrid pagerduty healthchecks; do
+        [[ ${first} -eq 1 ]] || printf ',\n'
+        first=0
+        printf '    "%s": {"result": "%s", "detail": %s}' "$k" "${RESULT[$k]}" "$(jq -Rn --arg d "${DETAIL[$k]}" '$d')"
+    done
+    printf '\n  }\n'
+    printf '}\n'
+} >"${JSON_OUT}"
+chmod 0644 "${JSON_OUT}"
+
+# Text output
+{
+    printf 'ab-runtime-validate report\n'
+    printf '==========================\n'
+    printf 'host:         %s\n' "${HOST}"
+    printf 'timestamp:    %s\n' "${NOW}"
+    printf 'mode:         %s\n' "${MODE}"
+    printf 'booted since: %s\n' "${BOOTED_SINCE}"
+    printf '\n'
+    printf '%-14s  %-5s  %s\n' FEATURE RESULT DETAIL
+    printf '%-14s  %-5s  %s\n' '--------------' '-----' '------------------------------'
+    for k in ssh tailscale cloudflared sendgrid pagerduty healthchecks; do
+        printf '%-14s  %-5s  %s\n' "$k" "${RESULT[$k]}" "${DETAIL[$k]}"
+    done
+} >"${TXT_OUT}"
+chmod 0644 "${TXT_OUT}"
+
+# Print human-readable summary
+say ""
+say "summary:"
+say "========"
+cat "${TXT_OUT}" | tail -n +6 | while IFS= read -r line; do say "  $line"; done
+
+# Count failures of CONFIGURED features (skip != fail)
+fails=0
+for k in "${!RESULT[@]}"; do
+    [[ "${RESULT[$k]}" == "fail" ]] && fails=$((fails+1))
+done
+
+# ===========================================================================
+# Optional: send a summary email if SendGrid is configured
+# ===========================================================================
+if [[ -f /etc/credstore.encrypted/sendgrid-api-key ]] && [[ "${SEND_SUMMARY_EMAIL}" == "yes" ]]; then
+    say ""
+    say "sending summary email via SendGrid..."
+    subject_prefix="RUNTIME-VALIDATE OK"
+    (( fails > 0 )) && subject_prefix="RUNTIME-VALIDATE FAIL (${fails})"
+    body="$(cat "${TXT_OUT}")"
+    systemd-run --pipe --wait --collect \
+        --property=LoadCredentialEncrypted=sendgrid-api-key:/etc/credstore.encrypted/sendgrid-api-key \
+        --property=EnvironmentFile=-/etc/default/ab-monitor \
+        /bin/bash -c '
+            key="$(cat "$CREDENTIALS_DIRECTORY/sendgrid-api-key")"
+            [[ -z "${AB_MONITOR_EMAIL_TO:-}" || -z "${AB_MONITOR_EMAIL_FROM:-}" ]] && exit 0
+            payload=$(jq -n \
+                --arg to "$AB_MONITOR_EMAIL_TO" \
+                --arg from "$AB_MONITOR_EMAIL_FROM" \
+                --arg subject "['"${HOST}"'] '"${subject_prefix}"'" \
+                --arg body "'"${body//\"/\\\"}"'" \
+                "{personalizations:[{to:[{email:\$to}]}], from:{email:\$from}, subject:\$subject, content:[{type:\"text/plain\", value:\$body}]}")
+            curl --silent --max-time 10 --output /dev/null \
+                -X POST https://api.sendgrid.com/v3/mail/send \
+                -H "Authorization: Bearer $key" \
+                -H "Content-Type: application/json" \
+                --data-raw "$payload"
+        ' 2>/dev/null || say "  (summary email failed to send; see journal)"
+fi
+
+# Mark first-boot complete
+if [[ "${MODE}" == "first-boot" ]]; then
+    touch "${FIRSTBOOT_MARKER}"
+fi
+
+say ""
+if (( fails > 0 )); then
+    say "VALIDATION COMPLETE: ${fails} configured feature(s) FAILED"
+    exit 1
+fi
+say "VALIDATION COMPLETE: all configured features pass"
+exit 0

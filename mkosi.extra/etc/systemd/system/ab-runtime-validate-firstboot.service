@@ -1,0 +1,39 @@
+[Unit]
+Description=Validate configured features on first boot
+Documentation=file:///usr/local/sbin/ab-runtime-validate
+# Only runs the FIRST time after a fresh deployment, not every boot.
+ConditionPathExists=!/var/lib/ab-runtime-validate/first-boot-done
+
+# Run well after the network, user provisioning, and alerting stack
+# have had a chance to come up.
+After=network-online.target
+After=ab-user-provision.service
+After=tailscale-up.service
+After=cloudflared.service
+After=ab-monitor.timer
+After=ab-heartbeat.timer
+Wants=network-online.target
+
+# Do NOT fail the boot if validation fails — we want the box up and
+# reachable even if e.g. SendGrid rejects our key. ab-monitor will
+# pick up whatever is genuinely broken on its next tick.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Give Tailscale and cloudflared up to 5 minutes to finish coming up
+# before we decide they failed.
+TimeoutStartSec=8min
+
+ExecStart=/usr/local/sbin/ab-runtime-validate --first-boot
+
+# Sandboxing (the script itself uses systemd-run to reload credentials,
+# so we do not need LoadCredentialEncrypted= here).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ab-runtime-validate
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
