@@ -1,0 +1,54 @@
+[Unit]
+Description=Ensure Tailscale is authenticated and up
+Documentation=man:tailscale(8)
+After=tailscaled.service network-online.target
+Requires=tailscaled.service
+Wants=network-online.target
+
+# Only act if we have a credential to work with. If the credential is
+# missing, log a warning via the watchdog timer instead of failing
+# every boot.
+ConditionPathExists=/etc/credstore.encrypted/tailscale-authkey
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Decrypt on the fly into $CREDENTIALS_DIRECTORY. The plaintext lives
+# only for the lifetime of this process, in a tmpfs that only this unit
+# can see.
+LoadCredentialEncrypted=tailscale-authkey:/etc/credstore.encrypted/tailscale-authkey
+
+# Allow customization of hostname / flags per host without editing the
+# unit. The file is optional.
+EnvironmentFile=-/etc/default/tailscale-up
+
+ExecStart=/usr/local/libexec/ab-remote-access/ensure-tailscale.sh
+
+# A transient auth failure (network down, key revoked) should not wedge
+# the boot: we retry every 60s up to 5 times. After that the watchdog
+# timer takes over.
+Restart=on-failure
+RestartSec=60s
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+# Sandboxing. tailscale CLI needs NET_ADMIN to bring the tun up but
+# does not need much else.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/tailscale
+PrivateTmp=yes
+PrivateDevices=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+
+[Install]
+WantedBy=multi-user.target

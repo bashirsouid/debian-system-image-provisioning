@@ -60,6 +60,10 @@ if $ALL; then
   echo "==> Thorough cleanup (--all)..."
   mkosi -f -f clean
   rm -rf mkosi.cache mkosi.builddir mkosi.output .mkosi-secrets .mkosi-thirdparty .config-checksum image image.*
+  rm -rf -- mkosi.extra/etc/credstore.encrypted
+  rm -f  -- mkosi.extra/var/lib/systemd/credential.secret
+  rm -rf -- mkosi.extra/etc/ssh/authorized_keys.d
+  rm -f  -- mkosi.extra/etc/apt/keyrings/*.gpg
 elif $DEEP; then
   echo "==> Deep cleanup (--deep)..."
   mkosi -f clean

@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodic Tailscale session watchdog
+Documentation=man:systemd.timer(5)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+AccuracySec=30s
+RandomizedDelaySec=60s
+Unit=tailscale-watchdog.service
+
+[Install]
+WantedBy=timers.target

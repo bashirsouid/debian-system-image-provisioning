@@ -1,0 +1,26 @@
+# .shellcheckrc - repo-wide shellcheck defaults.
+#
+# Disable a handful of overly-chatty checks that fight the style of
+# this codebase. Keep the list short and justified; do not disable
+# real correctness checks.
+
+# SC1091: "Not following: …" - fires on sourced files shellcheck cannot
+#   follow (e.g. /etc/os-release). We use it frequently and cannot
+#   statically resolve it.
+disable=SC1091
+
+# SC2155: "Declare and assign separately..." - the declare+assign-in-one
+#   idiom is fine in these scripts; we check exit codes where it matters.
+disable=SC2155
+
+# SC2016: "Expressions don't expand in single quotes" - we use literal
+#   $VAR strings in heredocs for systemd ExecStart lines on purpose.
+disable=SC2016
+
+# Honor external sourcing for files under scripts/ and mkosi.extra/
+external-sources=true
+
+# Default to bash even when the shebang is /bin/sh. Our scripts use
+# bash-isms; the shebangs should also say bash, but this catches
+# stragglers.
+shell=bash

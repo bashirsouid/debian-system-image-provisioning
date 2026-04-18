@@ -1,0 +1,61 @@
+#!/bin/bash
+# /usr/local/sbin/ab-enroll-tpm-unlock
+#
+# Adds a TPM2 slot to a LUKS-encrypted partition so it unlocks
+# automatically on boot, bound to the measured boot state.
+#
+# Prerequisites:
+#   * The target partition is already LUKS-formatted.
+#   * You know the existing passphrase (will be prompted).
+#   * The host has a TPM2 device (ls /dev/tpm0).
+#   * systemd-cryptenroll is available (trixie ships it).
+#
+# Usage:
+#   sudo ab-enroll-tpm-unlock /dev/disk/by-partlabel/home
+#   sudo ab-enroll-tpm-unlock /dev/disk/by-partlabel/DATA
+#
+# What gets bound:
+#   PCRs 0+2+7: firmware + option ROMs + Secure Boot policy. If
+#   someone disables Secure Boot or flashes new firmware, the TPM
+#   stops releasing the key and LUKS falls back to passphrase.
+#
+# Why not also PCR 4 (bootloader) or PCR 11 (UKI): those change on
+# every sysupdate-driven kernel/UKI update, which would require
+# re-enrolling after every deploy. PCRs 0,2,7 change only on
+# firmware / SB-policy events, which is the right granularity.
+
+set -euo pipefail
+
+log()  { printf '[enroll-tpm] %s\n'       "$*" >&2; }
+fail() { printf '[enroll-tpm] ERROR: %s\n' "$*" >&2; exit 1; }
+
+[[ $EUID -eq 0 ]] || fail "run as root"
+
+TARGET="${1:-}"
+[[ -n "${TARGET}" && -b "${TARGET}" ]] || fail "usage: $0 <block-device>"
+
+if ! cryptsetup isLuks "${TARGET}"; then
+    fail "${TARGET} is not a LUKS device"
+fi
+
+if [[ ! -c /dev/tpm0 && ! -c /dev/tpmrm0 ]]; then
+    fail "no TPM device at /dev/tpm0 or /dev/tpmrm0"
+fi
+
+if ! command -v systemd-cryptenroll >/dev/null; then
+    fail "systemd-cryptenroll not installed (apt-get install systemd)"
+fi
+
+log "enrolling TPM2 slot on ${TARGET} (PCRs 0,2,7)"
+log "you will be prompted for the EXISTING LUKS passphrase."
+
+systemd-cryptenroll \
+    --tpm2-device=auto \
+    --tpm2-pcrs=0+2+7 \
+    --wipe-slot=tpm2 \
+    "${TARGET}"
+
+log "enrolled. Test by rebooting; the partition should unlock without prompt."
+log "to add a crypttab entry for auto-unlock at boot, append to /etc/crypttab:"
+log "    $(basename "${TARGET}")  ${TARGET}  -  tpm2-device=auto,tpm2-pcrs=0+2+7"
+log "then regenerate the initramfs / UKI as appropriate."

@@ -1,0 +1,17 @@
+[Unit]
+Description=Run the healthchecks.io heartbeat every 5 minutes
+
+[Timer]
+# Start earlier than the monitor so the first "I am up" ping lands
+# as soon as network is up, not 5 minutes later.
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
+# Offset from ab-monitor.timer so the two never collide on the same
+# slow network. Heartbeat runs at boot+1m, boot+6m, boot+11m ...;
+# monitor runs at boot+5m, boot+10m, boot+15m ...
+RandomizedDelaySec=15s
+Unit=ab-heartbeat.service
+
+[Install]
+WantedBy=timers.target

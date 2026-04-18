@@ -1,0 +1,73 @@
+#!/bin/bash
+# /usr/local/sbin/ab-monitor-status
+#
+# Human-readable dump of the current monitor state. Run any time you
+# want to see what the monitor thinks is up/down without waiting for
+# the next timer tick.
+
+set -uo pipefail
+
+# shellcheck source=/dev/null
+source /etc/default/ab-monitor 2>/dev/null || true
+STATE_DIR="${AB_MONITOR_STATE_DIR:-/var/lib/ab-monitor}"
+STATE="${STATE_DIR}/state.json"
+
+bold()  { tput bold  2>/dev/null || true; }
+red()   { tput setaf 1 2>/dev/null || true; }
+green() { tput setaf 2 2>/dev/null || true; }
+yellow(){ tput setaf 3 2>/dev/null || true; }
+reset() { tput sgr0   2>/dev/null || true; }
+
+section() { printf '\n%s== %s ==%s\n' "$(bold)" "$1" "$(reset)"; }
+
+section "timers"
+systemctl list-timers --no-legend ab-monitor.timer ab-heartbeat.timer 2>/dev/null \
+    | awk '{printf "  %-20s next=%s %s  last=%s %s\n", $NF, $1, $2, $5, $6}'
+
+section "current alert state"
+if [[ ! -f "${STATE}" ]]; then
+    printf '  (no state file yet; monitor has not run)\n'
+else
+    jq -r '
+        to_entries
+        | map(select(.value.status=="fail"))
+        | if length==0 then "  all checks OK" else
+            map("  \(.value.severity|ascii_upcase)  \(.key)  \(.value.summary)")
+            | .[]
+          end
+    ' "${STATE}" | while IFS= read -r line; do
+        case "$line" in
+            *CRITICAL*) printf '%s%s%s\n' "$(red)"    "$line" "$(reset)" ;;
+            *ERROR*)    printf '%s%s%s\n' "$(red)"    "$line" "$(reset)" ;;
+            *WARNING*)  printf '%s%s%s\n' "$(yellow)" "$line" "$(reset)" ;;
+            *)          printf '%s\n' "$line" ;;
+        esac
+    done
+
+    section "full state"
+    jq -r '
+      to_entries
+      | sort_by(.key)
+      | .[]
+      | "  [\(.value.status|ascii_upcase)] \(.key)" +
+        "  severity=\(.value.severity)" +
+        "  since=\(.value.first_detected | if .==0 then "-" else (. | strftime("%Y-%m-%dT%H:%M:%SZ")) end)" +
+        "  count=\(.value.notified_count)"
+    ' "${STATE}"
+fi
+
+section "recent alerts in journal"
+journalctl -t ab-notify -t ab-monitor --since "-24h" -n 30 --no-pager --no-hostname 2>/dev/null \
+    | tail -n 30 || true
+
+section "credentials"
+for f in sendgrid-api-key pagerduty-routing-key healthchecks-ping-url; do
+    p="/etc/credstore.encrypted/$f"
+    if [[ -f "$p" ]]; then
+        printf '  %s%spresent%s: %s\n' "$(green)" "" "$(reset)" "$p"
+    else
+        printf '  %smissing%s: %s\n' "$(red)" "$(reset)" "$p"
+    fi
+done
+
+exit 0

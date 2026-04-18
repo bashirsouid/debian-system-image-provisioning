@@ -1,0 +1,65 @@
+# /etc/default/ab-monitor
+#
+# Sourced by /usr/local/libexec/ab-monitor/* scripts via systemd
+# EnvironmentFile=. Override per host by dropping
+# hosts/<host>/etc/default/ab-monitor into your host overlay.
+#
+# None of the secrets live here. SendGrid API key, PagerDuty routing
+# key, and Healthchecks.io ping URL are all loaded as encrypted systemd
+# credentials by the service units that need them.
+
+# Identity
+AB_MONITOR_HOSTNAME=
+# Free-form label for alert routing; surfaces as "component" in
+# PagerDuty and as a subject-line prefix in email.
+AB_MONITOR_ENV=home
+
+# Channels to use for active alerts. Space-separated. Valid values:
+#   sendgrid   pagerduty   journal
+# journal always runs on top of whatever else you enable (logs to
+# syslog/journal for forensic purposes).
+AB_MONITOR_CHANNELS="sendgrid pagerduty"
+
+# Destination email (SendGrid)
+AB_MONITOR_EMAIL_TO="[email protected]"
+AB_MONITOR_EMAIL_FROM="[email protected]"
+AB_MONITOR_EMAIL_FROM_NAME="AB Monitor"
+
+# PagerDuty event severity mapping. Events API v2 accepts:
+#   critical | error | warning | info
+# Per-alert severity is decided by the check modules; this is just
+# the floor (alerts below this severity never page PD; still email).
+AB_MONITOR_PD_MIN_SEVERITY="error"
+
+# Dedup window. Once an alert fires, re-fire the "still broken"
+# notification after this many seconds. Default 24h.
+AB_MONITOR_REMIND_AFTER_SECS=86400
+
+# How long after boot before we start running checks. Checks can flap
+# briefly while services are coming up after an A/B switch.
+AB_MONITOR_STARTUP_GRACE_SECS=300
+
+# How long without a successful A/B bless before we alert. 7 days by
+# default. Repeats once per REMIND_AFTER_SECS after that.
+AB_MONITOR_STALE_AB_SECS=604800
+
+# Where the monitor keeps its state. Defaults to /var/lib/ab-monitor.
+# Set this to a path on a persistent partition (e.g. /home/.ab-monitor)
+# if you want alert dedup state to survive A/B switches.
+AB_MONITOR_STATE_DIR=/var/lib/ab-monitor
+
+# Runbook URL prefix. Anchors like #tailscale-down get appended per
+# alert type. Keep this pointing at something you can reach from your
+# phone.
+AB_MONITOR_RUNBOOK_URL=
+
+# Timeouts for outbound HTTP from the notifiers. Keep short; if
+# SendGrid is down we do not want to block the timer.
+AB_MONITOR_HTTP_TIMEOUT=10
+
+# Checks directory. Anything executable here, in lexical order, is a
+# check. Drop in host-specific checks under
+# /usr/local/libexec/ab-monitor/checks.d/ (also picked up) without
+# editing the shipped ones.
+AB_MONITOR_CHECKS_DIR=/usr/local/libexec/ab-monitor/checks
+AB_MONITOR_EXTRA_CHECKS_DIR=/usr/local/libexec/ab-monitor/checks.d

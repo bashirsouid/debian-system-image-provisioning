@@ -1,0 +1,79 @@
+#!/bin/bash
+# /usr/local/sbin/ab-remote-access-status
+#
+# One-shot inspector for the Tailscale + cloudflared + sshd subsystem.
+# Safe to run as any user; some details are root-only.
+
+set -uo pipefail
+
+bold()  { tput bold 2>/dev/null || true; }
+reset() { tput sgr0 2>/dev/null || true; }
+
+section() { printf '\n%s== %s ==%s\n' "$(bold)" "$1" "$(reset)"; }
+
+section "ssh"
+if systemctl is-active --quiet ssh.service 2>/dev/null || systemctl is-active --quiet sshd.service 2>/dev/null; then
+    printf '  service: active\n'
+else
+    printf '  service: INACTIVE\n'
+fi
+if command -v ss >/dev/null; then
+    printf '  listeners:\n'
+    ss -H -tln | awk '$4 ~ /:22$/ {printf "    %s\n",$4}'
+fi
+if [[ -d /etc/ssh/authorized_keys.d ]]; then
+    for f in /etc/ssh/authorized_keys.d/*; do
+        [[ -e "$f" ]] || continue
+        n="$(grep -c -E '^(sk-ed25519|sk-ecdsa|ssh-ed25519|ssh-rsa|ecdsa-sha2)' "$f" 2>/dev/null || echo 0)"
+        printf '  user=%s keys=%s\n' "$(basename "$f")" "$n"
+    done
+fi
+
+section "tailscale"
+if systemctl is-active --quiet tailscaled.service; then
+    printf '  daemon:  active\n'
+else
+    printf '  daemon:  INACTIVE\n'
+fi
+if command -v tailscale >/dev/null; then
+    state="$(tailscale status --json 2>/dev/null | jq -r '.BackendState // "Unknown"')"
+    printf '  state:   %s\n' "${state}"
+    if [[ "${state}" == "Running" ]]; then
+        ip4="$(tailscale ip -4 2>/dev/null | head -n1)"
+        ip6="$(tailscale ip -6 2>/dev/null | head -n1)"
+        printf '  ipv4:    %s\n' "${ip4:-<none>}"
+        printf '  ipv6:    %s\n' "${ip6:-<none>}"
+    fi
+fi
+if systemctl list-timers tailscale-watchdog.timer --no-legend >/dev/null 2>&1; then
+    next="$(systemctl list-timers tailscale-watchdog.timer --no-legend 2>/dev/null | awk '{print $1,$2}')"
+    printf '  watchdog next: %s\n' "${next:-<none>}"
+fi
+
+section "cloudflared"
+if systemctl is-active --quiet cloudflared.service; then
+    printf '  service: active\n'
+    body="$(curl --silent --max-time 2 http://127.0.0.1:45123/ready 2>/dev/null || true)"
+    if [[ -n "${body}" ]]; then
+        status="$(jq -r '.status // "?"' <<<"${body}" 2>/dev/null || echo '?')"
+        ready="$(jq -r '.readyConnections // "?"' <<<"${body}" 2>/dev/null || echo '?')"
+        cid="$(jq -r '.connectorId // "?"' <<<"${body}" 2>/dev/null || echo '?')"
+        printf '  status=%s readyConnections=%s connectorId=%s\n' "${status}" "${ready}" "${cid}"
+    else
+        printf '  metrics: unreachable\n'
+    fi
+else
+    printf '  service: INACTIVE\n'
+fi
+
+section "credentials"
+for f in /etc/credstore.encrypted/tailscale-authkey /etc/credstore.encrypted/cloudflared-token; do
+    if [[ -f "$f" ]]; then
+        m="$(stat -c '%a %U:%G' "$f")"
+        printf '  %s (%s)\n' "$f" "$m"
+    else
+        printf '  %s MISSING\n' "$f"
+    fi
+done
+
+exit 0

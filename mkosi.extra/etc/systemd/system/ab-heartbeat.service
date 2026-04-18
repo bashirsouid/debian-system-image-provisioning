@@ -1,0 +1,21 @@
+[Unit]
+Description=Heartbeat to healthchecks.io (dead-man's switch)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
+[Service]
+Type=oneshot
+LoadCredentialEncrypted=healthchecks-ping-url:/etc/credstore.encrypted/healthchecks-ping-url
+EnvironmentFile=-/etc/default/ab-monitor
+ExecStart=/usr/local/libexec/ab-monitor/heartbeat.sh
+
+TimeoutStartSec=60s
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictSUIDSGID=yes

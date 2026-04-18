@@ -1,0 +1,53 @@
+[Unit]
+Description=Cloudflare Tunnel (out-of-band SSH / backup access)
+Documentation=https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/credstore.encrypted/cloudflared-token
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+
+# Token is loaded only for the lifetime of this service and is never
+# written to disk in plaintext.
+LoadCredentialEncrypted=cloudflared-token:/etc/credstore.encrypted/cloudflared-token
+
+# cloudflared reads --token from argv. We dereference the credential
+# inside a subshell so the environment of the parent process does not
+# contain the token.
+ExecStart=/bin/sh -c 'exec /usr/bin/cloudflared --no-autoupdate --metrics 127.0.0.1:45123 tunnel run --token "$(cat "$CREDENTIALS_DIRECTORY/cloudflared-token")"'
+
+Restart=always
+RestartSec=30s
+
+# cloudflared does not need to run as root. The debian package creates
+# the 'cloudflared' user; we reuse it.
+User=cloudflared
+Group=cloudflared
+
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# Sandboxing
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/cloudflared /var/log/cloudflared
+StateDirectory=cloudflared
+LogsDirectory=cloudflared
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

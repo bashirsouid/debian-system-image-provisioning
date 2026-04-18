@@ -46,3 +46,5 @@ if [[ -n "${AB_IMAGE_VERSION:-}" ]]; then
   echo "==> [FINALIZE] setting IMAGE_VERSION=$AB_IMAGE_VERSION in /usr/lib/os-release"
   append_or_replace_os_release_key IMAGE_VERSION "$AB_IMAGE_VERSION"
 fi
+
+systemctl --root="${BUILDROOT}" preset-all

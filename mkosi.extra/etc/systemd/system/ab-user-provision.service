@@ -1,0 +1,27 @@
+[Unit]
+Description=Provision local user accounts from /etc/ab-users.json
+Documentation=file:///usr/local/libexec/ab-user-provision.sh
+ConditionPathExists=/etc/ab-users.json
+ConditionPathExists=!/var/lib/ab-user-provision/done
+DefaultDependencies=no
+After=local-fs.target systemd-sysusers.service
+Before=systemd-user-sessions.service getty.target graphical.target multi-user.target
+RequiresMountsFor=/etc /var/lib
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/ab-user-provision.sh
+
+# We need root to create users, chpasswd, etc. No ProtectSystem=strict
+# because useradd mutates /etc/passwd, /etc/shadow, /etc/group.
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+
+# If provisioning fails, fail the boot visibly. The ab-health-gate
+# already fails slots with failed units.
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target graphical.target

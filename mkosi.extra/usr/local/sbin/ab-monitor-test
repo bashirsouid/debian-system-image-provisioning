@@ -1,0 +1,88 @@
+#!/bin/bash
+# /usr/local/sbin/ab-monitor-test
+#
+# Fires a test alert through each configured notification channel.
+# Useful for validating credentials right after a deploy.
+#
+# Usage:
+#   sudo ab-monitor-test                    # trigger + immediate resolve
+#   sudo ab-monitor-test --channel sendgrid # only a specific channel
+#   sudo ab-monitor-test --keep-open        # fire trigger but do not resolve
+#
+# The test uses alert key "monitor_self_test" so real alert dedup
+# state is not touched.
+
+set -uo pipefail
+
+CHANNEL=""
+KEEP_OPEN="no"
+RESOLVE_ONLY="no"
+
+while (($#)); do
+    case "$1" in
+        --channel)      CHANNEL="$2"; shift 2 ;;
+        --keep-open)    KEEP_OPEN="yes"; shift ;;
+        --resolve-only) RESOLVE_ONLY="yes"; shift ;;
+        -h|--help)      sed -n '2,14p' "$0"; exit 0 ;;
+        *) echo "unknown arg: $1" >&2; exit 2 ;;
+    esac
+done
+
+if [[ $EUID -ne 0 ]]; then
+    echo "must run as root (needs credentials)." >&2; exit 1
+fi
+
+# Run via systemd-run so credentials get loaded the exact same way as
+# ab-monitor.service does. Otherwise we would have to reimplement
+# credential decryption here.
+systemd_run_args=(
+    --pipe
+    --wait
+    --collect
+    --property=LoadCredentialEncrypted=sendgrid-api-key:/etc/credstore.encrypted/sendgrid-api-key
+    --property=LoadCredentialEncrypted=pagerduty-routing-key:/etc/credstore.encrypted/pagerduty-routing-key
+    --property=EnvironmentFile=-/etc/default/ab-monitor
+)
+
+[[ -n "${CHANNEL}" ]] && systemd_run_args+=(--setenv "AB_MONITOR_CHANNELS=${CHANNEL}")
+
+if [[ "${RESOLVE_ONLY}" != "yes" ]]; then
+    echo ">>> sending trigger event (key=monitor_self_test)"
+    systemd-run "${systemd_run_args[@]}" \
+        /usr/local/libexec/ab-monitor/ad-hoc-alert.sh \
+        monitor_self_test warning "Test alert from ab-monitor-test on $(hostname -s)" \
+        '{"test":true,"run_by":"'"${SUDO_USER:-root}"'"}' || {
+        echo "trigger failed" >&2; exit 3;
+    }
+
+    if [[ "${KEEP_OPEN}" == "yes" ]]; then
+        echo
+        echo "Trigger sent. Incident was NOT resolved. Resolve it yourself"
+        echo "in the PagerDuty UI, or re-run:"
+        echo "    sudo ab-monitor-test --resolve-only"
+        exit 0
+    fi
+
+    # Give PagerDuty a beat to process trigger before resolve.
+    sleep 3
+fi
+
+echo ">>> sending resolve event"
+systemd-run "${systemd_run_args[@]}" \
+    /bin/bash -c '
+        export CREDENTIALS_DIRECTORY="$CREDENTIALS_DIRECTORY"
+        export AB_EVENT=resolve AB_KEY=monitor_self_test AB_SEVERITY=warning
+        export AB_SUMMARY="test resolve" AB_DETAILS="{}"
+        export AB_HOST="$(hostname -s)" AB_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        export AB_DEDUP_KEY="${AB_HOST}-${AB_KEY}"
+        source /etc/default/ab-monitor 2>/dev/null || true
+        for c in ${AB_MONITOR_CHANNELS:-sendgrid pagerduty}; do
+            /usr/local/libexec/ab-monitor/notifiers/${c}.sh || true
+        done' || {
+    echo "resolve failed" >&2; exit 4;
+}
+
+echo
+echo "Done. Check your inbox and/or the PagerDuty dashboard; you should"
+echo "see both a trigger and a resolve for 'monitor_self_test'."
+exit 0

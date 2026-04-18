@@ -1,0 +1,12 @@
+[Unit]
+Description=Probe cloudflared tunnel health and restart if unhealthy
+After=cloudflared.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/ab-remote-access/ensure-cloudflared.sh
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

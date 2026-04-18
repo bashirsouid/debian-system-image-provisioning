@@ -1,15 +1,18 @@
 [
   {
     "username": "demo",
-    "password": "change-me-now",
-    "groups": "sudo,audio,video,render,input",
+    "comment": "Primary login user",
+    "can_login": true,
+    "uid": 1000,
+    "gid": 1000,
+    "primary_group": "demo",
+    "groups": ["sudo", "audio", "video", "render", "input", "plugdev", "dialout"],
     "shell": "/bin/bash",
-    "can_login": true
-  },
-  {
-    "username": "deploy",
-    "groups": "sudo",
-    "shell": "/bin/bash",
-    "can_login": false
+
+    "password_hash": "!",
+
+    "force_password_change_on_first_login": false,
+
+    "ssh_authorized_keys_file": ".mkosi-secrets/ssh-authorized-keys"
   }
 ]

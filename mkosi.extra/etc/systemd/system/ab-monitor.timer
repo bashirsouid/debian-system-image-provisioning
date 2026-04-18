@@ -1,0 +1,18 @@
+[Unit]
+Description=Run the AB reliability monitor every 5 minutes
+Documentation=file:///usr/local/libexec/ab-monitor/check.sh
+
+[Timer]
+# Wait 5 min after boot before the first run; the startup grace in
+# check.sh enforces the same thing, but keeping the timer honest helps
+# when looking at systemctl list-timers.
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+# Up to 60s jitter so three rebuilt hosts do not hit SendGrid in the
+# same TCP second.
+RandomizedDelaySec=60s
+Unit=ab-monitor.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,31 @@
+# Optional overrides for tailscale up. Sourced by
+# /usr/local/libexec/ab-remote-access/ensure-tailscale.sh via systemd
+# EnvironmentFile.
+#
+# Host overlays can drop their own /etc/default/tailscale-up via
+# mkosi.extra under hosts/<name>/ to override these values per host.
+
+# Login server to use. Leave empty for the default (controlplane.tailscale.com).
+# TAILSCALE_LOGIN_SERVER=https://headscale.example.com
+
+# Login hostname in the tailnet. If empty we use `hostname -s`.
+# TAILSCALE_HOSTNAME=
+
+# Tags to apply to this node. Must already be declared in your ACLs.
+# Example: --advertise-tags=tag:workstation,tag:owner-you
+# TAILSCALE_TAGS=
+
+# Accept DNS from the tailnet. Default yes.
+TAILSCALE_ACCEPT_DNS=true
+
+# Accept subnet routes advertised by other nodes. Default no for
+# workstation hosts, yes for cloudbox.
+TAILSCALE_ACCEPT_ROUTES=false
+
+# Run tailscale SSH server? We prefer standard sshd over Tailscale
+# tunnel for forensic / logging reasons, so default off.
+TAILSCALE_SSH=false
+
+# Operator for the tailscale CLI when run without sudo. Default empty
+# (root-only operation via sudo).
+TAILSCALE_OPERATOR=

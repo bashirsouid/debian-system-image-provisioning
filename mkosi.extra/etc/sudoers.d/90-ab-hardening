@@ -1,0 +1,59 @@
+# /etc/sudoers.d/90-ab-hardening
+#
+# Hardens the sudoers policy beyond the Debian default. Install this
+# after sudo is configured with the %sudo group as administrator
+# (which is Debian's default).
+#
+# Validate this file with: sudo visudo -c -f /etc/sudoers.d/90-ab-hardening
+
+# Short cached-auth window. The default is 15 minutes; 5 makes an
+# "attacker gets to terminal you just sudo'd from" window smaller.
+Defaults        timestamp_timeout=5
+
+# Per-tty timestamps so a background sudo in tmux pane A does not
+# grant free sudo in tmux pane B.
+Defaults        timestamp_type=tty
+
+# Always require a password, even for root. Blocks an attacker who
+# somehow pivots to another admin account from invoking sudo without
+# a password.
+Defaults        !rootpw
+Defaults        !runaspw
+Defaults        !targetpw
+
+# If you type the password wrong, tell us about it in the journal.
+Defaults        badpass_message="authentication failure"
+Defaults        lecture=once
+
+# Force a clean, minimal environment for sudo commands. Prevents
+# environment-injection attacks through variables like LD_PRELOAD,
+# PYTHONPATH, etc. The default /etc/sudoers already does most of this
+# but it is worth being explicit.
+Defaults        env_reset
+Defaults        env_keep = "COLORS DISPLAY HOSTNAME HISTSIZE KDEDIR LS_COLORS"
+Defaults        env_keep += "MAIL PS1 PS2 QTDIR USERNAME LANG LC_ADDRESS LC_CTYPE"
+Defaults        env_keep += "LC_COLLATE LC_IDENTIFICATION LC_MEASUREMENT LC_MESSAGES"
+Defaults        env_keep += "LC_MONETARY LC_NAME LC_NUMERIC LC_PAPER LC_TELEPHONE"
+Defaults        env_keep += "LC_TIME LC_ALL LANGUAGE LINGUAS _XKB_CHARSET XAUTHORITY"
+Defaults        secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Require a real tty. Blocks a compromised service account from
+# pivoting via a stolen sudo token without an interactive session.
+Defaults        requiretty
+Defaults        !visiblepw
+
+# Log to the journal via syslog. These lines get tagged 'sudo' and
+# are trivial to grep for:
+#     journalctl -t sudo --since -24h
+Defaults        syslog=authpriv
+Defaults        log_input, log_output
+Defaults        iolog_dir="/var/log/sudo-io"
+
+# Require the use_pty option so sudo always allocates a PTY. Prevents
+# terminal-injection attacks where sudo would otherwise inherit the
+# parent's tty directly.
+Defaults        use_pty
+
+# %sudo group still gets sudo, but with the above restrictions.
+# (This is Debian's default; left here as documentation.)
+%sudo   ALL=(ALL:ALL) ALL

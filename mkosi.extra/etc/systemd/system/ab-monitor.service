@@ -1,0 +1,45 @@
+[Unit]
+Description=AB reliability monitor (health checks + alerts)
+Documentation=file:///usr/local/libexec/ab-monitor/check.sh
+After=network-online.target
+Wants=network-online.target
+# Run after the main services we are monitoring have had a chance to
+# start. We also gate on our own startup grace in check.sh, so this
+# is belt-and-suspenders.
+After=tailscaled.service cloudflared.service ssh.service
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
+[Service]
+Type=oneshot
+
+# All outbound-notification secrets are loaded here and exposed to
+# notify.sh -> notifiers/*.sh via $CREDENTIALS_DIRECTORY.
+# ConditionPathExists on each individual credential is NOT possible;
+# we just tolerate missing ones in the notifiers themselves.
+LoadCredentialEncrypted=sendgrid-api-key:/etc/credstore.encrypted/sendgrid-api-key
+LoadCredentialEncrypted=pagerduty-routing-key:/etc/credstore.encrypted/pagerduty-routing-key
+LoadCredentialEncrypted=healthchecks-ping-url:/etc/credstore.encrypted/healthchecks-ping-url
+
+EnvironmentFile=-/etc/default/ab-monitor
+ExecStart=/usr/local/libexec/ab-monitor/check.sh
+
+# We never want the monitor itself to wedge the box.
+TimeoutStartSec=120s
+
+# Sandboxing. The monitor needs to read various /run and /var/lib
+# paths, run systemctl, call bootctl, hit localhost HTTP, hit the
+# public internet. It does NOT need to write to /etc or /usr.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/ab-monitor /run/log
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes

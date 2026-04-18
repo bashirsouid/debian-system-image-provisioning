@@ -1,0 +1,114 @@
+#!/bin/bash
+# /usr/local/sbin/ab-enable-pam-u2f
+#
+# Enrolls a YubiKey for PAM-U2F sudo authentication on this host.
+# Does NOT edit /etc/pam.d/sudo at runtime - that file is owned by
+# the `sudo` package and runtime edits get clobbered by package
+# upgrades. It is also not the right place for A/B-slot config
+# because it would not survive a rollback.
+#
+# What this script does:
+#   1. Runs pamu2fcfg to enroll the device and produce a mapping line.
+#   2. Writes the mapping to /var/lib/ab-pam-u2f/u2f_mappings.
+#   3. Also saves a copy to ~/.config/Yubico/u2f_keys (upstream
+#      default location, per-user).
+#
+# How PAM-U2F becomes active for sudo:
+#   - After enrollment, copy the mapping file into the build tree:
+#         cp /var/lib/ab-pam-u2f/u2f_mappings \
+#            .mkosi-secrets/hosts/<host>/u2f-mappings
+#   - Rebuild with AB_ENABLE_PAM_U2F=yes. The build path installs
+#     the mapping at /etc/u2f_mappings and wires pam_u2f.so into the
+#     image's /etc/pam.d/sudo.
+#   - Deploy via sysupdate. Next boot has PAM-U2F enforced for sudo.
+#
+# This is a deliberately two-step workflow: sudo-touch-required is
+# a foot-gun to enable without a tested backup key, so we put a
+# conscious rebuild between "enrolled" and "enforced".
+
+set -euo pipefail
+
+log()  { printf '[enable-pam-u2f] %s\n'       "$*" >&2; }
+fail() { printf '[enable-pam-u2f] ERROR: %s\n' "$*" >&2; exit 1; }
+
+[[ $EUID -eq 0 ]] || fail "run with sudo"
+
+command -v pamu2fcfg >/dev/null 2>&1 \
+    || fail "pamu2fcfg not installed (apt-get install --no-install-recommends libpam-u2f pamu2fcfg)"
+
+USER_TO_ENROLL="${SUDO_USER:-}"
+[[ -n "${USER_TO_ENROLL}" ]] \
+    || fail "could not resolve invoking user (no SUDO_USER). Invoke via: sudo ab-enable-pam-u2f"
+
+id -u "${USER_TO_ENROLL}" >/dev/null 2>&1 || fail "no such user: ${USER_TO_ENROLL}"
+
+HOSTNAME_SHORT="$(hostname -s)"
+MAPPINGS_DIR=/var/lib/ab-pam-u2f
+MAPPINGS_FILE="${MAPPINGS_DIR}/u2f_mappings"
+USER_HOME="$(getent passwd "${USER_TO_ENROLL}" | cut -d: -f6)"
+USER_U2F_DIR="${USER_HOME}/.config/Yubico"
+USER_U2F_FILE="${USER_U2F_DIR}/u2f_keys"
+
+install -d -m 0700 "${MAPPINGS_DIR}"
+install -d -o "${USER_TO_ENROLL}" -g "${USER_TO_ENROLL}" -m 0700 "${USER_U2F_DIR}"
+touch "${MAPPINGS_FILE}"
+chmod 0600 "${MAPPINGS_FILE}"
+
+log "Enrolling YubiKey for user: ${USER_TO_ENROLL}"
+log "Touch the device when it flashes. Enter the FIDO2 PIN when prompted."
+
+pam_origin="pam://${HOSTNAME_SHORT}"
+tmp="$(mktemp)"
+chmod 0600 "${tmp}"
+trap 'rm -f "${tmp}"' EXIT
+
+# Do not use shell > redirect after sudo (SC2024) even though we are
+# already root and the target is 0600 root-owned - pipe to tee for
+# a cleaner pattern.
+if ! sudo -u "${USER_TO_ENROLL}" -- \
+        pamu2fcfg -u "${USER_TO_ENROLL}" -o "${pam_origin}" -i "${pam_origin}" \
+        | tee "${tmp}" >/dev/null; then
+    fail "pamu2fcfg failed. Is the YubiKey inserted and does it support FIDO2?"
+fi
+
+new_line="$(<"${tmp}")"
+[[ -n "${new_line}" ]] || fail "pamu2fcfg produced no output"
+
+# Merge into the central mapping file: replace the user's line if
+# already present, otherwise append. Preserves other users.
+awk -v u="${USER_TO_ENROLL}" -v line="${new_line}" '
+    BEGIN { replaced = 0 }
+    {
+        split($0, parts, ":")
+        if (parts[1] == u) { print line; replaced = 1; next }
+        print
+    }
+    END { if (!replaced) print line }
+' "${MAPPINGS_FILE}" >"${MAPPINGS_FILE}.new"
+mv "${MAPPINGS_FILE}.new" "${MAPPINGS_FILE}"
+chmod 0600 "${MAPPINGS_FILE}"
+
+# Per-user file (upstream PAM-U2F default location). User owns it.
+printf '%s\n' "${new_line}" >"${USER_U2F_FILE}"
+chown "${USER_TO_ENROLL}:${USER_TO_ENROLL}" "${USER_U2F_FILE}"
+chmod 0600 "${USER_U2F_FILE}"
+
+log "enrollment saved:"
+log "  central: ${MAPPINGS_FILE}"
+log "  per-user: ${USER_U2F_FILE}"
+log ""
+log "To ENFORCE PAM-U2F for sudo on the next image rebuild:"
+log ""
+log "  1. Copy the mapping into your build tree (run on your build host):"
+log "       cp ${MAPPINGS_FILE} .mkosi-secrets/hosts/${HOSTNAME_SHORT}/u2f-mappings"
+log "       chmod 0600 .mkosi-secrets/hosts/${HOSTNAME_SHORT}/u2f-mappings"
+log ""
+log "  2. Rebuild with AB_ENABLE_PAM_U2F=yes:"
+log "       AB_ENABLE_PAM_U2F=yes ./build.sh --profile <p> --host ${HOSTNAME_SHORT}"
+log ""
+log "  3. Deploy via sysupdate."
+log ""
+log "BEFORE you rebuild: enroll a SECOND YubiKey on the same host and"
+log "confirm both mappings are present in ${MAPPINGS_FILE}."
+log "A lost single YubiKey means no sudo until you recover via the"
+log "Cloudflare Tunnel SSH path and rebuild without PAM-U2F enforced."

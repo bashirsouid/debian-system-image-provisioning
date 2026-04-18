@@ -1,0 +1,12 @@
+enable tailscale-up.service
+enable tailscale-watchdog.timer
+enable cloudflared.service
+enable cloudflared-watchdog.timer
+enable ab-user-provision.service
+enable ab-monitor.timer
+enable ab-heartbeat.timer
+enable ssh.service
+enable nftables.service
+enable systemd-resolved.service
+enable systemd-timesyncd.service
+enable systemd-oomd.service

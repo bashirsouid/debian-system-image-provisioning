@@ -1,0 +1,22 @@
+[Unit]
+Description=Fire an immediate ab-monitor alert about failed unit %i
+Documentation=file:///usr/local/libexec/ab-monitor/ad-hoc-alert.sh
+# Never inherit failure loops from the unit that triggered us.
+DefaultDependencies=no
+After=network-online.target
+
+[Service]
+Type=oneshot
+LoadCredentialEncrypted=sendgrid-api-key:/etc/credstore.encrypted/sendgrid-api-key
+LoadCredentialEncrypted=pagerduty-routing-key:/etc/credstore.encrypted/pagerduty-routing-key
+LoadCredentialEncrypted=healthchecks-ping-url:/etc/credstore.encrypted/healthchecks-ping-url
+EnvironmentFile=-/etc/default/ab-monitor
+# %i is the failing unit name (from OnFailure=ab-monitor-alert@%n.service).
+ExecStart=/usr/local/libexec/ab-monitor/ad-hoc-alert.sh "unit_failed_%i" critical "systemd unit %i entered failed state"
+
+TimeoutStartSec=60s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/ab-monitor
+PrivateTmp=yes

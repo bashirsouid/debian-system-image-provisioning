@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic cloudflared tunnel health probe
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=15s
+RandomizedDelaySec=30s
+Unit=cloudflared-watchdog.service
+
+[Install]
+WantedBy=timers.target

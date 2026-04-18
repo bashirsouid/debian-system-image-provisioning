@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Fail fast if shellcheck finds a regression
+"${REPO_ROOT}/scripts/lint.sh"
+
+# Validate secrets shape and perms before we build
+"${REPO_ROOT}/scripts/verify-build-secrets.sh" \
+    ${STRICT_SECRETS:+--strict} \
+    ${PROFILE:+--profile "${PROFILE}"} \
+    ${HOST:+--host "${HOST}"}
+
+# Encrypt tailscale/cloudflared/ssh; writes per-image credential.secret
+"${REPO_ROOT}/scripts/package-credentials.sh" \
+    ${HOST:+--host "${HOST}"}
+
+# Encrypt sendgrid/pagerduty/healthchecks (reuses credential.secret)
+"${REPO_ROOT}/scripts/package-alert-credentials.sh" \
+    ${HOST:+--host "${HOST}"}
+
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SECRETS_DIR="$PROJECT_ROOT/.mkosi-secrets"
 THIRD_PARTY_DIR="$PROJECT_ROOT/.mkosi-thirdparty"

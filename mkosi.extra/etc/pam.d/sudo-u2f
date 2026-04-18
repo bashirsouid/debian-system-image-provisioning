@@ -1,0 +1,32 @@
+# /etc/pam.d/sudo-u2f
+#
+# Optional PAM-U2F profile for sudo. Requires a YubiKey touch in
+# addition to the password for sudo to succeed.
+#
+# To enable: append this line as the FIRST auth line in
+# /etc/pam.d/sudo (before the @include common-auth):
+#
+#     auth  required  pam_u2f.so authfile=/etc/u2f_mappings cue pinverification=1
+#
+# Or, use our enable script:
+#
+#     sudo /usr/local/sbin/ab-enable-pam-u2f
+#
+# Prerequisite: the YubiKey is enrolled against this host and the
+# mapping file /etc/u2f_mappings exists with entries like:
+#
+#     demo:pSwe...,04f4...:+XXX:FW=5.4.3:ES256:+presence+verification
+#
+# Generate the mapping on the host itself (required because the
+# key-handle is host-dependent unless you use -O resident):
+#
+#     sudo pamu2fcfg -u demo -o pam://<host> -i pam://<host> \
+#         > /etc/u2f_mappings
+#
+# authfile=/etc/u2f_mappings  - central mapping file, not ~/.config
+# cue                         - prompt with "Please touch the device"
+# pinverification=1           - require FIDO2 PIN (in addition to touch)
+# nouserok                    - DO NOT use this flag; it would allow
+#                               users without enrollments to bypass.
+
+auth        required    pam_u2f.so authfile=/etc/u2f_mappings cue pinverification=1

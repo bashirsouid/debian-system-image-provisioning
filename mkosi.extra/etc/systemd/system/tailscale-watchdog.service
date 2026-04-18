@@ -1,0 +1,19 @@
+[Unit]
+Description=Re-check Tailscale session and re-auth if needed
+After=tailscaled.service
+Requires=tailscaled.service
+ConditionPathExists=/etc/credstore.encrypted/tailscale-authkey
+
+[Service]
+Type=oneshot
+LoadCredentialEncrypted=tailscale-authkey:/etc/credstore.encrypted/tailscale-authkey
+EnvironmentFile=-/etc/default/tailscale-up
+ExecStart=/usr/local/libexec/ab-remote-access/ensure-tailscale.sh
+
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/tailscale
+PrivateTmp=yes
