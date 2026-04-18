@@ -1,22 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Fail fast if shellcheck finds a regression
-"${REPO_ROOT}/scripts/lint.sh"
-
-# Validate secrets shape and perms before we build
-"${REPO_ROOT}/scripts/verify-build-secrets.sh" \
-    ${STRICT_SECRETS:+--strict} \
-    ${PROFILE:+--profile "${PROFILE}"} \
-    ${HOST:+--host "${HOST}"}
-
-# Encrypt tailscale/cloudflared/ssh; writes per-image credential.secret
-"${REPO_ROOT}/scripts/package-credentials.sh" \
-    ${HOST:+--host "${HOST}"}
-
-# Encrypt sendgrid/pagerduty/healthchecks (reuses credential.secret)
-"${REPO_ROOT}/scripts/package-alert-credentials.sh" \
-    ${HOST:+--host "${HOST}"}
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SECRETS_DIR="$PROJECT_ROOT/.mkosi-secrets"
@@ -774,6 +758,52 @@ if [[ ! -f "$USERS_FILE" ]]; then
 fi
 
 ensure_base_hostdeps
+
+# Overlay integration: lint, validate secrets, package encrypted creds.
+# These run once per invocation. Skip with AB_SKIP_OVERLAY_GATES=yes.
+if [[ "${AB_SKIP_OVERLAY_GATES:-no}" != "yes" ]]; then
+
+    # Lint all shell scripts. Fast. Fails closed on any warning.
+    if [[ -x "$PROJECT_ROOT/scripts/lint.sh" ]]; then
+        echo "==> Running shellcheck..."
+        "$PROJECT_ROOT/scripts/lint.sh"
+    fi
+
+    # Validate secrets shape + permissions. Only runs if there is a
+    # .mkosi-secrets/ directory; otherwise this is a no-op.
+    if [[ -d "$PROJECT_ROOT/.mkosi-secrets" && \
+          -x "$PROJECT_ROOT/scripts/verify-build-secrets.sh" ]]; then
+        echo "==> Verifying .mkosi-secrets/ ..."
+        verify_args=()
+        [[ "${STRICT_SECRETS:-no}" == "yes" ]] && verify_args+=(--strict)
+        [[ "$PROFILE_SET" == true ]] && verify_args+=(--profile "$PROFILE")
+        [[ "$HOST_SET"    == true ]] && verify_args+=(--host "$HOST")
+        "$PROJECT_ROOT/scripts/verify-build-secrets.sh" "${verify_args[@]}"
+    fi
+
+    # Encrypt tailscale/cloudflared/ssh credentials into the image.
+    # Writes the per-image credential.secret that package-alert-credentials
+    # reuses, so this MUST run first.
+    if [[ -d "$PROJECT_ROOT/.mkosi-secrets" && \
+          -x "$PROJECT_ROOT/scripts/package-credentials.sh" ]]; then
+        echo "==> Packaging remote-access credentials..."
+        pkg_args=()
+        [[ "$HOST_SET" == true ]] && pkg_args+=(--host "$HOST")
+        "$PROJECT_ROOT/scripts/package-credentials.sh" "${pkg_args[@]}"
+    fi
+
+    # Encrypt sendgrid / pagerduty / healthchecks.io credentials.
+    # Reuses the per-image credential.secret.
+    if [[ -d "$PROJECT_ROOT/.mkosi-secrets" && \
+          -x "$PROJECT_ROOT/scripts/package-alert-credentials.sh" ]]; then
+        echo "==> Packaging alert credentials..."
+        pkg_args=()
+        [[ "$HOST_SET" == true ]] && pkg_args+=(--host "$HOST")
+        "$PROJECT_ROOT/scripts/package-alert-credentials.sh" "${pkg_args[@]}"
+    fi
+
+fi
+
 
 if [[ "$BUILD_ALL" == true ]]; then
   BUILD_TARGETS=(
