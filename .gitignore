@@ -16,6 +16,8 @@ mkosi.output/
 image
 image.*
 .config-checksum
+.mkosi-metadata/
+.mkosi-thirdparty/
 
 # Legacy
 .build/
