@@ -486,3 +486,20 @@ call `dpkg-maintscript-helper`.
 * `docs/secure-boot.md` — Secure Boot enrollment per host
 * `docs/live-test-usb.md` — hardware-test USB workflow
 * `docs/home-storage.md` — /home layout trade-offs
+
+## Future Work
+
+- [ ] Security audit for gaps
+- [ ] Manual human code review
+- [ ] Live USB test on Macbook
+- [ ] Live boot test on Macbook
+- [ ] Live USB test on Evo X2
+- [ ] Live boot test on Evo X2
+- [ ] Live USB test on Oracle Cloud VM
+- [ ] Live boot test on Oracle Cloud VM
+- [ ] Support automatic backups
+- [ ] Test email notification for problems
+- [ ] Test PagerDuty notificatin for problems
+- [ ] Test automatic VPN setup and watchdog recovery
+- [ ] Test CloudFlare tunnel setup and watchdog recovery
+- [ ] Setup metrics publishing to telegraf, influxdb, grafana
