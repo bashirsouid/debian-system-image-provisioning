@@ -6,6 +6,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
 # shellcheck source=scripts/lib/build-meta.sh
 source "$PROJECT_ROOT/scripts/lib/build-meta.sh"
+
 PROFILE="devbox"
 HOST=""
 RUNTIME_HOME=false
@@ -16,6 +17,14 @@ EXPLICIT_PROFILE=false
 EXPLICIT_HOST=false
 IMAGE_ID=""
 IMAGE_VERSION=""
+
+# Diagnostic options. Default off; exist specifically so we can figure
+# out *why* a VM will not boot before committing to a flash.
+DEBUG=false
+SERIAL=false
+BOOT_NSPAWN=false
+EXTRA_KERNEL_ARGS=()
+EXTRA_MKOSI_ARGS=()
 
 usage() {
   cat <<'USAGE'
@@ -34,9 +43,23 @@ Options:
   --persistent            boot the image with persistent writes
   --no-qemu-home-seed     do not mount the repo sample home seed into the VM
 
+Diagnostic options (use these when the image won't boot):
+  --debug                 mkosi --debug + verbose systemd logs + serial console
+  --serial                force serial/interactive console instead of GUI so
+                          boot output scrolls into this terminal
+  --boot-nspawn           boot with 'mkosi boot' (systemd-nspawn) instead of a
+                          real VM. Bypasses firmware + bootloader + kernel +
+                          initrd entirely and is the fastest way to tell
+                          whether the root tree itself is broken vs. the
+                          boot chain.
+  --kernel-arg ARG        append ARG to the guest kernel cmdline (repeatable)
+  --mkosi-arg ARG         append ARG to the mkosi invocation (repeatable)
+
 Examples:
   ./run.sh --profile devbox
-  ./run.sh --runtime-home
+  ./run.sh --debug
+  ./run.sh --boot-nspawn
+  ./run.sh --serial --kernel-arg systemd.unit=rescue.target
   ./run.sh --runtime-tree "$HOME/.config/awesome:/mnt/host-awesome"
 
 Notes:
@@ -51,14 +74,21 @@ Notes:
     Debian-trixie mkosi.
   - For full-home sharing, use disposable runs (--ephemeral) and keep in mind
     that the guest will be touching live host data.
+
+Troubleshooting a VM that will not boot:
+  1) ./run.sh --boot-nspawn            # does the root FS itself work?
+  2) ./run.sh --debug                  # serial console + full systemd debug
+  3) ./run.sh --serial --kernel-arg systemd.unit=rescue.target
+                                       # drop straight to rescue shell
+  4) mkosi summary                     # print the resolved config; confirms
+                                       # a kernel package is actually present
+                                       # in the resolved Packages= list
 USAGE
 }
 
-if ! ab_hostdeps_have_all_commands mkosi; then
-  ab_hostdeps_ensure_packages "vm run prerequisites" mkosi || exit 1
-fi
-ab_hostdeps_ensure_commands "vm run prerequisites" mkosi || exit 1
-
+# Parse arguments BEFORE running any host-dep install step, so that
+# ./run.sh --help on a fresh checkout does not prompt for sudo just to
+# print usage.
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)
@@ -91,6 +121,27 @@ while [[ $# -gt 0 ]]; do
       QEMU_HOME_SEED=false
       shift
       ;;
+    --debug)
+      DEBUG=true
+      SERIAL=true
+      shift
+      ;;
+    --serial)
+      SERIAL=true
+      shift
+      ;;
+    --boot-nspawn)
+      BOOT_NSPAWN=true
+      shift
+      ;;
+    --kernel-arg)
+      EXTRA_KERNEL_ARGS+=("${2:?missing kernel arg}")
+      shift 2
+      ;;
+    --mkosi-arg)
+      EXTRA_MKOSI_ARGS+=("${2:?missing mkosi arg}")
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -102,6 +153,26 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Host deps. 'mkosi vm' on an x86-64 UEFI image needs more than just
+# mkosi itself: qemu-system-x86, a UEFI firmware (ovmf), virtiofsd (for
+# RuntimeTrees= on recent mkosi), and swtpm when the image or profile
+# touches vTPM. Missing any of these can cause 'mkosi vm' to fail in
+# ways that look like "the image won't boot".
+REQUIRED_CMDS=(mkosi)
+REQUIRED_PKGS=(mkosi)
+if [[ "$BOOT_NSPAWN" == true ]]; then
+  REQUIRED_CMDS+=(systemd-nspawn)
+  REQUIRED_PKGS+=(systemd-container)
+else
+  REQUIRED_CMDS+=(qemu-system-x86_64 virtiofsd swtpm)
+  REQUIRED_PKGS+=(qemu-system-x86 ovmf virtiofsd swtpm)
+fi
+
+if ! ab_hostdeps_have_all_commands "${REQUIRED_CMDS[@]}"; then
+  ab_hostdeps_ensure_packages "vm run prerequisites" "${REQUIRED_PKGS[@]}" || exit 1
+fi
+ab_hostdeps_ensure_commands "vm run prerequisites" "${REQUIRED_CMDS[@]}" || exit 1
 
 METADATA_LOADED=false
 if [[ "$EXPLICIT_PROFILE" == true || "$EXPLICIT_HOST" == true ]]; then
@@ -155,7 +226,50 @@ for spec in "${RUNTIME_TREES[@]}"; do
   args+=("--runtime-tree=$spec")
 done
 
-echo "==> Booting the image in QEMU GUI (profile: $PROFILE)..."
+# Serial console overrides the Console=gui default in mkosi.conf and
+# tells the guest systemd to actually push journal output onto the
+# serial console. Without this, when boot fails, the VM window flashes
+# and dies and you have no way to read the failure.
+if [[ "$SERIAL" == true ]]; then
+  args+=("--console=interactive")
+  EXTRA_KERNEL_ARGS+=(
+    "console=ttyS0,115200"
+    "console=tty0"
+    "systemd.journald.forward_to_console=1"
+  )
+fi
+
+# Debug mode: verbose mkosi + verbose systemd + verbose udev. First flag
+# to reach for when you do not understand why a newly built image is
+# failing.
+if [[ "$DEBUG" == true ]]; then
+  args+=("--debug")
+  EXTRA_KERNEL_ARGS+=(
+    "systemd.log_level=debug"
+    "systemd.log_target=console"
+    "udev.log_level=info"
+    "rd.udev.log_level=info"
+  )
+fi
+
+# Splice extra kernel args in via KernelCommandLineExtra=. mkosi passes
+# these to the guest via SMBIOS at runtime; they are NOT baked into the
+# image, which is what we want for diagnostic iteration.
+if (( ${#EXTRA_KERNEL_ARGS[@]} > 0 )); then
+  args+=("--kernel-command-line-extra=${EXTRA_KERNEL_ARGS[*]}")
+fi
+
+if (( ${#EXTRA_MKOSI_ARGS[@]} > 0 )); then
+  args+=("${EXTRA_MKOSI_ARGS[@]}")
+fi
+
+# Choose verb last so --boot-nspawn can coexist with every other flag.
+VERB="vm"
+if [[ "$BOOT_NSPAWN" == true ]]; then
+  VERB="boot"
+fi
+
+echo "==> Booting the image (verb: $VERB, profile: $PROFILE)..."
 if [[ -n "$HOST" ]]; then
   echo "==> Host overlay: $HOST"
 fi
@@ -168,6 +282,15 @@ fi
 if [[ "$EPHEMERAL" == true ]]; then
   echo "==> Ephemeral VM snapshot enabled"
 fi
+if [[ "$SERIAL" == true ]]; then
+  echo "==> Serial/interactive console enabled"
+fi
+if [[ "$DEBUG" == true ]]; then
+  echo "==> Debug logging enabled"
+fi
+if [[ "$BOOT_NSPAWN" == true ]]; then
+  echo "==> Using systemd-nspawn (bypasses firmware + bootloader + kernel + initrd)"
+fi
 if [[ "$QEMU_HOME_SEED" == true && ( "$PROFILE" == "devbox" || "$PROFILE" == "macbook" ) ]]; then
   echo "==> QEMU sample home seed enabled"
 fi
@@ -175,4 +298,29 @@ for spec in "${RUNTIME_TREES[@]}"; do
   echo "==> Runtime tree: $spec"
 done
 
-exec mkosi "${args[@]}" vm
+# Do not exec on failure; print a triage hint instead, which is the
+# whole reason this script wraps mkosi in the first place.
+if mkosi "${args[@]}" "$VERB"; then
+  exit 0
+fi
+rc=$?
+cat >&2 <<'HINT'
+
+mkosi exited with a non-zero status.
+
+Quick triage:
+  - Does the root tree work at all?
+      ./run.sh --boot-nspawn
+    If that works but the real VM does not, the break is in firmware,
+    bootloader, UKI, or initrd.
+  - Is a kernel actually in the image?
+      mkosi summary
+    Check the resolved Packages= list for a linux-image-* entry. The
+    base mkosi.conf does not pull a kernel; kernels come from the
+    profile (liquorix / t2linux / stock). If the profile's kernel
+    install failed silently, systemd-boot has nothing to load.
+  - Is ovmf installed on the host? 'mkosi vm' needs a UEFI firmware.
+  - Re-run with --debug to get verbose systemd + mkosi output on the
+    serial console.
+HINT
+exit "$rc"
