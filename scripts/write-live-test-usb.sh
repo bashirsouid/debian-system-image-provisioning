@@ -26,6 +26,13 @@ IMAGE_VERSION=""
 IMAGE_ARCH=""
 IMAGE_BASENAME=""
 ALLOW_FIXED_DISK=no
+# By default the remaining space on the USB past ESP+root-a+root-b
+# becomes a user-writable exFAT partition so the test USB is actually
+# useful as a stick (copy files off the machine, carry installers,
+# etc.) instead of having ~tens of GiB of unallocated space. Disable
+# with --no-usb-storage.
+INCLUDE_USB_STORAGE=true
+USB_STORAGE_LABEL="USBDATA"
 
 usage() {
   cat <<'USAGE'
@@ -49,6 +56,10 @@ Options:
   --usb-esp-size SIZE   override the ESP size used for the USB bootstrap
   --usb-root-size SIZE  override the per-slot root size used for the USB bootstrap
   --embed-full-image    also copy the built full disk image into the USB bundle
+  --no-usb-storage      do not create the trailing exFAT storage partition
+                        (by default the remaining USB space becomes a
+                        user-writable exFAT partition labeled USBDATA)
+  --usb-storage-label L set the exFAT partition label (default: USBDATA)
   --allow-fixed-disk    permit writing to a non-removable (internal) disk;
                         the default refuses such targets to prevent the
                         "I flashed my laptop's SSD by accident" case
@@ -125,6 +136,55 @@ print_selected_build() {
   echo "    Disk image:     $SOURCE_DIR/$IMAGE_BASENAME"
 }
 
+# Shows the user two things right before the typed-path gate:
+#   BEFORE: the current partition table on the target as lsblk sees
+#           it right now. This is the "did I pick the right drive"
+#           check -- familiar labels (DATA, HOME, a USB stick you
+#           recognize) here are the last chance to notice a mistake.
+#   AFTER:  the layout systemd-repart is about to create, from
+#           --dry-run=yes. This is the "is this the layout I meant"
+#           check -- confirms ESP + two roots + the trailing exFAT
+#           storage partition match expectations before any writes.
+# systemd-repart accepts the target path directly (block device or
+# regular file), so this works before resolve_disk_device has
+# loop-attached a file target.
+preview_current_and_planned_layout() {
+  local target_real
+  target_real="$(readlink -f "$TARGET")"
+
+  echo "Current partition table on target (BEFORE):"
+  if [[ -b "$target_real" ]]; then
+    # -f shows fstype/label/uuid without needing root on some hosts;
+    # -o lays out the columns we want to see.
+    lsblk -o NAME,SIZE,TYPE,FSTYPE,PARTLABEL,LABEL,MOUNTPOINT "$target_real" 2>/dev/null \
+      || echo "  (lsblk failed; target may have no partition table yet)"
+  elif [[ -f "$target_real" ]]; then
+    printf '  raw image file: %s (%s bytes)\n' \
+      "$target_real" "$(stat -Lc '%s' "$target_real" 2>/dev/null || echo unknown)"
+    printf '  (will be loop-attached before repart runs)\n'
+  else
+    echo "  (target is neither a block device nor a regular file)"
+  fi
+  echo
+
+  echo "Planned layout after repart (AFTER):"
+  # Redirect stderr to stdout so the layout table lands in the panel
+  # rather than interleaving with the prompt. `|| true` because a
+  # dry-run failure (e.g. image too small for the roots) should
+  # still let the prompt proceed -- the real run will fail loudly
+  # and the user has already been warned.
+  systemd-repart --dry-run=yes --empty=force \
+    --definitions="$BOOTSTRAP_REPART_DIR" \
+    "$target_real" 2>&1 | sed 's/^/  /' || true
+  if [[ "$INCLUDE_USB_STORAGE" == true ]]; then
+    echo
+    echo "  Note: the USBDATA partition above is created unformatted by"
+    echo "        systemd-repart, then formatted as exFAT (label=$USB_STORAGE_LABEL)"
+    echo "        after the A/B bootstrap finishes."
+  fi
+  echo
+}
+
 # The one destructive-confirmation point for the USB write flow. Runs
 # BEFORE bootstrap-ab-disk.sh so the enhanced panel here (drive identity
 # + full image identity from loaded build metadata) is the last thing
@@ -152,6 +212,8 @@ confirm_usb_write_or_abort() {
     "$IMAGE_ARCH" \
     "$SOURCE_DIR/$IMAGE_BASENAME"
   echo
+
+  preview_current_and_planned_layout
 
   # Cross-host re-flash detector. If the target USB already has a
   # USB-IDENTITY.env from a previous flash, read it (read-only mount)
@@ -193,7 +255,7 @@ find_seeded_root_partition() {
   while read -r part label fstype; do
     [[ -n "$part" ]] || continue
     case "$label" in
-      ESP|_empty|HOME|DATA)
+      ESP|_empty|HOME|DATA|USBDATA)
         continue
         ;;
     esac
@@ -207,7 +269,7 @@ find_seeded_root_partition() {
   while read -r part label fstype; do
     [[ -n "$part" ]] || continue
     case "$label" in
-      ESP|_empty|HOME|DATA)
+      ESP|_empty|HOME|DATA|USBDATA)
         continue
         ;;
     esac
@@ -282,17 +344,68 @@ write_fixed_partition_conf() {
 }
 
 prepare_bootstrap_repart_dir() {
-  BOOTSTRAP_REPART_DIR="$REPART_DIR"
+  TEMP_REPART_DIR="$(mktemp -d /tmp/ab-usb-repart.XXXXXX)"
+  BOOTSTRAP_REPART_DIR="$TEMP_REPART_DIR"
 
+  # Base layout: if the user did not override sizes, mirror the
+  # committed deploy.repart/ exactly so the USB ESP+root layout is
+  # identical to an internal-disk bootstrap. With size overrides,
+  # generate fresh confs with the requested sizes.
   if [[ -z "$USB_ESP_SIZE" && -z "$USB_ROOT_SIZE" ]]; then
-    return 0
+    cp "$REPART_DIR"/*.conf "$TEMP_REPART_DIR/"
+  else
+    write_fixed_partition_conf "$TEMP_REPART_DIR/00-esp.conf" esp ESP "${USB_ESP_SIZE:-512M}" vfat
+    write_fixed_partition_conf "$TEMP_REPART_DIR/10-root-a.conf" root _empty "${USB_ROOT_SIZE:-8G}" ext4
+    write_fixed_partition_conf "$TEMP_REPART_DIR/11-root-b.conf" root _empty "${USB_ROOT_SIZE:-8G}" ext4
   fi
 
-  TEMP_REPART_DIR="$(mktemp -d /tmp/ab-usb-repart.XXXXXX)"
-  write_fixed_partition_conf "$TEMP_REPART_DIR/00-esp.conf" esp ESP "${USB_ESP_SIZE:-512M}" vfat
-  write_fixed_partition_conf "$TEMP_REPART_DIR/10-root-a.conf" root _empty "${USB_ROOT_SIZE:-8G}" ext4
-  write_fixed_partition_conf "$TEMP_REPART_DIR/11-root-b.conf" root _empty "${USB_ROOT_SIZE:-8G}" ext4
-  BOOTSTRAP_REPART_DIR="$TEMP_REPART_DIR"
+  if [[ "$INCLUDE_USB_STORAGE" == true ]]; then
+    write_usb_storage_partition_conf "$TEMP_REPART_DIR/20-usb-storage.conf"
+  fi
+}
+
+# Writes the GPT entry for the trailing USB storage partition.
+# systemd-repart creates the partition but does NOT format it; we
+# mkfs.exfat it ourselves after bootstrap because repart's built-in
+# Format= list does not reliably include exfat across the systemd
+# versions we target. With no Size*Bytes set, repart grows the
+# partition to fill whatever space remains after the fixed ESP and
+# root partitions. If nothing is left, repart simply does not
+# allocate this partition and format_usb_storage_partition() treats
+# the absence as "no storage partition, nothing to do".
+write_usb_storage_partition_conf() {
+  local path="$1"
+  cat > "$path" <<EOF
+[Partition]
+Type=linux-generic
+Label=$USB_STORAGE_LABEL
+EOF
+}
+
+find_usb_storage_partition() {
+  local part label _fstype
+  while read -r part label _fstype; do
+    [[ -n "$part" ]] || continue
+    if [[ "$label" == "$USB_STORAGE_LABEL" ]]; then
+      printf '%s\n' "$part"
+      return 0
+    fi
+  done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE")
+  return 1
+}
+
+format_usb_storage_partition() {
+  local part
+  [[ "$INCLUDE_USB_STORAGE" == true ]] || return 0
+  part="$(find_usb_storage_partition || true)"
+  if [[ -z "$part" ]]; then
+    echo "==> No USBDATA partition present (likely no free space after roots); skipping exFAT format"
+    return 0
+  fi
+  echo "==> Formatting $part as exFAT (label=$USB_STORAGE_LABEL)"
+  # -L sets both filesystem label and is visible in `lsblk -o LABEL`.
+  # GPT PARTLABEL was already set by systemd-repart.
+  mkfs.exfat -L "$USB_STORAGE_LABEL" "$part"
 }
 
 wait_for_seeded_root_partition() {
@@ -456,6 +569,14 @@ while [[ $# -gt 0 ]]; do
       EMBED_FULL_IMAGE=true
       shift
       ;;
+    --no-usb-storage)
+      INCLUDE_USB_STORAGE=false
+      shift
+      ;;
+    --usb-storage-label)
+      USB_STORAGE_LABEL="${2:?missing usb storage label}"
+      shift 2
+      ;;
     --allow-fixed-disk)
       ALLOW_FIXED_DISK=yes
       shift
@@ -488,6 +609,19 @@ ab_hostdeps_ensure_commands "hardware test USB prerequisites" systemd-repart sys
   echo "==> Fast fallback for a hardware smoke test: write the built .raw image directly to the USB instead of using the native installer USB flow." >&2
   exit 1
 }
+
+# mkfs.exfat (from exfatprogs) is only needed when the trailing USB
+# storage partition is enabled. Install-and-check separately so
+# --no-usb-storage users on hosts without exfatprogs keep working.
+if [[ "$INCLUDE_USB_STORAGE" == true ]]; then
+  if ! ab_hostdeps_have_all_commands mkfs.exfat; then
+    ab_hostdeps_ensure_packages "USB exFAT storage partition" exfatprogs || exit 1
+  fi
+  ab_hostdeps_ensure_commands "USB exFAT storage partition" mkfs.exfat || {
+    echo "==> Re-run with --no-usb-storage to skip the trailing exFAT partition if this host cannot provide mkfs.exfat." >&2
+    exit 1
+  }
+fi
 
 load_build_metadata
 prepare_sysupdate_definitions_dir
@@ -526,6 +660,13 @@ echo "==> Bootstrapping hardware test USB on $TARGET"
 "$PROJECT_ROOT/scripts/bootstrap-ab-disk.sh" "${bootstrap_args[@]}"
 
 resolve_disk_device
+# Format the trailing exFAT storage partition (if created by repart)
+# before we go looking for the seeded root. This must happen after
+# resolve_disk_device (so DISK_DEVICE is set for a loop-attached
+# file target) and after bootstrap (so the partition exists at
+# all). It's a no-op under --no-usb-storage or if repart did not
+# allocate the partition.
+format_usb_storage_partition
 ROOT_PART="$(wait_for_seeded_root_partition)" || die "unable to locate the seeded root partition on $TARGET (the USB was bootstrapped, but the newly-seeded root partition did not appear in time)"
 ROOT_MOUNT="$(mktemp -d /tmp/ab-live-root.XXXXXX)"
 mount "$ROOT_PART" "$ROOT_MOUNT"
@@ -536,6 +677,12 @@ echo "==> Hardware test USB is ready"
 echo "    Boot target:     $TARGET"
 echo "    Seeded root:     $ROOT_PART"
 echo "    Installer entry: /root/INSTALL-TO-INTERNAL-DISK.sh"
+if [[ "$INCLUDE_USB_STORAGE" == true ]]; then
+  STORAGE_PART="$(find_usb_storage_partition || true)"
+  if [[ -n "$STORAGE_PART" ]]; then
+    echo "    exFAT storage:   $STORAGE_PART (label=$USB_STORAGE_LABEL)"
+  fi
+fi
 if [[ "$EMBED_FULL_IMAGE" == true ]]; then
   echo "    Full raw image:  copied into $BUNDLE_DIR/mkosi.output/"
 fi
