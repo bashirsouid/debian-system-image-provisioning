@@ -253,18 +253,37 @@ prepare_t2linux_trees() {
   keyring_path="$sandbox_root/etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg"
   gpg --dearmor --yes --output "$keyring_path" "$key_tmp"
 
-  # deb822 format rather than one-liner: the content below starts with
-  # `Types:`, which APT only accepts in *.sources files, never in *.list.
-  # Using the wrong extension produces:
-  #   E: Type 'Types:' is not known on line 1 in source list ...
-  # Fallback mirror if the GitHub Releases URL ever breaks is
-  # https://adityagarg8.github.io/t2-ubuntu-repo/ (GitHub Pages, flat).
+  # Two deb822 stanzas in one file, mirroring what upstream's install
+  # script produces in /etc/apt/sources.list.d/t2.list:
+  #
+  #   1. Common repo (GitHub Pages). Packages shared across every
+  #      Debian/Ubuntu codename: tiny-dfr, apple-t2-audio-config,
+  #      apple-bce, apple-firmware-script, etc. Flat repo (Suites: ./).
+  #      Upstream README: "You have to add the common apt repo
+  #      irrespective of whether you are using Debian or Ubuntu."
+  #
+  #   2. Release-specific repo (GitHub Releases). The linux-t2 kernel
+  #      package lives here, keyed on the Debian codename as a release
+  #      *tag* inside the URI path — not as a suite in the Debian
+  #      sense. That's why the codename has to go IN the URI and the
+  #      Suites: field must be `./` (flat repo marker). Putting the
+  #      codename in Suites: instead makes APT construct
+  #      .../download/debian/dists/<codename>/main/binary-amd64/Release
+  #      which is a path that doesn't exist and 404s.
+  #
+  # Content must live in *.sources (deb822), not *.list (one-liner);
+  # mismatch produces "Type 'Types:' is not known on line 1".
   t2_sources_path="$sandbox_root/etc/apt/sources.list.d/t2.sources"
   cat > "$t2_sources_path" <<SOURCE
 Types: deb
-URIs: https://github.com/AdityaGarg8/t2-ubuntu-repo/releases/download/debian
-Suites: ${suite}
-Components: main
+URIs: https://adityagarg8.github.io/t2-ubuntu-repo
+Suites: ./
+Architectures: amd64
+Signed-By: /etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg
+
+Types: deb
+URIs: https://github.com/AdityaGarg8/t2-ubuntu-repo/releases/download/${suite}
+Suites: ./
 Architectures: amd64
 Signed-By: /etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg
 SOURCE
