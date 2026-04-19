@@ -1,0 +1,37 @@
+# mkosi.conf.d/25-native-uki.conf
+#
+# The sysupdate-based update path in this repo depends on a Unified
+# Kernel Image. Two pieces need it:
+#
+#   * mkosi.sysupdate/60-uki.transfer installs a versioned
+#     <image>_<ver>_<arch>.efi into /EFI/Linux on the booted system.
+#   * scripts/export-sysupdate-artifacts.sh, which runs right after
+#     `mkosi build`, searches mkosi.output/ for a standalone *.efi
+#     file to copy into that versioned artifact name.
+#
+# Without UKI generation enabled, mkosi falls through to Type 1 BLS
+# entries only, no UKI is written into the image *or* as a split
+# artifact, and the export step dies with:
+#     ERROR: unable to locate a split-out UKI (*.efi) in mkosi.output
+# That failure happens after the disk image is written but before
+# build.sh can call ab_buildmeta_write_for, so the per-host
+# .latest-build.<profile>.<host>.env file is never created. Every
+# downstream tool that looks it up (write-live-test-usb.sh in
+# particular) then fails with "no saved build metadata found" even
+# though the .raw image is sitting right there.
+#
+# UnifiedKernelImages=unsigned forces UKI generation and fails loudly
+# if systemd-ukify is missing, rather than silently falling back to
+# BLS and reproducing the original failure mode. systemd-ukify is
+# added to Packages= so it is present inside the image mkosi chroots
+# into while building the UKI. SplitArtifacts=uki makes mkosi copy
+# the generated UKI out of the image into mkosi.output/<Output>.efi
+# next to the .raw image, which is where the export script looks.
+
+[Content]
+UnifiedKernelImages=unsigned
+Packages=
+        systemd-ukify
+
+[Output]
+SplitArtifacts=uki
