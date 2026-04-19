@@ -1,5 +1,43 @@
 [
   {
+    "_notes": [
+      "Copy this file to .users.json and edit before running ./build.sh.",
+      "",
+      "Password options, in order of precedence:",
+      "  1. 'password_hash' — a pre-hashed crypt string. Generate one with:",
+      "        ./scripts/hash-password.sh --hash-only",
+      "     A password_hash of '!' or '*' means the account is LOCKED and",
+      "     no login is possible. That is a lock marker, not a real hash.",
+      "  2. 'password' — plaintext; build.sh hashes it at build time.",
+      "     Convenient for throwaway test builds, not recommended for",
+      "     machines you actually trust.",
+      "",
+      "If 'can_login' is false or no usable password is set, the account is",
+      "locked and first-boot provisioning calls 'usermod -L'.",
+      "",
+      "For per-host overrides, create hosts/<name>/users.json with the same",
+      "shape — it takes precedence over this file when you build with",
+      "--host <name>.",
+      "",
+      "Fields that are understood:",
+      "  username              required, cannot be 'root' (root is always locked)",
+      "  can_login             default true; false => system/service account",
+      "  uid, gid              optional; default is auto-assigned. May be 'host'",
+      "                        to copy the build host's value, useful for the",
+      "                        user whose host files get mounted via RuntimeHome",
+      "  primary_group         default: same as username. May be 'host'",
+      "  groups                supplementary groups, array of names",
+      "  shell                 default /bin/bash for login users",
+      "  home                  default /home/<username>",
+      "  password              plaintext, will be hashed at build time",
+      "  password_hash         pre-hashed crypt string (wins over 'password')",
+      "  ssh_authorized_keys_file  path relative to repo root to install into",
+      "                            ~/.ssh/authorized_keys on first boot",
+      "",
+      "Any field beginning with '_' (like this one) is ignored by the build."
+    ]
+  },
+  {
     "username": "demo",
     "comment": "Primary login user",
     "can_login": true,
@@ -8,11 +46,8 @@
     "primary_group": "demo",
     "groups": ["sudo", "audio", "video", "render", "input", "plugdev", "dialout"],
     "shell": "/bin/bash",
-
-    "password_hash": "!",
-
+    "password": "change-me-now",
     "force_password_change_on_first_login": false,
-
     "ssh_authorized_keys_file": ".mkosi-secrets/ssh-authorized-keys"
   }
 ]

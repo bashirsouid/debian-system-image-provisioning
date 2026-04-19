@@ -1,622 +1,634 @@
-# Overlay for bashirsouid/debian-system-image-provisioning
+# mkosi image provisioning
 
-**Status:** reviewed prescription, not tested on hardware.
-**Scope:** 82 files across four subsystems (remote access, correctness
-fixes, reliability/alerting, security hardening).
-**Target repo:** https://github.com/bashirsouid/debian-system-image-provisioning
+This tree builds Debian images with `mkosi`, keeps the desktop path on
+source-built AwesomeWM, and uses the **native systemd update stack** for
+retained-version / A-B-like updates:
 
-This archive was produced by a multi-turn review and synthesis. It is
-structured as a direct drop-in overlay on top of the existing repo —
-every path here mirrors where it lands in the repo. Apply by copying
-the tree over; there are no generated paths that have to be computed.
+- `systemd-repart` for the initial disk layout
+- `systemd-sysupdate` for installing new root and boot artifacts
+- `systemd-boot` boot counting + `systemd-bless-boot` for automatic rollback
+- `mkosi` as the image builder and artifact producer
 
----
+## Why the previous A/B script was only a bridge
 
-## 1. What this overlay provides
+The old `ab-flash.sh` path copied a built `image.raw` into an inactive
+partition and kept its own slot state on the ESP. That worked as a
+practical bring-up tool, but it duplicated three jobs that the current
+systemd stack already solves natively:
 
-Four subsystems, each independently reversible.
+- versioned boot artifacts and boot attempt counting
+- health-gated promotion of a newly booted version
+- versioned root-image installation into a retained offline slot
 
-### A. Remote access (subsystem: "addon")
-- Tailscale with first-boot auth against an encrypted `systemd-creds`
-  credential, a periodic re-auth watchdog, and a service drop-in that
-  tightens restart policy.
-- Cloudflare Named Tunnel for out-of-band SSH that works even when
-  Tailscale is unreachable. Tunnel token is also an encrypted
-  credential. Watchdog probes `/ready` and restarts on unhealthy.
-- sshd hardened to pubkey-only with `PubkeyAuthOptions verify-required`,
-  so FIDO2 hardware keys require user presence (YubiKey touch) on
-  every connection. Modern crypto only. Listener locked to a single
-  login user via `AllowUsers`.
-- Three health-gate hooks (`/usr/local/libexec/ab-health-check.d/`)
-  so a broken remote-access config on a newly installed A/B slot
-  fails the health gate and automatically rolls back.
+That is why it was a **bridge** rather than the golden path: it was a
+custom copier wrapped around a problem that modern systemd already has
+first-class primitives for.
 
-### B. Correctness fixes (subsystem: "fixes")
-- New `.gitignore` that de-dupes the existing one and adds several
-  categories of generated files.
-- `.users.json.sample` updated to prefer `password_hash` over
-  plaintext passwords.
-- `scripts/hash-password.sh` helper that produces yescrypt hashes
-  without ever writing the plaintext to disk.
-- First-boot `ab-user-provision.service` that refuses plaintext
-  passwords on production images (VARIANT_ID=prod) and shreds the
-  users file after applying.
-- `scripts/usb-write-and-verify.sh` that writes a raw image and
-  then hashes back the written bytes from the block device; refuses
-  to report success on mismatch.
-- `scripts/verify-image-raw.sh` that validates a built `image.raw`
-  via sfdisk + systemd-dissect before you flash it.
-- `mkosi.repart/` split from `deploy.repart/` so the mkosi-built
-  image has its own partition layout distinct from the one used by
-  the bootstrap-to-target flow.
-- `mkosi.conf.d/15-reproducibility.conf` pinning the Debian mirror
-  to a specific `snapshot.debian.org` date.
-- Deb822 apt sources for the Cloudflare and Tailscale repos, with
-  **real pinned signing-key fingerprints** in
-  `scripts/fetch-third-party-keys.sh`:
-  - Tailscale: `2596A99EAAB33821893C0A79458CA832957F5868`
-    (verified against upstream docs and two independent GitHub
-    issues; see comments in the script)
-  - Cloudflare: `FBA8C0EE63617C5EED695C43254B391D8CACCBF8`
-    (verified against Cloudflare's GitHub issues; see script)
-- `scripts/lint.sh` + `.shellcheckrc` + `.github/workflows/lint.yml`
-  for shellcheck CI.
+The repo now treats the golden path as:
 
-### C. Reliability + alerting (subsystem: "reliability")
-- `ab-monitor.timer` (every 5 min) runs eight checks: Tailscale
-  BackendState, cloudflared `/ready`, sshd listening, A/B stale
-  (7 days without a successful bless triggers a warning that repeats
-  daily), BLS entry marked bad, failed systemd units, disk space
-  (90%/95% warn/crit), NTP sync.
-- `ab-heartbeat.timer` (every 5 min, offset) pings healthchecks.io
-  as a dead-man's switch. If local fault is detected, it POSTs to
-  `/fail` to escalate immediately without waiting for grace.
-- Three notifiers: SendGrid (email), PagerDuty (Events API v2 with
-  stable `dedup_key=<host>-<alert_key>` so triggers auto-group and
-  `resolve` closes the incident), and a journal-structured notifier
-  that always runs as a forensic record.
-- Per-alert dedup state under `/var/lib/ab-monitor/state.json`:
-  first-detection fires, continued failure goes quiet for 24h
-  (`AB_MONITOR_REMIND_AFTER_SECS`) then re-notifies once per day,
-  recovery fires a resolve.
-- `[email protected]` template so any existing unit
-  can add `OnFailure=ab-monitor-alert@%n.service` and get an instant
-  page without waiting for the 5-minute timer. Routed through the
-  same dedup state.
-- Hardware watchdog (`/etc/systemd/system.conf.d/30-watchdog.conf`,
-  `RuntimeWatchdogSec=60s`) so a kernel hang auto-recovers.
-- Kernel panic auto-reboot after 30s, panic-on-oops, hardlockup and
-  softlockup panics (`/etc/sysctl.d/90-ab-reliability.conf`).
-- Journald capped at 2G (`/etc/systemd/journald.conf.d/20-ab-size.conf`)
-  so an error loop cannot fill the root slot.
-- `ab-monitor-status` (inspector) and `ab-monitor-test` (self-test
-  with `--channel`, `--keep-open`, `--resolve-only`) CLIs.
+1. **Bootstrap once** onto a blank or offline target disk/image with
+   `systemd-repart`
+2. **Install the first version** with `systemd-sysupdate`
+3. **Boot via systemd-boot**
+4. On later updates, stage the next version with `systemd-sysupdate`
+5. Let boot counting + `boot-complete.target` + `systemd-bless-boot`
+   decide whether the new version stays or the older retained version
+   wins
 
-### D. Security hardening (subsystem: "security")
-- Kernel hardening sysctls: `yama.ptrace_scope=1`,
-  `unprivileged_bpf_disabled=1`, `bpf_jit_harden=2`,
-  `kexec_load_disabled=1`, `dev.tty.ldisc_autoload=0`,
-  `fs.protected_*`, `tcp_syncookies`, `tcp_rfc1337`, IPv4/IPv6
-  antispoof + martian logging, `icmp_echo_ignore_broadcasts`,
-  and privacy extensions for IPv6.
-- Kernel module blacklist (`/etc/modprobe.d/ab-blacklist.conf`):
-  dccp, sctp, rds, tipc, n-hdlc, ax25, x25, appletalk, ipx, atm,
-  cramfs, freevxfs, jffs2, hfs, hfsplus, udf, ksmbd, firewire-* —
-  every module that has been a recurring local-exploit CVE source,
-  disabled unless the host legitimately needs it.
-- Default-deny nftables firewall (`/etc/nftables.conf`) with
-  established+related, loopback, SSH (rate-limited to 10/minute
-  burst 5 via `ct state new limit`), Tailscale mesh traffic
-  (`iifname tailscale0`), WireGuard UDP 41641, constrained ICMP,
-  mDNS limited to RFC1918 source addresses. Per-host additions
-  via `/etc/nftables.conf.d/*.nft`.
-- Sudoers hardening (`/etc/sudoers.d/90-ab-hardening`):
-  `timestamp_timeout=5`, `timestamp_type=tty`, `requiretty`,
-  `use_pty`, `env_reset` with strict `secure_path`, syslog/iolog
-  to `authpriv`.
-- Opt-in PAM-U2F for sudo. `ab-enable-pam-u2f` enrolls the YubiKey
-  and writes to `/var/lib/ab-pam-u2f/u2f_mappings` without touching
-  `/etc/pam.d/sudo` at runtime (that would clobber a dpkg conffile).
-  Enforcement is a two-step rebuild: stage the mapping in the build
-  tree, rebuild with `AB_ENABLE_PAM_U2F=yes`, deploy via sysupdate.
-- systemd-resolved over TLS with DNSSEC (`1.1.1.1` primary, `9.9.9.9`
-  fallback, both with strict SNI verification).
-- systemd-oomd (userspace OOM killer based on PSI pressure) so the
-  kernel's score-based OOMK cannot pick sshd or Home Assistant.
-- `Storage=none` for coredumps — a crash of any process holding a
-  just-decrypted credential cannot leak it to disk.
-- `ab-enroll-tpm-unlock` helper that wraps `systemd-cryptenroll`
-  to bind a LUKS key slot on `/home` or `/mnt/data` to PCRs 0+2+7
-  (firmware + option ROMs + Secure Boot policy).
-- `docs/secure-boot-roadmap.md` for the `RootVerity=signed` + UKI
-  signing + firmware enrollment phases that require physical access.
+`scripts/ab-flash.sh` is still in the tree as a legacy/manual fallback,
+but it is no longer the recommended design center of the repo.
 
----
+## What "A/B" means in the new design
 
-## 2. Architecture
+The new design is closer to "two retained versions" than to permanently
+named `ROOT_A` and `ROOT_B` partitions.
 
-```
-                  your build host (Debian trixie)
-                  +------------------------------+
-                  |  .mkosi-secrets/             |  (0700, gitignored)
-                  |    tailscale-authkey         |
-                  |    cloudflared-token         |
-                  |    ssh-authorized-keys       |
-                  |    sendgrid-api-key          |
-                  |    pagerduty-routing-key     |
-                  |    healthchecks-ping-url     |
-                  +---------------+--------------+
-                                  |
-                                  v
-      scripts/verify-build-secrets.sh  (shape + permissions gate)
-                                  |
-                                  v
-      scripts/package-credentials.sh
-                       writes per-image credential.secret +
-                       encrypts tailscale+cloudflared tokens +
-                       installs ssh authorized_keys +
-                       substitutes __INITIAL_USERNAME__
-                                  |
-                                  v
-      scripts/package-alert-credentials.sh
-                       encrypts sendgrid + pagerduty + healthchecks
-                                  |
-                                  v
-                             mkosi build
-                                  |
-                                  v
-                           image.raw ---->  scripts/verify-image-raw.sh
-                                  |
-                                  v
-                   scripts/usb-write-and-verify.sh (for hardware USB tests)
-                             OR
-                   systemd-sysupdate (for live deploys)
+That is intentional.
 
+`systemd-sysupdate` is natively version-oriented. It installs a new
+version into an empty root slot, keeps the currently booted version
+protected, and retains up to `InstancesMax=2`. So the effective
+behavior is still A/B:
 
-                           on the booted image
-                  +------------------------------+
-                  |  /etc/credstore.encrypted/   |  (encrypted blobs)
-                  |  /var/lib/systemd/            |
-                  |      credential.secret        |  (per-image host key)
-                  +---------------+--------------+
-                                  |
-     +--------------+--------------+-----------------+--------------+
-     |              |              |                 |              |
-     v              v              v                 v              v
-tailscale-up   cloudflared   ab-monitor         ab-heartbeat   ab-monitor
-.service       .service      .timer (5m)         .timer (5m)   -alert@
-                                  |                 |             .service
-                                  v                 v             (OnFailure=)
-                             8 checks ---> 3 notifiers
-                               /              |   |   \
-                              /               |   |    \
-                       sendgrid.sh      pagerduty.sh  journal.sh
-                              \               |   /
-                               v              v  v
-                        email        PagerDuty   journald
-                           |              |         |
-                           v              v         v
-                         YOU          YOU       (forensic)
+- one currently booted known-good version
+- one newer trial version
+- automatic fallback when the new one does not become healthy
 
-       Out-of-band paths:
-       * Tailscale: [email protected] (primary)
-       * Cloudflare Tunnel: via cloudflared access ssh (backup,
-         works even when Tailscale's control plane is unreachable)
-       * healthchecks.io: alerts YOU if heartbeat stops arriving
-         (catches power loss / panic / network totally dark)
-```
+But the slots are managed by **version metadata**, not by a custom
+"copy this raw image into ROOT_B" script.
 
----
+## Current goals
 
-## 3. Inventory: every file, its purpose, and its subsystem
+- reproducible base images
+- source-built AwesomeWM for the `devbox` and `macbook` profiles
+- first-boot local user provisioning that works in rootless mkosi builds
+- Liquorix kernel for the x86-64 `devbox` path
+- a T2-oriented `macbook` desktop path for Intel 2019-era MacBook Pros
+- native retained-version updates with `systemd-sysupdate`
+- a server-only ARM64 `cloudbox` overlay
+- an Ansible playbook that can build and bootstrap/update `cloudbox`
+- a hardware-test USB workflow that boots the native retained-version
+  stack on removable media
 
-Format: `path  [subsystem]  purpose`
+## Important assumptions and constraints
 
-### Top-level
-```
-README.md                              [this file]    the master doc
-APPLY.md                               [this overlay] step-by-step application guide
-.gitignore                             [fixes]        replaces existing; de-duped, adds secrets/credstore/keyring ignores
-.users.json.sample                     [fixes]        replaces existing; prefers password_hash, adds ssh_authorized_keys_file
-.shellcheckrc                          [fixes]        repo-wide shellcheck defaults (disables SC1091, SC2155, SC2016)
-.github/workflows/lint.yml             [fixes]        GHA that runs scripts/lint.sh on push and PR
-.mkosi-secrets.example/README.md       [addon]        committed template for the (gitignored) .mkosi-secrets/ tree
-```
+These are deliberate design constraints, not hidden gotchas:
 
-### docs/
-```
-docs/remote-access.md                  [addon]        operator doc: auth-key provisioning, YubiKey setup, rotation
-docs/user-provisioning.md              [fixes]        explains the password_hash workflow
-docs/live-usb-verification.md          [fixes]        why dd exit 0 is not sufficient
-docs/alerting.md                       [reliability]  three independent alert paths + dedup state machine
-docs/runbook.md                        [reliability]  alert-key-indexed triage guide (read from phone when paged)
-docs/secure-boot-roadmap.md            [security]     four-phase plan for verity + UKI signing + TPM
-docs/hardening-walkthrough.md          [security]     ordered security changes with per-step risks + rollbacks
-```
+- UEFI only
+- `systemd-boot` is the supported boot loader for the native update path
+- the **first** install onto a new disk is destructive and expects a
+  blank or offline target
+- later updates are in-place via `systemd-sysupdate`
+- the initial bootstrap currently creates:
+  - one ESP
+  - two root partitions
+  - a GPT `home` partition
+- Secure Boot is **not** wired up yet in this repo's update flow
+- host-specific kernel flags live in generated Boot Loader Specification
+  entries, not GRUB config
+- the `cloudbox` path is intentionally server-only: no desktop stack, no
+  AwesomeWM, no Liquorix
+- the `macbook` path uses third-party T2 support packages and firmware
+  repos during the build
+- hardware-test USBs are bootstrapped with the same native
+  `systemd-repart` + `systemd-sysupdate` flow, not a separate installer
+  format
 
-### mkosi.conf.d/
-```
-mkosi.conf.d/15-reproducibility.conf   [fixes]        pins Mirror= to snapshot.debian.org + SOURCE_DATE_EPOCH
-mkosi.conf.d/20-remote-access.conf     [addon]        adds tailscale, cloudflared, openssh-server, libpam-u2f
-```
+## Host dependency auto-install
 
-### mkosi.repart/
-```
-mkosi.repart/00-esp.conf               [fixes]        ESP for the BUILT image.raw (not deploy.repart/)
-mkosi.repart/10-root.conf              [fixes]        root partition for the BUILT image.raw
-```
+The repo scripts try to auto-install missing **host-side** tools on
+Debian/Ubuntu build or deploy machines before they fail. The intent is
+to make `./build.sh`, `./run.sh`, `./clean.sh`, and the scripts under
+`scripts/` behave like project entrypoints rather than assume you
+already curated the host.
 
-### scripts/
-```
-scripts/verify-build-secrets.sh        [addon]        build-time gate; refuses missing/malformed/world-readable
-scripts/package-credentials.sh         [addon]        encrypts tailscale/cloudflared secrets; substitutes username
-scripts/package-alert-credentials.sh   [reliability]  encrypts sendgrid/pagerduty/healthchecks; reuses credential.secret
-scripts/hash-password.sh               [fixes]        yescrypt hash generator; no plaintext to disk
-scripts/usb-write-and-verify.sh        [fixes]        dd conv=fsync + drop_caches + sha256 readback
-scripts/verify-image-raw.sh            [fixes]        sfdisk + systemd-dissect sanity on mkosi output
-scripts/fetch-third-party-keys.sh      [fixes]        pinned-fingerprint Cloudflare + Tailscale key fetcher
-scripts/lint.sh                        [fixes]        shellcheck wrapper; --changed mode for CI PRs
-```
+- auto-install is **enabled by default**
+- on Debian/Ubuntu hosts, scripts use
+  `apt-get install --no-install-recommends` and `sudo` when needed
+- set `AB_AUTO_INSTALL_DEPS=no` to disable this and get a manual install
+  hint instead
+- if the required commands already exist, the scripts do not try to
+  install anything
 
-### mkosi.extra/etc/ (image rootfs configs)
-```
-etc/apt/keyrings/README.md             [fixes]        placeholder so dir is tracked; .gpg files are gitignored
-etc/apt/sources.list.d/cloudflared.sources  [fixes]   Deb822 for pkg.cloudflare.com/cloudflared bookworm
-etc/apt/sources.list.d/tailscale.sources    [fixes]   Deb822 for pkgs.tailscale.com/stable/debian TRIXIE
-etc/default/ab-monitor                 [reliability]  env config: channels, thresholds, email addresses
-etc/default/tailscale-up               [addon]        tailscale up flags (host-overridable)
-etc/modprobe.d/ab-blacklist.conf       [security]     blacklists obscure protocols + legacy FS modules
-etc/nftables.conf                      [security]     default-deny firewall with rate-limited SSH + Tailscale allow
-etc/pam.d/sudo-u2f                     [security]     PAM-U2F include file (NOT enabled by default)
-etc/security/limits.d/90-ab-hardening.conf [security] nproc/nofile/core limits
-etc/ssh/sshd_config.d/50-hardening.conf    [addon]    hardened sshd; __INITIAL_USERNAME__ is substituted at build
-etc/sudoers.d/90-ab-hardening          [security]     timestamp_timeout=5, requiretty, use_pty, env_reset
-etc/sysctl.d/90-ab-reliability.conf    [reliability]  kernel.panic=30, panic_on_oops, BBR, sysrq limited
-etc/sysctl.d/95-ab-kernel-hardening.conf [security]   ptrace, BPF, kexec, IPv4/6 antispoof
-etc/systemd/coredump.conf.d/10-ab.conf [security]     Storage=none; coredumps never hit disk
-etc/systemd/journald.conf.d/20-ab-size.conf [reliability] caps journal at 2G, 30d retention
-etc/systemd/oomd.conf.d/10-ab.conf     [security]     PSI-based userspace OOM killer
-etc/systemd/resolved.conf.d/10-ab-hardening.conf [security] DoT + DNSSEC (hard-fail); Cloudflare/Quad9
-etc/systemd/system.conf.d/30-watchdog.conf [reliability] hardware watchdog (RuntimeWatchdogSec=60s)
-etc/systemd/system/ab-user-provision.service      [fixes]       first-boot user setup
-etc/systemd/system/cloudflared.service            [addon]       tunnel with LoadCredentialEncrypted=
-etc/systemd/system/cloudflared-watchdog.service   [addon]       /ready probe + restart
-etc/systemd/system/cloudflared-watchdog.timer     [addon]       every 5 min
-etc/systemd/system/tailscale-up.service           [addon]       first-boot auth
-etc/systemd/system/tailscale-watchdog.service     [addon]       periodic ensure
-etc/systemd/system/tailscale-watchdog.timer       [addon]       every 10 min after OnBootSec=2min
-etc/systemd/system/tailscaled.service.d/10-restart.conf [addon] tightens upstream restart policy
-etc/systemd/system/ab-monitor.service             [reliability] main monitor runner (loads all 3 alert creds)
-etc/systemd/system/ab-monitor.timer               [reliability] every 5 min, RandomizedDelaySec=60s
-etc/systemd/system/ab-heartbeat.service           [reliability] healthchecks.io ping
-etc/systemd/system/ab-heartbeat.timer             [reliability] every 5 min, offset 4 min from monitor
-etc/systemd/system/[email protected]       [reliability] template unit for OnFailure= hooks
-```
+This especially matters for the sysupdate export path because on Debian
+trixie the `sfdisk` tool comes from the `fdisk` package rather than
+`util-linux`, and `jq` is its own package. The native update path also
+depends on `systemd-repart`, `systemd-sysupdate`, and the systemd-boot
+tooling on the host side. `./run.sh` additionally needs
+`qemu-system-x86`, `ovmf`, `virtiofsd`, and `swtpm` for `mkosi vm`.
 
-### mkosi.extra/usr/local/ (image userspace tools)
-```
-usr/local/libexec/ab-health-check.d/10-tailscale.sh   [addon]       A/B health gate hook
-usr/local/libexec/ab-health-check.d/20-cloudflared.sh [addon]       A/B health gate hook
-usr/local/libexec/ab-health-check.d/30-sshd.sh        [addon]       A/B health gate hook
-usr/local/libexec/ab-remote-access/ensure-tailscale.sh    [addon]   idempotent auth worker
-usr/local/libexec/ab-remote-access/ensure-cloudflared.sh  [addon]   tunnel probe + restart
-usr/local/libexec/ab-user-provision.sh                [fixes]       reads /etc/ab-users.json, applies hash
-usr/local/libexec/ab-monitor/check.sh                 [reliability] main loop
-usr/local/libexec/ab-monitor/state.sh                 [reliability] dedup state helpers
-usr/local/libexec/ab-monitor/notify.sh                [reliability] dispatcher
-usr/local/libexec/ab-monitor/ad-hoc-alert.sh          [reliability] OnFailure= worker
-usr/local/libexec/ab-monitor/heartbeat.sh             [reliability] healthchecks.io pinger
-usr/local/libexec/ab-monitor/checks/10-tailscale.sh       [reliability] check module
-usr/local/libexec/ab-monitor/checks/20-cloudflared.sh     [reliability] check module
-usr/local/libexec/ab-monitor/checks/30-sshd.sh            [reliability] check module
-usr/local/libexec/ab-monitor/checks/40-ab-switch-age.sh   [reliability] check module
-usr/local/libexec/ab-monitor/checks/50-ab-switch-status.sh [reliability] check module
-usr/local/libexec/ab-monitor/checks/60-failed-units.sh    [reliability] check module
-usr/local/libexec/ab-monitor/checks/70-disk-space.sh      [reliability] check module
-usr/local/libexec/ab-monitor/checks/80-time-sync.sh       [reliability] check module
-usr/local/libexec/ab-monitor/notifiers/sendgrid.sh        [reliability] email via SendGrid v3 Mail Send
-usr/local/libexec/ab-monitor/notifiers/pagerduty.sh       [reliability] Events API v2 with dedup_key
-usr/local/libexec/ab-monitor/notifiers/journal.sh         [reliability] structured journald
-usr/local/sbin/ab-remote-access-status                [addon]       inspector
-usr/local/sbin/ab-monitor-status                      [reliability] inspector
-usr/local/sbin/ab-monitor-test                        [reliability] fire test alerts
-usr/local/sbin/ab-enable-pam-u2f                      [security]    YubiKey enrollment; stages for rebuild
-usr/local/sbin/ab-enroll-tpm-unlock                   [security]    systemd-cryptenroll --tpm2-pcrs=0+2+7 wrapper
-```
-
----
-
-## 4. Application steps
-
-See `APPLY.md` in this overlay for the step-by-step procedure. TL;DR:
-
-```
-# From the root of debian-system-image-provisioning:
-cp -r <overlay>/. .                # copy entire tree over yours
-# Then apply the small diffs to build.sh / clean.sh / mkosi.finalize
-# exactly as described in APPLY.md.
-```
-
----
-
-## 5. Validation matrix (before promoting to production)
-
-### Build-host tests (in a VM is fine)
-
-| Test                              | Command                                                    |
-|-----------------------------------|------------------------------------------------------------|
-| Lint clean                        | `./scripts/lint.sh`                                        |
-| Secrets shape + perms             | `./scripts/verify-build-secrets.sh --strict`               |
-| Build completes                   | `./build.sh --profile server --host <host>`                |
-| Output image sanity               | `sudo ./scripts/verify-image-raw.sh`                       |
-
-### Hardware-test USB (recommended before any production deploy)
-
-| Test                              | Command                                                    |
-|-----------------------------------|------------------------------------------------------------|
-| USB writes + verifies readback    | `sudo ./scripts/usb-write-and-verify.sh --source mkosi.output/*.raw --target /dev/sdX` |
-| Boots on real hardware            | reboot into USB via firmware menu                          |
-| Tailscale auths                   | `tailscale status` shows BackendState=Running              |
-| Cloudflared connects              | `curl -s localhost:45123/ready` shows readyConnections>=1  |
-| SSH works from laptop             | `ssh user@<host>.<tailnet>.ts.net` with YubiKey touch      |
-| SSH backup works                  | `ssh <user>@ssh.<domain>` via `cloudflared access ssh`     |
-| Monitor self-test                 | `sudo ab-monitor-test` — email + PD page arrive            |
-| Heartbeat works                   | `sudo systemctl list-timers ab-heartbeat.timer`            |
-| Heartbeat fail-alert works        | stop the timer for 20 min, expect healthchecks.io alert    |
-| nftables loaded                   | `sudo nft list ruleset`                                    |
-| Sudoers tight                     | `sudo -k && sudo -v && sudo -l` — see new Defaults         |
-| DNS over TLS                      | `resolvectl status` shows DNSSEC=yes, DNS over TLS=yes     |
-| Watchdog armed                    | `systemctl status systemd-timedated 2>&1 \| grep -i watchdog` OR `wdctl` |
-| A/B health gate runs              | `ab-status` shows healthy, boot count decremented          |
-| Rollback works                    | deliberately break a service, confirm slot demotes on reboot |
-
-### Post-deploy on real hardware (same checks above)
-
----
-
-## 6. Known issues and TODOs
-
-Things this overlay does NOT do, in rough descending priority:
-
-### 6a. Untested end-to-end
-Nothing in this overlay has been booted on hardware. I have only
-syntax-checked with `bash -n` and lint-checked with `shellcheck
---severity=warning`, which is clean. **Before trusting the box with
-Home Assistant, build in a VM and walk the validation matrix above.**
-Treat every file as a prescription, not a tested artifact.
-
-### 6b. The `AB_ENABLE_PAM_U2F=yes` build-time wiring is undefined
-`ab-enable-pam-u2f` stages a mapping file and tells the user to
-rebuild with `AB_ENABLE_PAM_U2F=yes`. That env var is not consumed
-anywhere in the overlay yet. To close this, you need to add to your
-`build.sh` (after `package-credentials.sh`):
+Examples:
 
 ```bash
-if [[ "${AB_ENABLE_PAM_U2F:-no}" == "yes" ]]; then
-    src=".mkosi-secrets/hosts/${HOST}/u2f-mappings"
-    [[ -f "$src" ]] || fail "AB_ENABLE_PAM_U2F=yes but $src is missing"
-    install -m 0644 -D "$src" "mkosi.extra/etc/u2f_mappings"
-    # Ship our own complete /etc/pam.d/sudo that includes pam_u2f:
-    install -m 0644 "mkosi.extra/etc/pam.d/sudo-u2f" \
-                    "mkosi.extra/etc/pam.d/sudo.d/00-ab-u2f"
-    # or, simpler, ship a full /etc/pam.d/sudo that has the line
-    # already uncommented. Either way, this code is not present
-    # in the overlay.
-fi
+./build.sh --profile devbox
+AB_AUTO_INSTALL_DEPS=no ./build.sh --profile server --host cloudbox
 ```
-Until this TODO is resolved, PAM-U2F enrollment is a no-op for sudo.
 
-### 6c. Secure Boot + RootVerity not enabled
-`docs/secure-boot-roadmap.md` covers the four phases; the overlay
-only ships the TPM-enrollment helper (`ab-enroll-tpm-unlock`) and
-no other wiring. Without verity, a local-root attacker can plant
-persistence in the offline A/B slot's rootfs and rollback does not
-save you.
+## Quick start
 
-### 6d. Fingerprint rotation is manual
-`scripts/fetch-third-party-keys.sh` pins fingerprints at the values
-observed in 2026-04. Cloudflare rotated the WARP signing key in late
-2025 (per their docs); the `cloudflared` key may also rotate. Re-verify
-annually. There is no automated rotation path.
+### Desktop/devbox smoke test in QEMU
 
-### 6e. PCR set for TPM unlock is conservative
-`ab-enroll-tpm-unlock` binds to PCRs 0+2+7 (firmware + option ROMs +
-Secure Boot policy). This survives sysupdate-driven kernel changes
-but does NOT detect a swapped UKI on the ESP. Binding to PCR 11 (UKI)
-would catch that but requires re-enrollment on every sysupdate. The
-current choice is "fails open on a swapped kernel, fails closed on
-firmware/SB changes." Review per your threat model.
+```bash
+./update-3rd-party-deps.sh
+cp .users.json.sample .users.json
+# optional: edit .users.json and set a real password for your login user
+# the default sample ships demo / change-me-now so a first build
+# produces a working login; change it before flashing anything real
+./clean.sh --all
+./build.sh --profile devbox
+./run.sh
+```
 
-### 6f. The `40-ab-switch-age.sh` check assumes a specific marker path
-It treats `/var/lib/ab-health/status.env` mtime as "last successful
-bless". This matches the repo README's description but has not been
-code-inspected against `ab-health-gate.service`. If the marker is
-written elsewhere, adjust the path.
+On first boot the image provisions local users from embedded data and
+then removes the user seed file.
 
-### 6g. The `50-ab-switch-status.sh` check assumes systemd-boot filename
-conventions
-It globs for `*.bad.*` and `*+0-[1-9]*` in `/boot/loader/entries/`.
-`+0-N` is definitely correct (tries_left=0, tries_done>=1). `.bad.`
-is less certain; systemd-boot uses filename-based counters, not a
-`.bad` suffix. Leaving the pattern in because it is a cheap
-belt-and-suspenders, but the real detection path is the `+0-N` glob.
+For the devbox profile, log in and run:
 
-### 6h. No fail2ban / sshguard
-SSH is pubkey-only with verify-required and rate-limited at the
-firewall. A real brute-force is therefore useless; the only cost is
-log noise. If the noise bothers you, add fail2ban and a `recent`
-module nft rule. Not shipped because the marginal security is close
-to zero.
+```bash
+startx
+```
 
-### 6i. No AppArmor profiles shipped
-The sysctls enable AppArmor support but we do not ship profiles. The
-Debian default packages bring a handful of profiles automatically
-via their postinst scripts; those remain active. If you want strict
-confinement for Home Assistant, cloudflared, or anything else, write
-a profile and drop it in `/etc/apparmor.d/` via a host overlay.
+For a different X resolution:
 
-### 6j. No auditd
-auditd generates a lot of log volume for marginal benefit on a home
-host. If you want it, add `auditd` + an `audit.rules` drop-in.
+```bash
+STARTX_RESOLUTION=1920x1080 startx
+```
 
-### 6k. No per-service AppArmor / systemd-nspawn isolation for HA
-Home Assistant is typically run via Docker/Podman. The overlay does
-not ship a `systemd-nspawn` or sandboxed unit for it. If you want a
-locked-down HA, add a custom unit with `ProtectSystem=strict`,
-`NoNewPrivileges=yes`, `DynamicUser=yes` where possible, and a
-dedicated subvolume on `/home` or `/mnt/data`.
+### ARM64 cloudbox build
 
-### 6l. The three-bundle integration order in build.sh is undocumented
-You must call `verify-build-secrets.sh` → `package-credentials.sh` →
-`package-alert-credentials.sh` in that order before mkosi. APPLY.md
-shows the exact sequence. `package-alert-credentials.sh` will fail
-loudly if `credential.secret` is missing, so mis-ordering is caught.
+```bash
+cp .users.json.sample .users.json
+# edit .users.json
+./clean.sh --all
+./build.sh --profile server --host cloudbox
+```
 
-### 6m. mkosi.conf adjustments not automated
-`mkosi.conf` is untouched by this overlay. You still need to:
-- Remove `ExtraTrees=.mkosi-secrets:/` (the footgun we moved away from)
-- Keep `RootPassword=!` and `RootShell=/bin/false` (already good)
-- Decide whether to also set `RootVerity=signed` (Phase 1 of the roadmap)
+That overlay:
 
-See APPLY.md section "Changes to existing files" for the specific edits.
+- forces `Architecture=arm64`
+- uses Debian's stock `linux-image-arm64`
+- stays server-only
 
-### 6n. No unit-enablement presets shipped
-The overlay ships systemd units but does not include
-`/etc/systemd/system-preset/90-ab.preset` or edits to `mkosi.finalize`
-to enable them. APPLY.md section "Unit enablement" shows the options.
+### Intel T2 MacBook Pro build
 
-### 6o. Home Assistant-specific firewall/monitor hooks not included
-The nftables baseline blocks port 8123. You need a per-host override
-(`hosts/homeassistant/mkosi.extra/etc/nftables.conf.d/50-ha.nft`).
-The monitor has no "HA is responding" check; if you want it, add
-`checks.d/90-homeassistant.sh` that curls `http://localhost:8123/`
-and parses status.
+```bash
+./update-3rd-party-deps.sh
+cp .users.json.sample .users.json
+# edit .users.json
+./clean.sh --all
+./build.sh --profile macbook --host macbookpro13-2019-t2
+```
 
-### 6p. No USB device allow-list
-A hostile USB device (BadUSB, etc.) can still be plugged in and
-enumerate. To harden, use `usbguard` (not shipped) or `dev.tty.ldisc_autoload=0`
-+ udev rules that require explicit authorization. Only relevant if
-someone can physically touch the box.
+This path is aimed at the 2019-era Intel 13-inch T2 MacBook Pro desktop
+workflow. It swaps out Liquorix for the t2linux kernel, keeps PipeWire
+on Debian's default stack, installs Apple Wi-Fi/Bluetooth firmware plus
+the T2 kernel packages, builds and installs the `snd_hda_macbookpro`
+CS8409 driver override into the image at build time, enables mkosi
+build-script network access for that host so the installer can fetch
+matching kernel sources, uses NetworkManager with Debian's
+`network-manager-iwd` integration, and enables a suspend workaround
+service for the Apple T2 / Broadcom module stack.
 
-### 6q. Nothing kills a stale user session after monitor reboot
-If you are SSH'd in when the watchdog kicks, your session is gone
-with no warning. That is the point, but a `broadcast-before-reboot`
-timer would be nicer. Not shipped.
+Important limits to understand up front:
 
----
+- the current t2linux state page still describes Bluetooth as only
+  partially working on some T2 models and notes BCM4377 interference
+  issues on 2.4 GHz Wi-Fi
+- the same state page says the trackpad works but is not as good as on
+  macOS
+- the current t2linux audio guide says experimental speaker DSP tuning
+  is only available for the 16-inch 2019 MacBook Pro and should not be
+  used on other models
+- `apple-t2-audio-config` is not the primary speaker fix on this 13-inch
+  CS8409 path; the image now builds the `snd_hda_macbookpro` override so
+  sound does not depend on custom PipeWire tweaks
+- hibernation is not fully configured by default in this repo's
+  retained-version layout yet because that still needs swap + resume
+  wiring
 
-## 7. How to double-check this work (for a reviewer)
+See `hosts/macbookpro13-2019-t2/README.md` for the host-specific notes
+and service choices.
 
-If someone else (another chat, a coworker, future-you) needs to
-verify everything here:
+## Smoke testing in QEMU
 
-1. **Architecture review.** Read section 2 above. The three-path
-   alerting design (active + dead-man's + journal) is the critical
-   claim. Sanity: "if only 1 of {active, dead-man's, journal} was
-   shipped, which failures would go unreported?" Active alone: misses
-   power loss. Dead-man alone: does not tell you WHICH subsystem is
-   failing. Journal alone: forensic only, no page.
+`./run.sh` boots the most-recently-built image in a QEMU VM. It defaults
+to an **ephemeral** snapshot so the test run cannot mutate the image you
+might later flash.
 
-2. **Secrets flow.** Trace one secret end-to-end: the Tailscale auth
-   key. It lives on build host at `.mkosi-secrets/tailscale-authkey`
-   (0600, gitignored). `scripts/verify-build-secrets.sh` asserts
-   permissions, format (`tskey-auth-...`), and that git does not
-   track it. `scripts/package-credentials.sh` encrypts it via
-   `systemd-creds encrypt --with-key=host --host-key-path
-   mkosi.extra/var/lib/systemd/credential.secret` into
-   `mkosi.extra/etc/credstore.encrypted/tailscale-authkey`. On the
-   booted image, `tailscale-up.service` declares
-   `LoadCredentialEncrypted=tailscale-authkey:/etc/credstore.encrypted/tailscale-authkey`
-   which systemd decrypts into `$CREDENTIALS_DIRECTORY` for the
-   lifetime of that process only. `ensure-tailscale.sh` reads
-   `$CREDENTIALS_DIRECTORY/tailscale-authkey` and passes it to
-   `tailscale up --authkey=`. The plaintext never lives on disk
-   inside the image.
+Common cases:
 
-3. **Credential.secret threat model.** This key encrypts the credstore
-   using a symmetric key baked into the image at
-   `/var/lib/systemd/credential.secret` (mode 0400 root). Anyone
-   with the image file can recover plaintext. That is the same
-   property as "plaintext on disk mode 0600 root" — no worse. The
-   win is the organizational discipline: the ONLY ways a secret
-   lands in the image are via `package-credentials.sh` (validated,
-   named, encrypted) and `package-alert-credentials.sh`. No
-   accidental `ExtraTrees=.mkosi-secrets:/` leakage. The upgrade
-   path is `--with-key=tpm2` after Secure Boot + verity are wired
-   up (see roadmap).
+```bash
+./run.sh                                 # boot the last devbox build
+./run.sh --profile server --host cloudbox
+./run.sh --persistent                    # keep writes across restarts
+```
 
-4. **Dedup state correctness.** `state.sh::state_transition`'s state
-   table is 5 lines of case:
-   - ok→fail OR unknown→fail: **trigger**
-   - fail→fail within dedup window: **skip**
-   - fail→fail past dedup window: **trigger** (reminder)
-   - fail→ok: **resolve**
-   - ok→ok OR unknown→ok: **skip**
-   Verify by reading the bash `case "${prev_status}|${new_status}" in`
-   block. PagerDuty also dedups on `dedup_key=<host>-<alert_key>`,
-   so even if our local dedup has a bug, PD will not page 100 times.
+When a VM will not boot, the diagnostic flags are the first thing to
+reach for. They are not production options — they exist specifically to
+make a broken build show you why:
 
-5. **Fingerprint verification.** Run:
-   ```
-   curl -fsSL https://pkgs.tailscale.com/stable/debian/trixie.noarmor.gpg \
-     | gpg --with-colons --fingerprint 2>/dev/null \
-     | awk -F: '$1=="fpr" {print $10}'
-   ```
-   Should emit `2596A99EAAB33821893C0A79458CA832957F5868`. Same
-   pattern for Cloudflare:
-   ```
-   curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
-     | gpg --with-colons --fingerprint 2>/dev/null \
-     | awk -F: '$1=="fpr" {print $10}'
-   ```
-   Should emit `FBA8C0EE63617C5EED695C43254B391D8CACCBF8`.
+```bash
+./run.sh --boot-nspawn    # skip firmware + bootloader + kernel + initrd;
+                          # boots the root tree in systemd-nspawn. If
+                          # this works and the regular VM does not, the
+                          # root FS is fine and the break is in the
+                          # boot chain.
 
-6. **Shellcheck.** From the repo root after application:
-   ```
-   ./scripts/lint.sh
-   ```
-   Should exit 0. If it does not, something was transcribed wrong.
+./run.sh --debug          # serial console + mkosi --debug + verbose
+                          # systemd + verbose udev. The first flag to
+                          # reach for when an image builds but silently
+                          # fails to boot.
 
-7. **Unit parse.** For each `.service` / `.timer` under
-   `mkosi.extra/etc/systemd/system/`:
-   ```
-   systemd-analyze verify <path-in-a-test-image>
-   ```
-   Cannot be run against the raw .service files outside an image
-   because they reference paths that only exist inside; test inside
-   the built image via `systemctl daemon-reload && systemctl status`.
+./run.sh --serial         # serial/interactive console instead of the
+                          # default GUI, so boot output scrolls into
+                          # your terminal instead of a window that
+                          # flashes and dies.
 
-8. **Integration check.** After applying, `git diff` vs upstream
-   should show: additions to `mkosi.extra/`, `docs/`, `scripts/`,
-   `mkosi.conf.d/`, `mkosi.repart/`; replacements of `.gitignore`
-   and `.users.json.sample`; no changes to other top-level files.
-   Any additional diff is something that went wrong in the copy.
+./run.sh --serial --kernel-arg systemd.unit=rescue.target
+                          # drop straight to a rescue shell before
+                          # multi-user.target fails something.
 
----
+./run.sh --kernel-arg ARG --mkosi-arg ARG
+                          # ad-hoc passthroughs, both repeatable
+```
 
-## 8. Bundled document cross-reference
+`mkosi summary` prints the resolved mkosi config for the current
+working directory; it is the second-most-useful diagnostic after
+`--boot-nspawn` when an image does not boot — confirm a `linux-image-*`
+package is actually in the resolved `Packages=`.
 
-For deeper reads on specific parts:
+See `docs/qemu-smoke-testing.md` for a longer triage walkthrough.
 
-| If you want to understand…                        | Read…                              |
-|---------------------------------------------------|------------------------------------|
-| Tailscale + Cloudflare + SSH end to end           | `docs/remote-access.md`            |
-| The password_hash workflow                        | `docs/user-provisioning.md`        |
-| Why dd exit 0 is insufficient                     | `docs/live-usb-verification.md`    |
-| Alert paths, dedup, how to extend                 | `docs/alerting.md`                 |
-| What to do when your phone pages you              | `docs/runbook.md`                  |
-| Verity + UKI signing + TPM phases                 | `docs/secure-boot-roadmap.md`      |
-| Ordered security changes + what breaks on apply   | `docs/hardening-walkthrough.md`    |
-| Step-by-step application of this overlay          | `APPLY.md`                         |
+### Hardware-test USB for real-machine bring-up
 
----
+After any successful build, turn the current version into a bootable
+hardware-test USB that uses the same native retained-version stack as
+the real install:
 
-## 9. Version / provenance
+```bash
+sudo ./scripts/write-live-test-usb.sh --target /dev/sdX \
+     --profile macbook --host macbookpro13-2019-t2
+```
 
-- Produced: 2026-04-17 by a multi-turn synthesis against
-  `bashirsouid/debian-system-image-provisioning@main` (as observed
-  via web_fetch of the GitHub HTML).
-- Signing-key fingerprints verified against multiple independent
-  sources on the date above. Re-verify before relying on them.
-- No file in this overlay has been executed against a real Debian
-  trixie build. This is a reviewed prescription.
+That USB will:
+
+- bootstrap itself with `systemd-repart` + `systemd-sysupdate`
+- boot the exact version you just built
+- include `/root/INSTALL-TO-INTERNAL-DISK.sh` so you can install to the
+  machine's internal disk after you have tested the actual hardware
+
+By default the USB bundle copies the current sysupdate artifacts rather
+than the full `image.raw`, because the native install path only needs
+the versioned root artifact, UKI, and BLS entry. Use
+`--embed-full-image` only if you explicitly want the raw whole-disk
+image copied onto the USB as well. If the installer bundle does not fit
+on the default USB root partition, rerun with a larger removable drive
+or increase the USB slot size with `--usb-root-size`.
+
+For the T2 MacBook workflow this is the recommended next step before
+touching the internal SSD. Boot the USB via Startup Manager, verify
+Wi-Fi/Bluetooth/audio/sleep on real hardware, and only then run the
+bundled installer against the internal disk.
+
+See `docs/live-test-usb.md` for the full flow.
+
+## User management
+
+Local login users are defined in `.users.json` at the repo root. A
+sample lives at `.users.json.sample`. If `.users.json` is missing,
+`./build.sh` copies the sample on first run and asks you to edit it
+before retrying.
+
+Each entry is an object with one required field (`username`) and several
+optional ones; see the `_notes` entry at the top of `.users.json.sample`
+for the full schema.
+
+**The sample ships `"password": "change-me-now"`** as a plaintext
+password on the `demo` user. `build.sh` hashes plaintext `password`
+fields at build time so a first `./build.sh && ./run.sh` produces a
+working login for smoke testing. Change this before you flash anything
+real.
+
+### Pre-hashed passwords
+
+For anything beyond a smoke test, prefer `password_hash` over plaintext:
+
+```bash
+./scripts/hash-password.sh                      # prints just the hash
+./scripts/hash-password.sh --json --username demo --uid 1000
+                                                # prints a full JSON entry
+```
+
+The script prompts twice (no echo), uses `mkpasswd` from the `whois`
+package, prefers yescrypt, and never writes the password or the hash to
+disk. Paste the result into `.users.json`.
+
+A `password_hash` of `"!"` or `"*"` is a **lock marker** in
+`/etc/shadow`, not a real hash. Setting it means the account cannot be
+logged into with a password (pubkey SSH still works). That is the
+correct thing for service accounts; it is not what you want for your
+login user.
+
+### Per-host users
+
+If `hosts/<NAME>/users.json` exists, `./build.sh --host NAME` uses it
+instead of the global `.users.json`. That lets a workstation and a
+server share the same repo while keeping host-specific user sets — or a
+different password for the shared login user — out of the global file.
+
+### User IDs for shared mutable state
+
+By default, `build.sh` copies the invoking host user's numeric
+uid/gid/group into any `.users.json` entry whose `username` matches the
+build host user. That is the safest default when you want ownership to
+stay stable across retained-root updates.
+
+You can also pin ids explicitly:
+
+```json
+[
+  {
+    "username": "demo",
+    "password": "change-me-now",
+    "can_login": true,
+    "uid": 1000,
+    "gid": 1000,
+    "primary_group": "demo"
+  }
+]
+```
+
+To disable automatic host-id syncing for the matching host username:
+
+```bash
+./build.sh --profile devbox --sync-host-ids=no
+```
+
+See `docs/user-provisioning.md` for the full first-boot behavior.
+
+## QEMU sample home seed
+
+`run.sh` defaults to an **ephemeral** VM and mounts
+`runtime-seeds/qemu-home/` into the guest for the `devbox` and `macbook`
+profiles.
+
+On first boot the guest copies the sample files into the login user's
+home only if the target paths do not already exist.
+
+That gives you a smoke-test config in QEMU without baking personal host
+config into the image that you would later flash or deploy.
+
+## `/home` strategy
+
+For real retained-root machines, keep mutable workstation data
+**outside** the root image. That means `/home` should live on a separate
+persistent partition or subvolume.
+
+The preferred native layout is:
+
+- a GPT `home` partition on the same disk as the retained root
+  partitions for `/home`
+- an optional partition labeled `DATA` for `/mnt/data`
+
+The GPT `home` partition is auto-mounted by
+`systemd-gpt-auto-generator`, and the image ships an `fstab` entry that
+mounts `PARTLABEL=DATA` at `/mnt/data` with `nofail`, so the extra data
+partition is optional and survives future retained-version updates
+without per-slot manual edits.
+
+For QEMU testing, the repo intentionally does **not** mount your real
+host home by default. Instead it seeds a tiny sample AwesomeWM setup.
+When you want to compare with host config, use runtime sharing
+explicitly:
+
+```bash
+./run.sh --runtime-tree "$HOME/.config/awesome:/mnt/host-awesome"
+./run.sh --runtime-home
+```
+
+Use `--runtime-home` only for disposable tests.
+
+See `docs/home-storage.md` for the storage trade-offs.
+
+## Build output and sysupdate artifacts
+
+`build.sh` pins `mkosi` to a single `ImageId` + `ImageVersion` for each
+invocation and writes `mkosi.output/.latest-build.env` plus
+per-profile/per-host metadata files such as
+`mkosi.output/.latest-build.devbox.none.env`. `run.sh` reuses that
+metadata, so `./build.sh` followed by `./run.sh` boots the image that
+was just built instead of recalculating a fresh timestamped version. If
+you pass `--profile` or `--host`, `run.sh` looks for the matching saved
+build metadata for that specific combination.
+
+`build.sh` produces two layers of output in `mkosi.output/`:
+
+1. the usual `mkosi` build outputs such as
+   `debian-provisioning_<VERSION>.raw`
+2. versioned **sysupdate source artifacts** used by the golden-path
+   updater
+
+Current exported artifact names look like this:
+
+```text
+debian-provisioning_<VERSION>_<ARCH>.root.raw
+debian-provisioning_<VERSION>_<ARCH>.efi
+debian-provisioning_<VERSION>_<ARCH>.conf
+```
+
+The generated `.conf` file is a Boot Loader Specification entry that
+references the matching UKI and supplies the root partition label plus
+host-specific extra kernel arguments.
+
+## Host-specific kernel arguments
+
+GRUB-specific kernel flags are not required for this design.
+
+Instead, host overlays can supply kernel arguments through
+`hosts/<NAME>/kernel-cmdline.extra`. Those arguments are rendered into
+the versioned Boot Loader Specification entry that gets installed by
+`systemd-sysupdate`.
+
+Current examples:
+
+- `hosts/evox2/kernel-cmdline.extra`
+- `hosts/cloudbox/kernel-cmdline.extra`
+
+For the Ryzen AI Max desktop path this is where `amdgpu.gttsize=`
+belongs.
+
+## The native install/update flow
+
+### One-time destructive bootstrap onto a blank or offline target
+
+Build first:
+
+```bash
+./build.sh --profile server --host cloudbox
+```
+
+Then bootstrap a target disk or raw disk image:
+
+```bash
+sudo ./scripts/bootstrap-ab-disk.sh --target /dev/sdX
+```
+
+What that script does:
+
+1. destroys the target partition table
+2. creates the ESP + two empty root partitions with `systemd-repart`
+3. installs `systemd-boot` into the target ESP
+4. seeds the first retained version using `systemd-sysupdate` from
+   `mkosi.output/`
+
+### Hardware-test USB on a removable drive
+
+For a real-machine smoke test before touching the internal disk, create
+a removable USB install using the same native stack:
+
+```bash
+sudo ./scripts/write-live-test-usb.sh --target /dev/sdX
+```
+
+This is intentionally **not** a separate ad-hoc installer image. The USB
+itself is bootstrapped with the same retained-version layout, and then
+a self-contained installer bundle is copied into `/root/ab-installer`.
+After booting from the USB you can run:
+
+```bash
+sudo /root/INSTALL-TO-INTERNAL-DISK.sh
+```
+
+The interactive helper can either:
+
+- wipe a target disk and create a fresh retained-version layout
+- or stage the bundled version onto an already bootstrapped target disk
+
+By default, a fresh install from the USB creates:
+
+- a 512M ESP
+- two retained root partitions of 8G each
+- a GPT `home` partition that takes the remaining space
+- no `DATA` partition unless you ask for one
+
+If you create a `DATA` partition, keep the partition label set to
+`DATA` so the built-in `/mnt/data` mount entry continues to work on
+later updates.
+
+### Later in-place updates on an already bootstrapped machine
+
+On a machine that is already running this layout:
+
+```bash
+sudo ./scripts/sysupdate-local-update.sh --source-dir ./mkosi.output --reboot
+```
+
+That stages the next version with `systemd-sysupdate` and reboots into
+the new trial entry.
+
+### Boot success and fallback
+
+The image uses the native boot-complete path:
+
+- a generated BLS entry is created with boot counters
+- `systemd-boot` decrements tries on each boot attempt
+- `ab-health-gate.service` runs before `boot-complete.target`
+- if the health gate succeeds, `systemd-bless-boot.service` marks the
+  entry good
+- if the health gate never succeeds, the counted entry eventually falls
+  behind the older good one and the system falls back to the older
+  retained version
+
+This is the key difference from the old bridge path: promotion/rollback
+is done by the boot loader + systemd boot-complete pipeline, not by
+custom ESP state files.
+
+## Health checks
+
+The current boot health gate does three things:
+
+- waits `AB_HEALTH_DELAY_SECS` seconds after boot
+- fails if there are failed systemd units
+- runs any executable hooks in `/usr/local/libexec/ab-health-check.d`
+
+Health status is recorded locally in:
+
+```text
+/var/lib/ab-health/status.env
+```
+
+Useful commands on the installed system:
+
+```bash
+ab-status
+ab-bless-boot
+ab-mark-bad
+```
+
+- `ab-status` shows the current root partition label, build metadata,
+  health result, bootctl state, and installed sysupdate versions
+- `ab-bless-boot` requests `boot-complete.target` so
+  `systemd-bless-boot` can mark the current entry good
+- `ab-mark-bad` marks the current counted entry bad immediately
+
+## Cloudbox / Oracle ARM testing
+
+The `cloudbox` overlay is intended for an ARM64 server-style machine
+and uses serial-console-friendly kernel flags through
+`hosts/cloudbox/kernel-cmdline.extra`.
+
+This is the cleanest place to validate the modern path because:
+
+- it removes the desktop stack from the equation
+- you can rebuild and redeploy repeatedly
+- you can test the retained-version flow before migrating a workstation
+
+## Ansible
+
+The playbook under `ansible/playbooks/cloudbox-ab-deploy.yml` follows
+the native model. It can do either of two things:
+
+1. **bootstrap mode** — destructively prepare a blank/offline target
+   disk
+2. **update mode** — build a new version and stage it with
+   `systemd-sysupdate`
+
+Bootstrap mode is for the first install only. Update mode is for all
+later deployments.
+
+See `ansible/README.md` and `ansible/group_vars/cloudbox.yml.example`.
+
+## Liquorix notes
+
+The `devbox` profile uses Liquorix on x86-64.
+
+The `server` profile keeps Debian's stock kernel path. The ARM64
+`cloudbox` overlay uses `linux-image-arm64`.
+
+For the `devbox` profile we keep `dpkg` and `kmod` in the image and
+disable mkosi package-metadata cleanup. That avoids a Debian/apt cleanup
+edge case where purging `dpkg` can cause `kmod` auto-removal to fail
+because `kmod` maintainer scripts call `dpkg-maintscript-helper`.
+
+## Repo layout
+
+- `mkosi.conf`, `mkosi.conf.d/`, `mkosi.profiles/` — base image
+  definition and per-profile overrides
+- `mkosi.sysupdate/` — native sysupdate transfer definitions
+- `deploy.repart/` — one-time disk layout for bootstrap
+- `hosts/<name>/` — per-machine overlays (`cloudbox`, `evox2`,
+  `example-host`, `macbookpro13-2019-t2`)
+- `scripts/bootstrap-ab-disk.sh` — destructive first install to a
+  blank/offline target
+- `scripts/sysupdate-local-update.sh` — later in-place updates on an
+  installed system
+- `scripts/write-live-test-usb.sh` — bootstraps a removable
+  hardware-test USB and copies an installer bundle onto it
+- `scripts/live-usb-install.sh` — interactive installer used from the
+  booted hardware-test USB
+- `scripts/export-sysupdate-artifacts.sh` — exports versioned
+  root/UKI/BLS artifacts after build
+- `scripts/hash-password.sh` — password hash helper for `.users.json`
+- `scripts/ab-flash.sh` — legacy manual fallback, not the recommended
+  path
+- `docs/` — deeper dives referenced throughout this README

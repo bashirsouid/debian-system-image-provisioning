@@ -627,7 +627,19 @@ build_target() {
     "$METADATA_DIR/usr/local/etc" \
     "$METADATA_DIR/usr/local/share/ab-image-meta" \
     "$METADATA_DIR/usr/lib/sysupdate.d"
+
+  # Per-host users override: if hosts/<HOST>/users.json exists, it
+  # replaces the global .users.json for this build target. This lets a
+  # workstation and a server share the same repo while keeping
+  # host-specific user sets (or a different password for the shared
+  # login user) out of the global file.
+  local _original_users_file="$USERS_FILE"
+  if [[ -n "$HOST" && -f "$PROJECT_ROOT/hosts/$HOST/users.json" ]]; then
+    USERS_FILE="$PROJECT_ROOT/hosts/$HOST/users.json"
+    echo "==> Using per-host users file: hosts/$HOST/users.json"
+  fi
   render_users_conf "$METADATA_DIR/usr/local/etc/users.conf"
+  USERS_FILE="$_original_users_file"
   chmod 0600 "$METADATA_DIR/usr/local/etc/users.conf"
   render_build_info "$METADATA_DIR/usr/local/share/ab-image-meta/build-info.env" "$target_image_id" "$IMAGE_VERSION" "$TARGET_ARCH" "$HOST_KERNEL_ARGS"
   render_sysupdate_transfers "$METADATA_DIR/usr/lib/sysupdate.d" "$target_image_id"
