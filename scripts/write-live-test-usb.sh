@@ -6,6 +6,8 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
 # shellcheck source=scripts/lib/build-meta.sh
 source "$PROJECT_ROOT/scripts/lib/build-meta.sh"
+# shellcheck source=scripts/lib/confirm-destructive.sh
+source "$PROJECT_ROOT/scripts/lib/confirm-destructive.sh"
 
 TARGET=""
 SOURCE_DIR="$PROJECT_ROOT/mkosi.output"
@@ -23,6 +25,7 @@ IMAGE_ID=""
 IMAGE_VERSION=""
 IMAGE_ARCH=""
 IMAGE_BASENAME=""
+ALLOW_FIXED_DISK=no
 
 usage() {
   cat <<'USAGE'
@@ -46,6 +49,9 @@ Options:
   --usb-esp-size SIZE   override the ESP size used for the USB bootstrap
   --usb-root-size SIZE  override the per-slot root size used for the USB bootstrap
   --embed-full-image    also copy the built full disk image into the USB bundle
+  --allow-fixed-disk    permit writing to a non-removable (internal) disk;
+                        the default refuses such targets to prevent the
+                        "I flashed my laptop's SSD by accident" case
   --yes                 skip destructive confirmation prompts
 USAGE
 }
@@ -117,6 +123,37 @@ print_selected_build() {
   echo "    Image version:  $IMAGE_VERSION"
   echo "    Artifact prefix:$artifact_prefix"
   echo "    Disk image:     $SOURCE_DIR/$IMAGE_BASENAME"
+}
+
+# The one destructive-confirmation point for the USB write flow. Runs
+# BEFORE bootstrap-ab-disk.sh so the enhanced panel here (drive identity
+# + full image identity from loaded build metadata) is the last thing
+# the user reads. bootstrap-ab-disk.sh is then invoked with --yes so the
+# user isn't double-prompted with a less-informed version of the same
+# question. This is also where the non-removable-disk refusal lives;
+# bootstrap has its own copy for direct callers.
+confirm_usb_write_or_abort() {
+  [[ "$ASSUME_YES" == true ]] && return 0
+
+  echo
+  echo "===================================================================="
+  echo "DESTRUCTIVE OPERATION: all partition data on the target will be lost"
+  echo "===================================================================="
+  echo
+  echo "Target device:"
+  ab_confirm_describe_target "$TARGET"
+  echo
+  echo "Image to install:"
+  ab_confirm_describe_image \
+    "${PROFILE:-${AB_LAST_BUILD_PROFILE:-unknown}}" \
+    "${HOST:-${AB_LAST_BUILD_HOST:-none}}" \
+    "$IMAGE_ID" \
+    "$IMAGE_VERSION" \
+    "$IMAGE_ARCH" \
+    "$SOURCE_DIR/$IMAGE_BASENAME"
+  echo
+  ab_confirm_require_removable "$TARGET" "$ALLOW_FIXED_DISK" || exit 1
+  ab_confirm_typed_path "$TARGET" || exit 1
 }
 
 resolve_disk_device() {
@@ -385,6 +422,10 @@ while [[ $# -gt 0 ]]; do
       EMBED_FULL_IMAGE=true
       shift
       ;;
+    --allow-fixed-disk)
+      ALLOW_FIXED_DISK=yes
+      shift
+      ;;
     --yes)
       ASSUME_YES=true
       shift
@@ -426,6 +467,7 @@ need_cmd df
 [[ -f "$SOURCE_DIR/$IMAGE_BASENAME" ]] || die "built disk image not found: $SOURCE_DIR/$IMAGE_BASENAME"
 
 prepare_bootstrap_repart_dir
+confirm_usb_write_or_abort
 
 bootstrap_args=(
   --target "$TARGET"
@@ -433,8 +475,18 @@ bootstrap_args=(
   --definitions "$GENERATED_DEFINITIONS_DIR"
   --repart-dir "$BOOTSTRAP_REPART_DIR"
   --loader-timeout "$LOADER_TIMEOUT"
+  # Confirmation already happened in confirm_usb_write_or_abort above
+  # with strictly more context than bootstrap's own prompt can provide,
+  # so always pass --yes down. If the user wants bootstrap's prompt,
+  # they should call bootstrap directly.
+  --yes
 )
-[[ "$ASSUME_YES" == true ]] && bootstrap_args+=(--yes)
+# Propagate --allow-fixed-disk: confirm_usb_write_or_abort has already
+# enforced the removable check; bootstrap's own check would otherwise
+# reject the target again and there's no way for the user to recover
+# without this pass-through.
+[[ "$ALLOW_FIXED_DISK" == "yes" ]] && bootstrap_args+=(--allow-fixed-disk)
+[[ -n "$IMAGE_ID" ]] && bootstrap_args+=(--image-id "$IMAGE_ID")
 
 echo "==> Bootstrapping hardware test USB on $TARGET"
 "$PROJECT_ROOT/scripts/bootstrap-ab-disk.sh" "${bootstrap_args[@]}"

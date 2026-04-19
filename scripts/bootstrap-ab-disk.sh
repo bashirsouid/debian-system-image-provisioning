@@ -4,6 +4,8 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/host-deps.sh
 source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
+# shellcheck source=scripts/lib/confirm-destructive.sh
+source "$PROJECT_ROOT/scripts/lib/confirm-destructive.sh"
 TARGET=""
 SOURCE_DIR="$PROJECT_ROOT/mkosi.output"
 DEFINITIONS_DIR="$PROJECT_ROOT/mkosi.sysupdate"
@@ -11,6 +13,7 @@ REPART_DIR="$PROJECT_ROOT/deploy.repart"
 LOADER_TIMEOUT=3
 ASSUME_YES=false
 IMAGE_ID=""
+ALLOW_FIXED_DISK=no
 
 usage() {
   cat <<'USAGE'
@@ -29,6 +32,9 @@ Options:
   --repart-dir DIR       repart definitions (default: ./deploy.repart)
   --loader-timeout N     write loader.conf timeout value (default: 3)
   --image-id ID          explicit image identifier to use for transfer matching
+  --allow-fixed-disk     permit writing to a non-removable (internal) disk;
+                         the default refuses such targets to prevent the
+                         "I flashed my laptop's SSD by accident" case
   --yes                  skip the destructive confirmation prompt
 USAGE
 }
@@ -44,13 +50,19 @@ need_cmd() {
 
 confirm_or_abort() {
   [[ "$ASSUME_YES" == true ]] && return 0
-  local answer
-  printf 'About to destroy partition data on %s. Continue? [y/N] ' "$TARGET"
-  read -r answer
-  case "${answer,,}" in
-    y|yes) return 0 ;;
-    *) echo 'Aborted.'; exit 1 ;;
-  esac
+  echo
+  echo "===================================================================="
+  echo "DESTRUCTIVE OPERATION: all partition data on the target will be lost"
+  echo "===================================================================="
+  echo
+  echo "Target device:"
+  ab_confirm_describe_target "$TARGET"
+  if [[ -n "$IMAGE_ID" ]]; then
+    echo
+    echo "Installing image id: $IMAGE_ID"
+  fi
+  echo
+  ab_confirm_typed_path "$TARGET" || exit 1
 }
 
 live_root_disk() {
@@ -210,6 +222,10 @@ while [[ $# -gt 0 ]]; do
       IMAGE_ID="${2:?missing image id}"
       shift 2
       ;;
+    --allow-fixed-disk)
+      ALLOW_FIXED_DISK=yes
+      shift
+      ;;
     --yes)
       ASSUME_YES=true
       shift
@@ -275,6 +291,7 @@ wait_for_esp_partition() {
 }
 
 ensure_safe_target
+ab_confirm_require_removable "$TARGET" "$ALLOW_FIXED_DISK" || exit 1
 resolve_disk_device
 preview_repart_layout
 confirm_or_abort
