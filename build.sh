@@ -462,14 +462,17 @@ sanitize_image_component() {
 }
 
 image_id_for_target() {
+  # Always produce a (profile,host)-specific image id so artifacts in
+  # mkosi.output/ from one target never silently clobber another target's
+  # artifacts of the same name. Previously this only applied in --all
+  # mode; in single-target mode two back-to-back builds with different
+  # profiles would overwrite each other's image.raw / .root.raw / .efi /
+  # .conf / SHA256SUMS, and the per-host .latest-build.<p>.<h>.env
+  # metadata would then point to files containing the other target's
+  # bits. BUILD_ALL still exists but no longer changes the scheme.
   local base="$1"
   local profile="$2"
   local host="$3"
-
-  if [[ "$BUILD_ALL" == false ]]; then
-    printf '%s\n' "$base"
-    return 0
-  fi
 
   local suffix
   suffix="$(sanitize_image_component "$profile")"
@@ -477,6 +480,24 @@ image_id_for_target() {
     suffix+="-$(sanitize_image_component "$host")"
   fi
   printf '%s-%s\n' "$base" "$suffix"
+}
+
+# GPT partition labels are capped at 36 UTF-16 code units. sysupdate's
+# MatchPattern on [Target] partitions substitutes @v with the version, so
+# the effective label is "<image_id>_<version>". If that exceeds 36 chars
+# the label gets silently truncated on write and sysupdate's MatchPattern
+# no longer matches on the next update. Warn loudly so the user can pick
+# a shorter base via AB_IMAGE_ID=.
+warn_if_image_label_too_long() {
+  local image_id="$1"
+  local image_version="$2"
+  local total=$(( ${#image_id} + 1 + ${#image_version} ))
+  if (( total > 36 )); then
+    echo "WARNING: image id + version is $total chars ('${image_id}_${image_version}')." >&2
+    echo "         GPT partition labels truncate at 36 chars, which will break" >&2
+    echo "         sysupdate's MatchPattern on the [Target] partition." >&2
+    echo "         Set AB_IMAGE_ID= to a shorter base (currently '$BASE_IMAGE_ID')." >&2
+  fi
 }
 
 compute_config_checksum() {
@@ -641,6 +662,7 @@ build_target() {
   HOST_KERNEL_ARGS=""
   target_force="$MKOSI_FORCE"
   target_image_id="$(image_id_for_target "$BASE_IMAGE_ID" "$PROFILE" "$HOST")"
+  warn_if_image_label_too_long "$target_image_id" "$IMAGE_VERSION"
 
   ensure_profile_hostdeps "$PROFILE"
 

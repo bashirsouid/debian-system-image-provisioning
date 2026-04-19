@@ -125,8 +125,25 @@ root_size="$(jq -r '
 echo "==> Exporting root partition from image.raw"
 dd if="$IMAGE_PATH" of="$root_artifact" bs="$sector_size" skip="$root_start" count="$root_size" status=none
 
-uki_source="$(find "$OUTPUT_DIR" -maxdepth 2 -type f -name '*.efi' ! -name 'BOOT*.EFI' ! -name 'systemd-boot*.efi' | sort | head -n1 || true)"
-[[ -n "$uki_source" ]] || die "unable to locate a split-out UKI (*.efi) in $OUTPUT_DIR"
+uki_source=""
+# Prefer an exact-named UKI produced by mkosi for THIS image-id /
+# version. Fall back to a glob scoped to the same image-id so stale
+# UKIs from a previous build of a different profile cannot be picked
+# up just because they sort earlier alphabetically. The unconstrained
+# wildcard search that used to live here had exactly that bug.
+for candidate in \
+    "$OUTPUT_DIR/${IMAGE_ID}_${IMAGE_VERSION}.efi" \
+    "$OUTPUT_DIR/${IMAGE_ID}_${IMAGE_VERSION}_${TARGET_ARCH}.efi" \
+    "$OUTPUT_DIR/${IMAGE_ID}.efi"; do
+  if [[ -f "$candidate" ]]; then
+    uki_source="$candidate"
+    break
+  fi
+done
+if [[ -z "$uki_source" ]]; then
+  uki_source="$(find "$OUTPUT_DIR" -maxdepth 2 -type f -name "${IMAGE_ID}*.efi" ! -name 'BOOT*.EFI' ! -name 'systemd-boot*.efi' | sort | head -n1 || true)"
+fi
+[[ -n "$uki_source" ]] || die "unable to locate split-out UKI for image '${IMAGE_ID}' in $OUTPUT_DIR"
 install -m 0644 "$uki_source" "$uki_artifact"
 
 entry_options="root=PARTLABEL=${IMAGE_ID}_${IMAGE_VERSION} rw"
