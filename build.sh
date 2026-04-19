@@ -161,19 +161,36 @@ read_host_default_profile() {
 fetch_url() {
   local url="$1"
   local destination="$2"
+  local max_attempts=3
+  local attempt=1
+  local backoff=5
 
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$destination"
-    return
-  fi
+  while [[ $attempt -le $max_attempts ]]; do
+    if command -v curl >/dev/null 2>&1; then
+      if curl -fsSL "$url" -o "$destination"; then
+        return 0
+      fi
+    elif command -v wget >/dev/null 2>&1; then
+      if wget -qO "$destination" "$url"; then
+        return 0
+      fi
+    else
+      echo "ERROR: need curl or wget on the build host to fetch third-party repo metadata" >&2
+      exit 1
+    fi
 
-  if command -v wget >/dev/null 2>&1; then
-    wget -qO "$destination" "$url"
-    return
-  fi
+    if [[ $attempt -lt $max_attempts ]]; then
+      echo "WARNING: fetch attempt $attempt/$max_attempts failed for $url. Retrying in ${backoff}s..." >&2
+      sleep "$backoff"
+      backoff=$((backoff * 2))
+      ((attempt++))
+    else
+      break
+    fi
+  done
 
-  echo "ERROR: need curl or wget on the build host to fetch third-party repo metadata" >&2
-  exit 1
+  echo "ERROR: failed to fetch $url after $max_attempts attempts" >&2
+  return 1
 }
 
 prepare_liquorix_trees() {
@@ -230,14 +247,26 @@ prepare_t2linux_trees() {
   gpg --dearmor --yes --output "$keyring_path" "$key_tmp"
 
   t2_list_path="$sandbox_root/etc/apt/sources.list.d/t2.list"
-  fetch_url "https://adityagarg8.github.io/t2-ubuntu-repo/t2.list" "$t2_list_path"
-  printf '%s\n' "deb [signed-by=/etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg] https://github.com/AdityaGarg8/t2-ubuntu-repo/releases/download/${suite} ./" >> "$t2_list_path"
+  # Use the stable t2-ubuntu-repo instead of GitHub releases URLs (which have JWT expiration issues)
+  cat > "$t2_list_path" <<SOURCE
+Types: deb
+URIs: https://github.com/AdityaGarg8/t2-ubuntu-repo/releases/download/debian
+Suites: ${suite}
+Components: main
+Architectures: amd64
+Signed-By: /etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg
+SOURCE
 
+  # Alternative: Apple firmware from GitHub releases - with better resilience
   firmware_list_path="$sandbox_root/etc/apt/sources.list.d/apple-firmware.list"
   cat > "$firmware_list_path" <<SOURCE
-Deb [signed-by=/etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg] https://github.com/AdityaGarg8/Apple-Firmware/releases/download/debian ./
+Types: deb
+URIs: https://github.com/AdityaGarg8/Apple-Firmware/releases/download/debian
+Suites: ./
+Components: 
+Architectures: amd64
+Signed-By: /etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg
 SOURCE
-  sed -i '1s/^Deb /deb /' "$firmware_list_path"
 
   rm -f "$key_tmp"
   trap - RETURN
