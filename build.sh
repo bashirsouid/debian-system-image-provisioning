@@ -20,7 +20,14 @@ BUILD_ALL=false
 FORCE_REBUILD=false
 MKOSI_FORCE=""
 SYNC_HOST_IDS=true
-BASE_IMAGE_ID="${AB_IMAGE_ID:-debian-provisioning}"
+# Default base image id. GPT partition labels cap at 36 UTF-16 chars,
+# which must hold "<base>-<suffix>_<version>". With a 16-char ISO
+# timestamp version and a ~7-char host alias that leaves ~11 chars for
+# the base. The old default 'debian-provisioning' was 19 chars and blew
+# the limit immediately once per-target suffixes got added. 'deb-ab' is
+# short, unambiguous about what the project is (Debian A/B), and leaves
+# headroom. Override with AB_IMAGE_ID= to go back to anything longer.
+BASE_IMAGE_ID="${AB_IMAGE_ID:-deb-ab}"
 IMAGE_VERSION=""
 TARGET_ARCH=""
 HOST_KERNEL_ARGS=""
@@ -470,9 +477,25 @@ image_id_for_target() {
   # .conf / SHA256SUMS, and the per-host .latest-build.<p>.<h>.env
   # metadata would then point to files containing the other target's
   # bits. BUILD_ALL still exists but no longer changes the scheme.
+  #
+  # If the host overlay provides hosts/<name>/image-id-suffix, the
+  # first non-empty, non-comment token in that file replaces the whole
+  # profile-plus-host suffix. That's the recommended escape hatch when
+  # the descriptive host dir name is too long for the 36-char GPT
+  # partition label limit; see warn_if_image_label_too_long below.
   local base="$1"
   local profile="$2"
   local host="$3"
+
+  if [[ -n "$host" && -f "$PROJECT_ROOT/hosts/$host/image-id-suffix" ]]; then
+    local alias
+    alias="$(sed -e 's/[[:space:]]*#.*$//' "$PROJECT_ROOT/hosts/$host/image-id-suffix" \
+             | awk 'NF{print;exit}' | tr -d '[:space:]')"
+    if [[ -n "$alias" ]]; then
+      printf '%s-%s\n' "$base" "$(sanitize_image_component "$alias")"
+      return 0
+    fi
+  fi
 
   local suffix
   suffix="$(sanitize_image_component "$profile")"
@@ -487,16 +510,28 @@ image_id_for_target() {
 # the effective label is "<image_id>_<version>". If that exceeds 36 chars
 # the label gets silently truncated on write and sysupdate's MatchPattern
 # no longer matches on the next update. Warn loudly so the user can pick
-# a shorter base via AB_IMAGE_ID=.
+# a shorter base via AB_IMAGE_ID= or create hosts/<name>/image-id-suffix.
 warn_if_image_label_too_long() {
   local image_id="$1"
   local image_version="$2"
+  local host="$3"
   local total=$(( ${#image_id} + 1 + ${#image_version} ))
   if (( total > 36 )); then
     echo "WARNING: image id + version is $total chars ('${image_id}_${image_version}')." >&2
     echo "         GPT partition labels truncate at 36 chars, which will break" >&2
-    echo "         sysupdate's MatchPattern on the [Target] partition." >&2
-    echo "         Set AB_IMAGE_ID= to a shorter base (currently '$BASE_IMAGE_ID')." >&2
+    echo "         sysupdate's MatchPattern on the [Target] partition on update." >&2
+    if [[ -n "$host" ]]; then
+      local budget=$(( 36 - 1 - ${#image_version} - ${#BASE_IMAGE_ID} - 1 ))
+      if (( budget >= 1 )); then
+        echo "         Create hosts/$host/image-id-suffix containing a short alias" >&2
+        echo "         (max $budget chars) that replaces the long '$(sanitize_image_component "${host}")' suffix." >&2
+      else
+        echo "         Set AB_IMAGE_ID= to a base shorter than '$BASE_IMAGE_ID' first; the" >&2
+        echo "         current base alone leaves no room for a host suffix plus version." >&2
+      fi
+    else
+      echo "         Set AB_IMAGE_ID= to a shorter base (current: '$BASE_IMAGE_ID')." >&2
+    fi
   fi
 }
 
@@ -662,7 +697,7 @@ build_target() {
   HOST_KERNEL_ARGS=""
   target_force="$MKOSI_FORCE"
   target_image_id="$(image_id_for_target "$BASE_IMAGE_ID" "$PROFILE" "$HOST")"
-  warn_if_image_label_too_long "$target_image_id" "$IMAGE_VERSION"
+  warn_if_image_label_too_long "$target_image_id" "$IMAGE_VERSION" "$HOST"
 
   ensure_profile_hostdeps "$PROFILE"
 

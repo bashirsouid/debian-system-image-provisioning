@@ -1,0 +1,13 @@
+# hosts/macbookpro13-2019-t2/image-id-suffix
+#
+# Short alias used for this host in the image id, and therefore in
+# GPT partition labels and sysupdate MatchPattern on [Target]
+# partitions. Must be short enough that
+#   len(AB_IMAGE_ID) + 1 + len(ALIAS) + 1 + len(IMAGE_VERSION) <= 36
+# Defaults in this repo: AB_IMAGE_ID=debian-provisioning (19 chars),
+# IMAGE_VERSION is a 16-char ISO timestamp. That leaves 36-19-1-16-1 = -1
+# chars of budget with the current default base; set AB_IMAGE_ID to
+# something shorter (like 'deb') to free up budget.
+#
+# Lines starting with # and blank lines are ignored.
+mbp13t2

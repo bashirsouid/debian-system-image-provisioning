@@ -194,3 +194,154 @@ ab_confirm_typed_path() {
   printf 'Typed path did not match. Aborting.\n' >&2
   return 1
 }
+
+# Attempts to read an ab-installer/USB-IDENTITY.env file off the target
+# block device, without modifying anything. The identity file is written
+# by write-live-test-usb.sh at the end of a successful flash; finding
+# one here tells us the USB was previously set up for SOME image, and
+# we can compare that prior identity against the incoming one to catch
+# "wrong host" re-flashes.
+#
+# Best-effort: if the partition table is gone, or we can't mount, or
+# the file doesn't exist, we print nothing and return 1. Caller treats
+# absence as "no prior identity, new USB, proceed normally."
+#
+# Prints the identity block to stdout in a format suitable for display.
+# Usage: ab_confirm_read_existing_identity BLOCK_DEVICE
+ab_confirm_read_existing_identity() {
+  local device="$1"
+  local real part label fstype mnt tmp
+  real="$(readlink -f "$device")"
+  [[ -b "$real" ]] || return 1
+
+  # Find a partition with a mountable filesystem where the identity
+  # file might live. We check root-ish partitions first (that's where
+  # write-live-test-usb.sh deposits the bundle), then fall through to
+  # any vfat or ext* partition as a last resort.
+  local candidate=""
+  while read -r part label fstype; do
+    [[ -n "$part" && -n "$fstype" ]] || continue
+    case "$fstype" in
+      ext2|ext3|ext4|vfat|xfs|btrfs) ;;
+      *) continue ;;
+    esac
+    case "$label" in
+      ESP|HOME|DATA) continue ;;
+    esac
+    candidate="$part"
+    break
+  done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$real" 2>/dev/null)
+
+  [[ -n "$candidate" ]] || return 1
+
+  mnt="$(mktemp -d /tmp/ab-usb-probe.XXXXXX)" || return 1
+  # shellcheck disable=SC2064
+  trap "umount '$mnt' >/dev/null 2>&1 || true; rmdir '$mnt' >/dev/null 2>&1 || true" RETURN
+  if ! mount -o ro "$candidate" "$mnt" 2>/dev/null; then
+    return 1
+  fi
+
+  local id_file=""
+  for c in \
+      "$mnt/root/ab-installer/USB-IDENTITY.env" \
+      "$mnt/ab-installer/USB-IDENTITY.env" \
+      "$mnt/USB-IDENTITY.env"; do
+    if [[ -f "$c" ]]; then
+      id_file="$c"
+      break
+    fi
+  done
+
+  if [[ -z "$id_file" ]]; then
+    return 1
+  fi
+
+  # USB-IDENTITY.env is a simple KEY=VALUE file, same format as
+  # .latest-build.*.env. Just cat the sanitized contents.
+  awk '
+    /^[A-Za-z_][A-Za-z0-9_]*=/ { print }
+  ' "$id_file"
+  return 0
+}
+
+# Writes the identity file onto a mounted USB root. Intended to be
+# called by write-live-test-usb.sh once the bundle dir has been copied
+# into place. The file is what ab_confirm_read_existing_identity looks
+# for on the next flash.
+# Usage: ab_confirm_write_usb_identity PATH PROFILE HOST IMAGE_ID IMAGE_VERSION IMAGE_ARCH GIT_REV
+ab_confirm_write_usb_identity() {
+  local path="$1"
+  local profile="${2:-unknown}"
+  local host="${3:-}"
+  local image_id="${4:-unknown}"
+  local image_version="${5:-unknown}"
+  local image_arch="${6:-unknown}"
+  local git_rev="${7:-unknown}"
+
+  local dir
+  dir="$(dirname "$path")"
+  install -d -m 0755 "$dir"
+  umask 077
+  cat > "$path" <<EOF
+# Written by write-live-test-usb.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ).
+# Used by the next flash to detect cross-host/cross-profile re-flashes.
+AB_USB_IDENTITY_WRITTEN_AT_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+AB_USB_IDENTITY_PROFILE=${profile}
+AB_USB_IDENTITY_HOST=${host}
+AB_USB_IDENTITY_IMAGE_ID=${image_id}
+AB_USB_IDENTITY_IMAGE_VERSION=${image_version}
+AB_USB_IDENTITY_IMAGE_ARCH=${image_arch}
+AB_USB_IDENTITY_GIT_REV=${git_rev}
+EOF
+  chmod 0644 "$path"
+}
+
+# Compares an incoming image identity against an already-present one
+# on the USB. Prints a warning block when they differ and returns 1;
+# returns 0 on match or when no prior identity exists. Does NOT prompt;
+# the caller decides how strict to be about mismatches.
+# Usage: ab_confirm_identity_mismatch PROFILE HOST IMAGE_ID VERSION ARCH <<EXISTING_ENV
+ab_confirm_identity_mismatch() {
+  local profile="$1" host="$2" image_id="$3" version="$4" arch="$5"
+  local existing
+  existing="$(cat)"
+
+  local ex_host ex_profile ex_id
+  ex_profile="$(awk -F= '/^AB_USB_IDENTITY_PROFILE=/{print $2; exit}' <<<"$existing")"
+  ex_host="$(awk -F= '/^AB_USB_IDENTITY_HOST=/{print $2; exit}'       <<<"$existing")"
+  ex_id="$(awk -F= '/^AB_USB_IDENTITY_IMAGE_ID=/{print $2; exit}'     <<<"$existing")"
+
+  if [[ -z "$ex_id" ]]; then
+    return 0
+  fi
+
+  # Match on image_id primarily. If image IDs differ, host or profile
+  # almost certainly do too; we just surface the details for the user.
+  if [[ "$ex_id" == "$image_id" ]]; then
+    return 0
+  fi
+
+  cat >&2 <<EOF
+
+----------------------------------------------------------------------
+WARNING: this USB already holds a different image identity.
+
+Existing on USB:
+  profile:    ${ex_profile:-unknown}
+  host:       ${ex_host:-unknown}
+  image id:   ${ex_id}
+
+Incoming:
+  profile:    ${profile}
+  host:       ${host}
+  image id:   ${image_id}
+
+If the USB was originally built for a different host, reflashing it for
+a new target is usually intentional, but it is also the exact shape of
+the "I grabbed the wrong USB" mistake. The prompt below will still
+require typing the device path, so you have one more chance to abort.
+----------------------------------------------------------------------
+
+EOF
+  return 1
+}

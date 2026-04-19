@@ -152,6 +152,24 @@ confirm_usb_write_or_abort() {
     "$IMAGE_ARCH" \
     "$SOURCE_DIR/$IMAGE_BASENAME"
   echo
+
+  # Cross-host re-flash detector. If the target USB already has a
+  # USB-IDENTITY.env from a previous flash, read it (read-only mount)
+  # and compare against what we're about to install. A mismatch prints
+  # a warning but does not skip the typed-path gate; the operator can
+  # still proceed after seeing the prior identity.
+  local existing_identity
+  existing_identity="$(ab_confirm_read_existing_identity "$TARGET" 2>/dev/null || true)"
+  if [[ -n "$existing_identity" ]]; then
+    ab_confirm_identity_mismatch \
+      "${PROFILE:-${AB_LAST_BUILD_PROFILE:-unknown}}" \
+      "${HOST:-${AB_LAST_BUILD_HOST:-none}}" \
+      "$IMAGE_ID" \
+      "$IMAGE_VERSION" \
+      "$IMAGE_ARCH" \
+      <<<"$existing_identity" || true
+  fi
+
   ab_confirm_require_removable "$TARGET" "$ALLOW_FIXED_DISK" || exit 1
   ab_confirm_typed_path "$TARGET" || exit 1
 }
@@ -374,6 +392,22 @@ EOF2
 exec $BUNDLE_DIR/scripts/live-usb-install.sh "\$@"
 EOF2
   chmod 0750 "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh"
+
+  # Drop the identity file that the NEXT flash's
+  # ab_confirm_read_existing_identity looks for. Keeping it next to
+  # the bundle means it's always on the USB's root partition alongside
+  # the installer it describes. The git rev is best-effort; lands as
+  # 'unknown' if the build happened outside a git checkout.
+  local git_rev
+  git_rev="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+  ab_confirm_write_usb_identity \
+    "$bundle_root/USB-IDENTITY.env" \
+    "${PROFILE:-${AB_LAST_BUILD_PROFILE:-unknown}}" \
+    "${HOST:-${AB_LAST_BUILD_HOST:-}}" \
+    "$IMAGE_ID" \
+    "$IMAGE_VERSION" \
+    "$IMAGE_ARCH" \
+    "$git_rev"
 }
 
 while [[ $# -gt 0 ]]; do
