@@ -141,6 +141,23 @@ read_host_kernel_args() {
   fi
 }
 
+# Read hosts/<name>/profile.default for a host and echo the profile name.
+# Prints nothing if the host has no default or the file is empty/malformed.
+# Exits non-zero only if the host dir itself is missing (caller decides).
+read_host_default_profile() {
+  local host_name="$1"
+  local path="$PROJECT_ROOT/hosts/$host_name/profile.default"
+  local value
+  [[ -f "$path" ]] || return 0
+  # Strip comments, leading/trailing whitespace, take first non-empty line.
+  value="$(sed -e 's/[[:space:]]*#.*$//' "$path" | awk 'NF{print;exit}' | tr -d '[:space:]')"
+  # Validate: only simple profile names (matches what mkosi accepts).
+  case "$value" in
+    ""|*[!A-Za-z0-9._-]*) return 0 ;;
+    *) printf '%s\n' "$value" ;;
+  esac
+}
+
 fetch_url() {
   local url="$1"
   local destination="$2"
@@ -603,6 +620,60 @@ build_target() {
     exit 1
   fi
 
+  # Secure Boot posture: every --host build must either configure
+  # signing (SB drop-in + .secureboot/ key material) or explicitly
+  # opt out with hosts/<HOST>/secure-boot.disabled. "Silently build
+  # an unsigned image" is not an option, because that's exactly the
+  # footgun the drop-in model is meant to prevent.
+  # No-host builds (QEMU smoke test) are exempt: they exercise image
+  # contents, not the boot-trust chain, and are never flashed.
+  if [[ -n "$HOST" ]]; then
+    local sb_drop_in="$PROJECT_ROOT/hosts/$HOST/mkosi.conf.d/30-secure-boot.conf"
+    local sb_disabled="$PROJECT_ROOT/hosts/$HOST/secure-boot.disabled"
+    local sb_key="$PROJECT_ROOT/.secureboot/db.key"
+    local sb_cert="$PROJECT_ROOT/.secureboot/db.crt"
+
+    if [[ -f "$sb_disabled" ]]; then
+      echo "==> Secure Boot: DISABLED for host $HOST. Recorded reason:" >&2
+      sed 's/^/      /' "$sb_disabled" >&2
+    elif [[ -f "$sb_drop_in" ]]; then
+      if [[ ! -f "$sb_key" || ! -f "$sb_cert" ]]; then
+        cat >&2 <<EOF
+ERROR: Secure Boot is enabled for host $HOST (see $sb_drop_in)
+but the signing key and certificate are missing from .secureboot/.
+
+Run:
+  ./scripts/generate-secureboot-keys.sh
+
+Back up .secureboot/db.key offline before rebuilding — losing it
+orphans every machine already enrolled with it.
+EOF
+        exit 1
+      fi
+      echo "==> Secure Boot: enabled. UKI will be signed with .secureboot/db.key"
+    else
+      cat >&2 <<EOF
+ERROR: host $HOST has neither a Secure Boot configuration nor an
+explicit opt-out. Every host-targeted build must do one of:
+
+  * Opt in (recommended): create
+      hosts/$HOST/mkosi.conf.d/30-secure-boot.conf
+    (see hosts/evox2/mkosi.conf.d/30-secure-boot.conf for a template)
+    and run ./scripts/generate-secureboot-keys.sh.
+
+  * Opt out: create hosts/$HOST/secure-boot.disabled with a one-line
+    reason. The reason is printed on every build so the exception
+    stays visible. See hosts/macbookpro13-2019-t2/secure-boot.disabled
+    for an example.
+
+This is the default because images that get flashed to real hardware
+must be tamper-evident. QEMU smoke tests (./build.sh with no --host)
+are not affected.
+EOF
+      exit 1
+    fi
+  fi
+
   if profile_needs_awesome "$PROFILE" && [[ ! -f "$PROJECT_ROOT/third-party/awesome/CMakeLists.txt" ]]; then
     echo "ERROR: desktop profiles require third-party/awesome" >&2
     echo "Run ./update-3rd-party-deps.sh or ./build.sh --force-rebuild ..." >&2
@@ -804,14 +875,70 @@ if [[ "$BUILD_ALL" == true && ( "$PROFILE_SET" == true || "$HOST_SET" == true ) 
   exit 1
 fi
 
+# Per-host default profile resolution.
+#
+# Precedence:
+#   1. --profile on the command line always wins.
+#   2. If only --host was given, read hosts/<host>/profile.default.
+#   3. Fall back to the hardcoded default ("devbox") set at the top.
+#
+# This lets `./build.sh --host cloudbox` do the obviously-correct thing
+# (build the server profile) without having to remember to also type
+# --profile server every time.
+if [[ "$BUILD_ALL" == false && "$PROFILE_SET" == false && "$HOST_SET" == true ]]; then
+  host_default_profile="$(read_host_default_profile "$HOST")"
+  if [[ -n "$host_default_profile" ]]; then
+    echo "==> Using default profile from hosts/$HOST/profile.default: $host_default_profile"
+    PROFILE="$host_default_profile"
+  fi
+fi
+
 cd "$PROJECT_ROOT"
 mkdir -p mkosi.output
 
 if [[ ! -f "$USERS_FILE" ]]; then
-  echo "WARNING: $USERS_FILE missing. Creating from sample..."
-  cp "$USERS_SAMPLE" "$USERS_FILE"
-  echo "IMPORTANT: edit $USERS_FILE and set your passwords before building."
+  cat >&2 <<EOF
+ERROR: $USERS_FILE is missing.
+
+This file tells build.sh which local users to provision on first boot,
+including their passwords. build.sh intentionally does NOT auto-create
+it, because silently copying the sample would leave a known default
+password ("change-me-now") on any image built without a manual review
+step — a serious footgun for CI and for anyone building on autopilot.
+
+To create it:
+  cp $USERS_SAMPLE $USERS_FILE
+  \$EDITOR $USERS_FILE              # set a real password / password_hash
+
+Prefer password_hash over password. Generate one with:
+  ./scripts/hash-password.sh --hash-only
+EOF
   exit 1
+fi
+
+# Refuse to build if the sample sentinel password is still present.
+# Users.json supports both 'password' and 'password_hash'; we guard both.
+if jq -e '
+  [ .[] |
+    select(type == "object") |
+    select(
+      (.password // "") == "change-me-now"
+      or (.password_hash // "") == "change-me-now"
+    )
+  ] | length > 0
+' "$USERS_FILE" >/dev/null 2>&1; then
+  cat >&2 <<EOF
+ERROR: $USERS_FILE still contains the sample password "change-me-now".
+
+Edit it and set a real password or password_hash. If you truly want to
+build with a weak, known password (throwaway QEMU test only), set
+AB_ALLOW_SAMPLE_PASSWORD=yes and re-run. This flag is intentionally
+ugly so it shows up in logs.
+EOF
+  if [[ "${AB_ALLOW_SAMPLE_PASSWORD:-no}" != "yes" ]]; then
+    exit 1
+  fi
+  echo "WARNING: AB_ALLOW_SAMPLE_PASSWORD=yes — building with sample password. DO NOT FLASH THIS IMAGE." >&2
 fi
 
 ensure_base_hostdeps
@@ -824,6 +951,14 @@ if [[ "${AB_SKIP_OVERLAY_GATES:-no}" != "yes" ]]; then
     if [[ -x "$PROJECT_ROOT/scripts/lint.sh" ]]; then
         echo "==> Running shellcheck..."
         "$PROJECT_ROOT/scripts/lint.sh"
+    fi
+
+    # Preflight: refuse to build if any per-machine identity file is
+    # committed under mkosi.extra/ or hosts/*/mkosi.extra/.
+    # See scripts/verify-no-baked-identity.sh for rationale.
+    if [[ -x "$PROJECT_ROOT/scripts/verify-no-baked-identity.sh" ]]; then
+        echo "==> Auditing mkosi.extra/ for baked-in per-machine identity..."
+        "$PROJECT_ROOT/scripts/verify-no-baked-identity.sh"
     fi
 
     # Validate secrets shape + permissions. Only runs if there is a
@@ -864,12 +999,41 @@ else
   ensure_managed_sources_once normal
 fi
 
-IMAGE_VERSION="${AB_IMAGE_VERSION:-$($PROJECT_ROOT/mkosi.version)}"
 compute_config_checksum
+
+# IMAGE_VERSION resolution order:
+#   1. AB_IMAGE_VERSION env var (explicit override wins).
+#   2. If the config checksum is unchanged from the previous successful
+#      build, reuse the previous IMAGE_VERSION. This stops mkosi.version
+#      from minting a fresh UTC timestamp on every invocation, which
+#      would otherwise cause mkosi.output/ to accumulate a new set of
+#      .raw/.efi/.conf files per build even when nothing actually
+#      changed. The checksum already covers every build input, so
+#      "same checksum => same logical build => same version" is safe.
+#   3. Otherwise mint a new timestamp via ./mkosi.version.
+#
+# AB_FORCE_NEW_VERSION=yes opts out of the reuse path, e.g. when you
+# want a clean version bump without changing any tracked files.
+_last_checksum=""
+_last_version=""
+[[ -f "$PROJECT_ROOT/.config-checksum" ]] && _last_checksum="$(cat "$PROJECT_ROOT/.config-checksum")"
+[[ -f "$PROJECT_ROOT/.config-version"  ]] && _last_version="$(cat "$PROJECT_ROOT/.config-version")"
+
+if [[ -n "${AB_IMAGE_VERSION:-}" ]]; then
+  IMAGE_VERSION="$AB_IMAGE_VERSION"
+elif [[ "${AB_FORCE_NEW_VERSION:-no}" != "yes" \
+        && -n "$_last_checksum" && -n "$_last_version" \
+        && "$CURRENT_CHECKSUM" == "$_last_checksum" ]]; then
+  IMAGE_VERSION="$_last_version"
+  echo "==> Reusing IMAGE_VERSION=$IMAGE_VERSION (config unchanged since last build)"
+else
+  IMAGE_VERSION="$("$PROJECT_ROOT/mkosi.version")"
+fi
 
 for target in "${BUILD_TARGETS[@]}"; do
   build_target "${target%%|*}" "${target#*|}"
 done
 
 echo "$CURRENT_CHECKSUM" > "$PROJECT_ROOT/.config-checksum"
+echo "$IMAGE_VERSION"   > "$PROJECT_ROOT/.config-version"
 echo "==> Build complete. Artifacts are in mkosi.output/"

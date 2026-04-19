@@ -1,0 +1,17 @@
+Secure Boot is intentionally disabled on this host.
+
+The Apple T2 chip performs its own boot verification before UEFI is
+reached. The community workaround for running Linux on T2 requires
+disabling the T2's own Secure Boot entirely — that removes the
+hardware root of trust. Standard UEFI Secure Boot layered on top of
+that path provides no meaningful protection because the T2's own
+verification, which is the real trust anchor on this hardware, is
+already off.
+
+Layering UEFI SB on the T2 path also adds a failure mode: signature
+mismatches during t2linux kernel upgrades, boot refusals after
+firmware updates, additional debugging surface during an already
+fraught T2-on-Linux experience. All cost, no benefit.
+
+When T2 support matures and the T2's own Secure Boot can coexist
+with Linux, re-evaluate this file.

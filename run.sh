@@ -174,6 +174,25 @@ if ! ab_hostdeps_have_all_commands "${REQUIRED_CMDS[@]}"; then
 fi
 ab_hostdeps_ensure_commands "vm run prerequisites" "${REQUIRED_CMDS[@]}" || exit 1
 
+# Per-host default profile resolution. If --host was passed without
+# --profile, read hosts/<host>/profile.default and use that before the
+# metadata-load step, so metadata lookup uses the right profile key.
+# --profile on the command line always wins.
+if [[ "$EXPLICIT_PROFILE" == false && "$EXPLICIT_HOST" == true ]]; then
+  host_default_profile_file="$PROJECT_ROOT/hosts/$HOST/profile.default"
+  if [[ -f "$host_default_profile_file" ]]; then
+    host_default_profile="$(sed -e 's/[[:space:]]*#.*$//' "$host_default_profile_file" \
+                            | awk 'NF{print;exit}' | tr -d '[:space:]')"
+    case "$host_default_profile" in
+      ""|*[!A-Za-z0-9._-]*) : ;;
+      *)
+        echo "==> Using default profile from hosts/$HOST/profile.default: $host_default_profile"
+        PROFILE="$host_default_profile"
+        ;;
+    esac
+  fi
+fi
+
 METADATA_LOADED=false
 if [[ "$EXPLICIT_PROFILE" == true || "$EXPLICIT_HOST" == true ]]; then
   if ab_buildmeta_load_for "$PROJECT_ROOT" "$PROFILE" "$HOST"; then

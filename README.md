@@ -1,634 +1,488 @@
 # mkosi image provisioning
 
-This tree builds Debian images with `mkosi`, keeps the desktop path on
-source-built AwesomeWM, and uses the **native systemd update stack** for
-retained-version / A-B-like updates:
+Builds Debian images with `mkosi` and deploys them with the native
+systemd update stack: `systemd-repart` for the initial disk layout,
+`systemd-sysupdate` for versioned root and boot artifact installs,
+`systemd-boot` with boot counting and `systemd-bless-boot` for
+automatic rollback, signed Unified Kernel Images under Secure Boot
+(per-host opt-in), and an encrypted credential store bound to
+per-image key material.
 
-- `systemd-repart` for the initial disk layout
-- `systemd-sysupdate` for installing new root and boot artifacts
-- `systemd-boot` boot counting + `systemd-bless-boot` for automatic rollback
-- `mkosi` as the image builder and artifact producer
+## What this provides
 
-## Why the previous A/B script was only a bridge
-
-The old `ab-flash.sh` path copied a built `image.raw` into an inactive
-partition and kept its own slot state on the ESP. That worked as a
-practical bring-up tool, but it duplicated three jobs that the current
-systemd stack already solves natively:
-
-- versioned boot artifacts and boot attempt counting
-- health-gated promotion of a newly booted version
-- versioned root-image installation into a retained offline slot
-
-That is why it was a **bridge** rather than the golden path: it was a
-custom copier wrapped around a problem that modern systemd already has
-first-class primitives for.
-
-The repo now treats the golden path as:
-
-1. **Bootstrap once** onto a blank or offline target disk/image with
-   `systemd-repart`
-2. **Install the first version** with `systemd-sysupdate`
-3. **Boot via systemd-boot**
-4. On later updates, stage the next version with `systemd-sysupdate`
-5. Let boot counting + `boot-complete.target` + `systemd-bless-boot`
-   decide whether the new version stays or the older retained version
-   wins
-
-`scripts/ab-flash.sh` is still in the tree as a legacy/manual fallback,
-but it is no longer the recommended design center of the repo.
-
-## What "A/B" means in the new design
-
-The new design is closer to "two retained versions" than to permanently
-named `ROOT_A` and `ROOT_B` partitions.
-
-That is intentional.
-
-`systemd-sysupdate` is natively version-oriented. It installs a new
-version into an empty root slot, keeps the currently booted version
-protected, and retains up to `InstancesMax=2`. So the effective
-behavior is still A/B:
-
-- one currently booted known-good version
-- one newer trial version
-- automatic fallback when the new one does not become healthy
-
-But the slots are managed by **version metadata**, not by a custom
-"copy this raw image into ROOT_B" script.
-
-## Current goals
-
-- reproducible base images
-- source-built AwesomeWM for the `devbox` and `macbook` profiles
-- first-boot local user provisioning that works in rootless mkosi builds
-- Liquorix kernel for the x86-64 `devbox` path
-- a T2-oriented `macbook` desktop path for Intel 2019-era MacBook Pros
-- native retained-version updates with `systemd-sysupdate`
-- a server-only ARM64 `cloudbox` overlay
-- an Ansible playbook that can build and bootstrap/update `cloudbox`
-- a hardware-test USB workflow that boots the native retained-version
+* reproducible base images pinned to a `snapshot.debian.org` timestamp
+* source-built AwesomeWM for the `devbox` and `macbook` profiles
+* first-boot local user provisioning from a committed `.users.json`
+* Liquorix kernel for the x86-64 `devbox` path
+* a T2-oriented `macbook` profile for Intel 2019-era MacBook Pros
+* retained-version root updates with `systemd-sysupdate`
+* a server-only ARM64 `cloudbox` overlay
+* an Ansible playbook that can bootstrap or update `cloudbox`
+* a hardware-test USB workflow that boots the same retained-version
   stack on removable media
+* Secure Boot UKI signing with a locally-generated key, opt-in per host
+* preflight audits for baked-in identity, sample-password sentinel,
+  and `.mkosi-secrets/` shape
 
-## Important assumptions and constraints
+## Assumptions
 
-These are deliberate design constraints, not hidden gotchas:
-
-- UEFI only
-- `systemd-boot` is the supported boot loader for the native update path
-- the **first** install onto a new disk is destructive and expects a
+* UEFI only
+* `systemd-boot` is the bootloader
+* the first install onto a target disk is destructive and expects a
   blank or offline target
-- later updates are in-place via `systemd-sysupdate`
-- the initial bootstrap currently creates:
-  - one ESP
-  - two root partitions
-  - a GPT `home` partition
-- Secure Boot is **not** wired up yet in this repo's update flow
-- host-specific kernel flags live in generated Boot Loader Specification
-  entries, not GRUB config
-- the `cloudbox` path is intentionally server-only: no desktop stack, no
-  AwesomeWM, no Liquorix
-- the `macbook` path uses third-party T2 support packages and firmware
+* later updates are in-place via `systemd-sysupdate`
+* the initial bootstrap creates one ESP and two root partitions
+* host-specific kernel flags live in Boot Loader Specification entries
+* the `cloudbox` path is server-only — no desktop stack, no AwesomeWM,
+  no Liquorix
+* the `macbook` path uses third-party T2 support packages and firmware
   repos during the build
-- hardware-test USBs are bootstrapped with the same native
-  `systemd-repart` + `systemd-sysupdate` flow, not a separate installer
-  format
+
+## Security architecture
+
+The pieces compose into a single trust chain. Each piece below is the
+current behavior; rationale explains why it is the way it is.
+
+### Image integrity — Secure Boot signed UKIs
+
+mkosi produces a single Unified Kernel Image (UKI) per build, which
+bundles the kernel, initrd, and kernel command line into one signed
+PE binary. When Secure Boot is enabled for a host, mkosi signs the
+UKI with the RSA-4096 key in `.secureboot/db.key`. The firmware
+refuses to execute a UKI whose signature does not match a key
+enrolled in UEFI `db`, so an attacker with root on the running
+system cannot replace the UKI and survive a reboot.
+
+Secure Boot is the default for every host-targeted build. A build
+with `--host X` fails unless either:
+
+* `hosts/X/mkosi.conf.d/30-secure-boot.conf` configures signing and
+  `.secureboot/` contains the signing key and certificate, or
+* `hosts/X/secure-boot.disabled` exists with a reason that is
+  printed during every build of that host.
+
+Current state:
+
+* `evox2` (Intel workstation): Secure Boot enabled. Enroll via UEFI
+  Setup Mode.
+* `cloudbox` (Oracle Ampere A1): Secure Boot enabled. Enroll via
+  Shielded Instance options.
+* `macbookpro13-2019-t2`: Secure Boot disabled via
+  `hosts/macbookpro13-2019-t2/secure-boot.disabled`. The T2 chip's
+  own boot verification sits ahead of UEFI and the community
+  workaround for Linux on T2 requires disabling it, which removes
+  the hardware root of trust. Standard UEFI SB on top of that path
+  provides no meaningful protection.
+
+QEMU smoke tests (`./build.sh` with no `--host`) do not require
+Secure Boot — they exercise image contents, not the boot-trust
+chain, and are never flashed. Host-built *signed* images also boot
+under `./run.sh` without additional setup, because mkosi's VM
+firmware does not enforce Secure Boot by default; the signature is
+carried but not verified. To end-to-end test SB enforcement in QEMU
+(reject a tampered UKI), add `SecureBootAutoEnroll=yes` and
+`[Runtime] Firmware=uefi-secure-boot` to the host's drop-in — see
+`docs/secure-boot.md`.
+
+UKI-only boot (no separate `vmlinuz` + `initrd` pair) keeps the
+signature scope simple: the firmware verifies exactly one artifact
+per version, and the kernel command line — which would otherwise be
+an unauthenticated attack surface — is part of the signed blob.
+
+See `docs/secure-boot.md` for enrollment steps and key rotation.
+
+### Credential confidentiality — per-image key
+
+Per-host secrets (Tailscale auth keys, cloudflared tokens, PagerDuty
+tokens, SSH authorized_keys) are encrypted at build time with
+`systemd-creds` against a random 32-byte `credential.secret` that is
+unique to each built image and stored under `/var/lib/systemd/`
+inside that image. Encrypted blobs land in `/etc/credstore.encrypted/`
+and services load them via `LoadCredentialEncrypted=`.
+
+The security property: an encrypted blob is only useful inside the
+specific image it was built with. Extracting the blob without the
+image yields nothing; the image and the blob must travel together.
+
+This intentionally does not use TPM2 sealing (`systemd-creds
+--with-key=tpm2`). TPM sealing binds decryption to specific PCR
+values on specific hardware, which forces building on each target
+machine or precomputing a PCR policy per host. For a cross-built
+image shipped to three different machines (Intel workstation, T2
+MacBook, ARM cloud), the per-image-key scheme gives equivalent
+protection because Secure Boot already prevents tampering with the
+image between build and first boot. Once the UKI is verified, the
+image's own `credential.secret` is as trustworthy as the signed root
+it lives in.
+
+### Rollback — boot counting
+
+`systemd-boot` decrements a `tries` counter on each boot attempt of
+a Boot Loader Specification entry. `ab-health-gate.service` runs
+before `boot-complete.target`, and on success
+`systemd-bless-boot.service` marks the entry good. If the health
+gate never succeeds, the counted entry exhausts its tries and the
+firmware boots the older retained version instead.
+
+Retention is provided by `systemd-sysupdate`'s `InstancesMax=2`:
+one currently booted known-good version, one newer trial version,
+automatic fallback when the trial fails to become healthy.
+
+### Package trust
+
+Every Debian package is verified by apt against the Debian archive
+signing keys during install, regardless of cache state. Packages
+are pulled from a pinned `snapshot.debian.org` timestamp in
+`mkosi.conf.d/15-reproducibility.conf`, so "reproducible build"
+and "up-to-date security patches" are controlled by a single
+deliberate version bump of that timestamp rather than being in
+tension.
+
+Third-party repositories (Liquorix for `devbox`, t2linux plus Apple
+Firmware for `macbook`) are consumed with explicit `signed-by`
+keyrings. Keyrings are fetched fresh by `update-3rd-party-deps.sh`
+rather than committed.
+
+### Identity — generated, not baked
+
+Per-machine identity files must be generated at first boot.
+`scripts/verify-no-baked-identity.sh` runs from `build.sh` and
+fails the build if any of these are tracked under `mkosi.extra/`
+or `hosts/*/mkosi.extra/`:
+
+* `**/etc/ssh/ssh_host_*` (private or public)
+* non-empty `**/etc/machine-id` or `**/var/lib/dbus/machine-id`
+  (zero-byte is allowed; it is the documented systemd first-boot
+  marker)
+* `**/var/lib/systemd/random-seed`
+* `**/etc/hostid`
+
+This is enforced on every build, not just initial setup.
+
+### What's committed vs generated
+
+Committed:
+
+* `.users.json.sample` — reference only. `.users.json` with real
+  passwords is gitignored. The build refuses if the sample
+  `change-me-now` sentinel password is still present (override
+  with `AB_ALLOW_SAMPLE_PASSWORD=yes` for throwaway tests).
+* `.mkosi-secrets.example/` — documentation of the expected layout.
+  `.mkosi-secrets/` itself is gitignored and validated by
+  `scripts/verify-build-secrets.sh`, which also cross-checks with
+  `git ls-files` to refuse if anything under `.mkosi-secrets/` ever
+  gets tracked.
+
+Generated locally and gitignored:
+
+* `.secureboot/` — UKI signing key, certificate, and enrollment blobs
+* `mkosi.pkgcache/`, `mkosi.cache/`, `mkosi.builddir/` — build caches
+* `mkosi.output/` — build artifacts
+
+## Per-host defaults
+
+Each directory under `hosts/<n>/` may contain a `profile.default`
+file with a single profile name (`server`, `devbox`, `macbook`).
+When `./build.sh --host <n>` runs without `--profile`, this file
+determines which profile builds. `--profile` on the command line
+always overrides.
+
+Current defaults:
+
+* `hosts/cloudbox/profile.default` → `server`
+* `hosts/evox2/profile.default` → `devbox`
+* `hosts/macbookpro13-2019-t2/profile.default` → `macbook`
+
+## Caching
+
+Three cache layers live under the repo root and are gitignored:
+
+* `mkosi.pkgcache/` — downloaded `.deb` files. Partitioned internally
+  by (distribution, release, architecture), so amd64 `devbox` builds
+  and arm64 `cloudbox` builds coexist without interfering. Avoids
+  re-downloading packages on every build.
+* `mkosi.cache/` — incremental rootfs snapshots after package unpack,
+  keyed on the package list. Bypasses the unpack step on rebuild.
+* `mkosi.builddir/` — persistent scratch for `mkosi.build` (ccache,
+  meson, cmake for AwesomeWM and the T2 audio driver).
+
+`./build.sh --clean` maps to `mkosi -f -f` and clears the incremental
+cache. Drop `mkosi.pkgcache/` manually for a fully cold rebuild.
+
+Every cache is safe to keep between builds: packages are
+cryptographically verified on install regardless of cache state,
+and the incremental cache's key includes all relevant inputs.
+
+## Build output
+
+`build.sh` pins `mkosi` to a single `ImageId` + `ImageVersion` per
+invocation and writes `mkosi.output/.latest-build.env` plus
+per-profile/per-host metadata files. `run.sh` reuses that metadata,
+so `./build.sh` followed by `./run.sh` boots the image just built.
+
+When the config checksum is unchanged from the previous build,
+`IMAGE_VERSION` is reused from `.config-version`. This stops
+`mkosi.output/` from accumulating a fresh `.raw`/`.efi`/`.conf`
+set on every invocation. Override with `AB_FORCE_NEW_VERSION=yes`
+or `AB_IMAGE_VERSION=<string>`.
+
+Exported sysupdate source artifacts per build:
+
+    debian-provisioning_<VERSION>_<ARCH>.root.raw
+    debian-provisioning_<VERSION>_<ARCH>.efi
+    debian-provisioning_<VERSION>_<ARCH>.conf
+
+The `.conf` is a Boot Loader Specification entry referencing the
+matching UKI and supplying the root partition label plus
+host-specific extra kernel arguments. When Secure Boot is enabled
+for the host, the `.efi` is signed with `.secureboot/db.key`.
 
 ## Host dependency auto-install
 
-The repo scripts try to auto-install missing **host-side** tools on
-Debian/Ubuntu build or deploy machines before they fail. The intent is
-to make `./build.sh`, `./run.sh`, `./clean.sh`, and the scripts under
-`scripts/` behave like project entrypoints rather than assume you
-already curated the host.
+The repo scripts auto-install missing host-side tools on Debian and
+Ubuntu build or deploy machines before they fail, so `./build.sh`,
+`./run.sh`, `./clean.sh`, `./scripts/bootstrap-ab-disk.sh`, and
+`./scripts/sysupdate-local-update.sh` behave like project
+entrypoints.
 
-- auto-install is **enabled by default**
-- on Debian/Ubuntu hosts, scripts use
-  `apt-get install --no-install-recommends` and `sudo` when needed
-- set `AB_AUTO_INSTALL_DEPS=no` to disable this and get a manual install
-  hint instead
-- if the required commands already exist, the scripts do not try to
-  install anything
+* auto-install is enabled by default
+* scripts use `apt-get install --no-install-recommends` and `sudo`
+  when needed
+* set `AB_AUTO_INSTALL_DEPS=no` for a manual install hint instead
+* if the required commands already exist, nothing is installed
 
-This especially matters for the sysupdate export path because on Debian
-trixie the `sfdisk` tool comes from the `fdisk` package rather than
-`util-linux`, and `jq` is its own package. The native update path also
-depends on `systemd-repart`, `systemd-sysupdate`, and the systemd-boot
-tooling on the host side. `./run.sh` additionally needs
-`qemu-system-x86`, `ovmf`, `virtiofsd`, and `swtpm` for `mkosi vm`.
+On Debian trixie `sfdisk` comes from the `fdisk` package, `jq` is
+its own package, and the native update path requires
+`systemd-repart`, `systemd-sysupdate`, and the systemd-boot tooling.
 
-Examples:
-
-```bash
-./build.sh --profile devbox
-AB_AUTO_INSTALL_DEPS=no ./build.sh --profile server --host cloudbox
-```
+    ./build.sh --profile devbox
+    AB_AUTO_INSTALL_DEPS=no ./build.sh --host cloudbox
 
 ## Quick start
 
 ### Desktop/devbox smoke test in QEMU
 
-```bash
-./update-3rd-party-deps.sh
-cp .users.json.sample .users.json
-# optional: edit .users.json and set a real password for your login user
-# the default sample ships demo / change-me-now so a first build
-# produces a working login; change it before flashing anything real
-./clean.sh --all
-./build.sh --profile devbox
-./run.sh
-```
+    ./update-3rd-party-deps.sh
+    cp .users.json.sample .users.json
+    $EDITOR .users.json                 # set a real password
+    ./clean.sh --all
+    ./build.sh --profile devbox
+    ./run.sh
 
-On first boot the image provisions local users from embedded data and
-then removes the user seed file.
-
-For the devbox profile, log in and run:
-
-```bash
-startx
-```
-
-For a different X resolution:
-
-```bash
-STARTX_RESOLUTION=1920x1080 startx
-```
+On first boot the image provisions local users from embedded data
+and removes the user seed file. Log in and run `startx`, or
+`STARTX_RESOLUTION=1920x1080 startx` for a different X resolution.
 
 ### ARM64 cloudbox build
 
-```bash
-cp .users.json.sample .users.json
-# edit .users.json
-./clean.sh --all
-./build.sh --profile server --host cloudbox
-```
+    cp .users.json.sample .users.json
+    $EDITOR .users.json
+    ./clean.sh --all
+    ./build.sh --host cloudbox
 
-That overlay:
-
-- forces `Architecture=arm64`
-- uses Debian's stock `linux-image-arm64`
-- stays server-only
+The cloudbox host overlay forces `Architecture=arm64`, uses Debian's
+stock `linux-image-arm64`, and stays server-only. Its
+`profile.default` selects the `server` profile.
 
 ### Intel T2 MacBook Pro build
 
-```bash
-./update-3rd-party-deps.sh
-cp .users.json.sample .users.json
-# edit .users.json
-./clean.sh --all
-./build.sh --profile macbook --host macbookpro13-2019-t2
-```
+    ./update-3rd-party-deps.sh
+    cp .users.json.sample .users.json
+    $EDITOR .users.json
+    ./clean.sh --all
+    ./build.sh --host macbookpro13-2019-t2
 
-This path is aimed at the 2019-era Intel 13-inch T2 MacBook Pro desktop
-workflow. It swaps out Liquorix for the t2linux kernel, keeps PipeWire
-on Debian's default stack, installs Apple Wi-Fi/Bluetooth firmware plus
-the T2 kernel packages, builds and installs the `snd_hda_macbookpro`
-CS8409 driver override into the image at build time, enables mkosi
-build-script network access for that host so the installer can fetch
-matching kernel sources, uses NetworkManager with Debian's
-`network-manager-iwd` integration, and enables a suspend workaround
-service for the Apple T2 / Broadcom module stack.
+This path uses the t2linux kernel, keeps PipeWire on Debian's default
+stack, installs Apple Wi-Fi/Bluetooth firmware and the T2 kernel
+packages, builds and installs the `snd_hda_macbookpro` CS8409 driver
+override into the image at build time, uses NetworkManager with
+Debian's `network-manager-iwd` integration, and enables a suspend
+workaround for the Apple T2 / Broadcom module stack.
 
-Important limits to understand up front:
+Current limits:
 
-- the current t2linux state page still describes Bluetooth as only
-  partially working on some T2 models and notes BCM4377 interference
-  issues on 2.4 GHz Wi-Fi
-- the same state page says the trackpad works but is not as good as on
-  macOS
-- the current t2linux audio guide says experimental speaker DSP tuning
-  is only available for the 16-inch 2019 MacBook Pro and should not be
-  used on other models
-- `apple-t2-audio-config` is not the primary speaker fix on this 13-inch
-  CS8409 path; the image now builds the `snd_hda_macbookpro` override so
-  sound does not depend on custom PipeWire tweaks
-- hibernation is not fully configured by default in this repo's
-  retained-version layout yet because that still needs swap + resume
-  wiring
+* Bluetooth is partially working on some T2 models; BCM4377 has
+  interference issues on 2.4 GHz Wi-Fi
+* the trackpad works but is not as good as on macOS
+* experimental speaker DSP tuning is only available for the 16-inch
+  2019 MacBook Pro
+* hibernation is not configured in this retained-version layout
+  (swap + resume wiring is pending)
 
-See `hosts/macbookpro13-2019-t2/README.md` for the host-specific notes
-and service choices.
+See `hosts/macbookpro13-2019-t2/README.md` for host-specific notes.
 
-## Smoke testing in QEMU
+### Hardware-test USB
 
-`./run.sh` boots the most-recently-built image in a QEMU VM. It defaults
-to an **ephemeral** snapshot so the test run cannot mutate the image you
-might later flash.
+After a successful build, turn the current version into a bootable
+hardware-test USB:
 
-Common cases:
+    sudo ./scripts/write-live-test-usb.sh --target /dev/sdX --host macbookpro13-2019-t2
 
-```bash
-./run.sh                                 # boot the last devbox build
-./run.sh --profile server --host cloudbox
-./run.sh --persistent                    # keep writes across restarts
-```
+The USB bootstraps itself with `systemd-repart` +
+`systemd-sysupdate`, boots the exact version just built, and
+includes `/root/INSTALL-TO-INTERNAL-DISK.sh` for installing to the
+machine's internal disk after hardware verification.
 
-When a VM will not boot, the diagnostic flags are the first thing to
-reach for. They are not production options — they exist specifically to
-make a broken build show you why:
-
-```bash
-./run.sh --boot-nspawn    # skip firmware + bootloader + kernel + initrd;
-                          # boots the root tree in systemd-nspawn. If
-                          # this works and the regular VM does not, the
-                          # root FS is fine and the break is in the
-                          # boot chain.
-
-./run.sh --debug          # serial console + mkosi --debug + verbose
-                          # systemd + verbose udev. The first flag to
-                          # reach for when an image builds but silently
-                          # fails to boot.
-
-./run.sh --serial         # serial/interactive console instead of the
-                          # default GUI, so boot output scrolls into
-                          # your terminal instead of a window that
-                          # flashes and dies.
-
-./run.sh --serial --kernel-arg systemd.unit=rescue.target
-                          # drop straight to a rescue shell before
-                          # multi-user.target fails something.
-
-./run.sh --kernel-arg ARG --mkosi-arg ARG
-                          # ad-hoc passthroughs, both repeatable
-```
-
-`mkosi summary` prints the resolved mkosi config for the current
-working directory; it is the second-most-useful diagnostic after
-`--boot-nspawn` when an image does not boot — confirm a `linux-image-*`
-package is actually in the resolved `Packages=`.
-
-See `docs/qemu-smoke-testing.md` for a longer triage walkthrough.
-
-### Hardware-test USB for real-machine bring-up
-
-After any successful build, turn the current version into a bootable
-hardware-test USB that uses the same native retained-version stack as
-the real install:
-
-```bash
-sudo ./scripts/write-live-test-usb.sh --target /dev/sdX \
-     --profile macbook --host macbookpro13-2019-t2
-```
-
-That USB will:
-
-- bootstrap itself with `systemd-repart` + `systemd-sysupdate`
-- boot the exact version you just built
-- include `/root/INSTALL-TO-INTERNAL-DISK.sh` so you can install to the
-  machine's internal disk after you have tested the actual hardware
-
-By default the USB bundle copies the current sysupdate artifacts rather
-than the full `image.raw`, because the native install path only needs
-the versioned root artifact, UKI, and BLS entry. Use
-`--embed-full-image` only if you explicitly want the raw whole-disk
-image copied onto the USB as well. If the installer bundle does not fit
-on the default USB root partition, rerun with a larger removable drive
-or increase the USB slot size with `--usb-root-size`.
-
-For the T2 MacBook workflow this is the recommended next step before
-touching the internal SSD. Boot the USB via Startup Manager, verify
-Wi-Fi/Bluetooth/audio/sleep on real hardware, and only then run the
-bundled installer against the internal disk.
+By default the USB bundle copies the current sysupdate artifacts
+rather than the full `image.raw`. Use `--embed-full-image` to copy
+the raw whole-disk image as well. Use a larger drive or pass
+`--usb-root-size` if the bundle does not fit.
 
 See `docs/live-test-usb.md` for the full flow.
 
-## User management
-
-Local login users are defined in `.users.json` at the repo root. A
-sample lives at `.users.json.sample`. If `.users.json` is missing,
-`./build.sh` copies the sample on first run and asks you to edit it
-before retrying.
-
-Each entry is an object with one required field (`username`) and several
-optional ones; see the `_notes` entry at the top of `.users.json.sample`
-for the full schema.
-
-**The sample ships `"password": "change-me-now"`** as a plaintext
-password on the `demo` user. `build.sh` hashes plaintext `password`
-fields at build time so a first `./build.sh && ./run.sh` produces a
-working login for smoke testing. Change this before you flash anything
-real.
-
-### Pre-hashed passwords
-
-For anything beyond a smoke test, prefer `password_hash` over plaintext:
-
-```bash
-./scripts/hash-password.sh                      # prints just the hash
-./scripts/hash-password.sh --json --username demo --uid 1000
-                                                # prints a full JSON entry
-```
-
-The script prompts twice (no echo), uses `mkpasswd` from the `whois`
-package, prefers yescrypt, and never writes the password or the hash to
-disk. Paste the result into `.users.json`.
-
-A `password_hash` of `"!"` or `"*"` is a **lock marker** in
-`/etc/shadow`, not a real hash. Setting it means the account cannot be
-logged into with a password (pubkey SSH still works). That is the
-correct thing for service accounts; it is not what you want for your
-login user.
-
-### Per-host users
-
-If `hosts/<NAME>/users.json` exists, `./build.sh --host NAME` uses it
-instead of the global `.users.json`. That lets a workstation and a
-server share the same repo while keeping host-specific user sets — or a
-different password for the shared login user — out of the global file.
+## Configuration
 
 ### User IDs for shared mutable state
 
-By default, `build.sh` copies the invoking host user's numeric
-uid/gid/group into any `.users.json` entry whose `username` matches the
-build host user. That is the safest default when you want ownership to
-stay stable across retained-root updates.
+`build.sh` copies the invoking host user's numeric uid/gid/group
+into any `.users.json` entry whose `username` matches the build
+host user, which keeps ownership stable across retained-root
+updates when mounting personal home data.
 
-You can also pin ids explicitly:
+Pin IDs explicitly:
 
-```json
-[
-  {
-    "username": "demo",
-    "password": "change-me-now",
-    "can_login": true,
-    "uid": 1000,
-    "gid": 1000,
-    "primary_group": "demo"
-  }
-]
-```
+    [
+      {
+        "username": "demo",
+        "password_hash": "...",
+        "can_login": true,
+        "uid": 1000,
+        "gid": 1000,
+        "primary_group": "demo"
+      }
+    ]
 
-To disable automatic host-id syncing for the matching host username:
+Disable automatic host-ID syncing:
 
-```bash
-./build.sh --profile devbox --sync-host-ids=no
-```
+    ./build.sh --profile devbox --sync-host-ids=no
 
-See `docs/user-provisioning.md` for the full first-boot behavior.
+### /home strategy
 
-## QEMU sample home seed
+Mutable workstation data lives outside the root image. The supported
+layout is a GPT `home` partition on the same disk as the retained
+root partitions (auto-mounted by `systemd-gpt-auto-generator`) plus
+an optional partition labeled `DATA` mounted at `/mnt/data` via the
+image's `fstab` with `nofail`, so the data partition is optional and
+survives retained-version updates without per-slot edits.
 
-`run.sh` defaults to an **ephemeral** VM and mounts
-`runtime-seeds/qemu-home/` into the guest for the `devbox` and `macbook`
-profiles.
+For QEMU testing, the repo does not mount the host home by default —
+instead it seeds a tiny sample AwesomeWM setup. To compare with host
+config, use runtime sharing explicitly:
 
-On first boot the guest copies the sample files into the login user's
-home only if the target paths do not already exist.
-
-That gives you a smoke-test config in QEMU without baking personal host
-config into the image that you would later flash or deploy.
-
-## `/home` strategy
-
-For real retained-root machines, keep mutable workstation data
-**outside** the root image. That means `/home` should live on a separate
-persistent partition or subvolume.
-
-The preferred native layout is:
-
-- a GPT `home` partition on the same disk as the retained root
-  partitions for `/home`
-- an optional partition labeled `DATA` for `/mnt/data`
-
-The GPT `home` partition is auto-mounted by
-`systemd-gpt-auto-generator`, and the image ships an `fstab` entry that
-mounts `PARTLABEL=DATA` at `/mnt/data` with `nofail`, so the extra data
-partition is optional and survives future retained-version updates
-without per-slot manual edits.
-
-For QEMU testing, the repo intentionally does **not** mount your real
-host home by default. Instead it seeds a tiny sample AwesomeWM setup.
-When you want to compare with host config, use runtime sharing
-explicitly:
-
-```bash
-./run.sh --runtime-tree "$HOME/.config/awesome:/mnt/host-awesome"
-./run.sh --runtime-home
-```
-
-Use `--runtime-home` only for disposable tests.
+    ./run.sh --runtime-tree "$HOME/.config/awesome:/mnt/host-awesome"
+    ./run.sh --runtime-home    # disposable tests only
 
 See `docs/home-storage.md` for the storage trade-offs.
 
-## Build output and sysupdate artifacts
+### Host-specific kernel arguments
 
-`build.sh` pins `mkosi` to a single `ImageId` + `ImageVersion` for each
-invocation and writes `mkosi.output/.latest-build.env` plus
-per-profile/per-host metadata files such as
-`mkosi.output/.latest-build.devbox.none.env`. `run.sh` reuses that
-metadata, so `./build.sh` followed by `./run.sh` boots the image that
-was just built instead of recalculating a fresh timestamped version. If
-you pass `--profile` or `--host`, `run.sh` looks for the matching saved
-build metadata for that specific combination.
-
-`build.sh` produces two layers of output in `mkosi.output/`:
-
-1. the usual `mkosi` build outputs such as
-   `debian-provisioning_<VERSION>.raw`
-2. versioned **sysupdate source artifacts** used by the golden-path
-   updater
-
-Current exported artifact names look like this:
-
-```text
-debian-provisioning_<VERSION>_<ARCH>.root.raw
-debian-provisioning_<VERSION>_<ARCH>.efi
-debian-provisioning_<VERSION>_<ARCH>.conf
-```
-
-The generated `.conf` file is a Boot Loader Specification entry that
-references the matching UKI and supplies the root partition label plus
-host-specific extra kernel arguments.
-
-## Host-specific kernel arguments
-
-GRUB-specific kernel flags are not required for this design.
-
-Instead, host overlays can supply kernel arguments through
-`hosts/<NAME>/kernel-cmdline.extra`. Those arguments are rendered into
-the versioned Boot Loader Specification entry that gets installed by
-`systemd-sysupdate`.
-
-Current examples:
-
-- `hosts/evox2/kernel-cmdline.extra`
-- `hosts/cloudbox/kernel-cmdline.extra`
-
-For the Ryzen AI Max desktop path this is where `amdgpu.gttsize=`
-belongs.
-
-## The native install/update flow
-
-### One-time destructive bootstrap onto a blank or offline target
-
-Build first:
-
-```bash
-./build.sh --profile server --host cloudbox
-```
-
-Then bootstrap a target disk or raw disk image:
-
-```bash
-sudo ./scripts/bootstrap-ab-disk.sh --target /dev/sdX
-```
-
-What that script does:
-
-1. destroys the target partition table
-2. creates the ESP + two empty root partitions with `systemd-repart`
-3. installs `systemd-boot` into the target ESP
-4. seeds the first retained version using `systemd-sysupdate` from
-   `mkosi.output/`
-
-### Hardware-test USB on a removable drive
-
-For a real-machine smoke test before touching the internal disk, create
-a removable USB install using the same native stack:
-
-```bash
-sudo ./scripts/write-live-test-usb.sh --target /dev/sdX
-```
-
-This is intentionally **not** a separate ad-hoc installer image. The USB
-itself is bootstrapped with the same retained-version layout, and then
-a self-contained installer bundle is copied into `/root/ab-installer`.
-After booting from the USB you can run:
-
-```bash
-sudo /root/INSTALL-TO-INTERNAL-DISK.sh
-```
-
-The interactive helper can either:
-
-- wipe a target disk and create a fresh retained-version layout
-- or stage the bundled version onto an already bootstrapped target disk
-
-By default, a fresh install from the USB creates:
-
-- a 512M ESP
-- two retained root partitions of 8G each
-- a GPT `home` partition that takes the remaining space
-- no `DATA` partition unless you ask for one
-
-If you create a `DATA` partition, keep the partition label set to
-`DATA` so the built-in `/mnt/data` mount entry continues to work on
-later updates.
-
-### Later in-place updates on an already bootstrapped machine
-
-On a machine that is already running this layout:
-
-```bash
-sudo ./scripts/sysupdate-local-update.sh --source-dir ./mkosi.output --reboot
-```
-
-That stages the next version with `systemd-sysupdate` and reboots into
-the new trial entry.
-
-### Boot success and fallback
-
-The image uses the native boot-complete path:
-
-- a generated BLS entry is created with boot counters
-- `systemd-boot` decrements tries on each boot attempt
-- `ab-health-gate.service` runs before `boot-complete.target`
-- if the health gate succeeds, `systemd-bless-boot.service` marks the
-  entry good
-- if the health gate never succeeds, the counted entry eventually falls
-  behind the older good one and the system falls back to the older
-  retained version
-
-This is the key difference from the old bridge path: promotion/rollback
-is done by the boot loader + systemd boot-complete pipeline, not by
-custom ESP state files.
-
-## Health checks
-
-The current boot health gate does three things:
-
-- waits `AB_HEALTH_DELAY_SECS` seconds after boot
-- fails if there are failed systemd units
-- runs any executable hooks in `/usr/local/libexec/ab-health-check.d`
-
-Health status is recorded locally in:
-
-```text
-/var/lib/ab-health/status.env
-```
-
-Useful commands on the installed system:
-
-```bash
-ab-status
-ab-bless-boot
-ab-mark-bad
-```
-
-- `ab-status` shows the current root partition label, build metadata,
-  health result, bootctl state, and installed sysupdate versions
-- `ab-bless-boot` requests `boot-complete.target` so
-  `systemd-bless-boot` can mark the current entry good
-- `ab-mark-bad` marks the current counted entry bad immediately
-
-## Cloudbox / Oracle ARM testing
-
-The `cloudbox` overlay is intended for an ARM64 server-style machine
-and uses serial-console-friendly kernel flags through
+Host overlays supply kernel arguments through
+`hosts/<n>/kernel-cmdline.extra`. These render into the versioned
+Boot Loader Specification entry installed by `systemd-sysupdate`.
+Examples: `hosts/evox2/kernel-cmdline.extra`,
 `hosts/cloudbox/kernel-cmdline.extra`.
 
-This is the cleanest place to validate the modern path because:
+### QEMU sample home seed
 
-- it removes the desktop stack from the equation
-- you can rebuild and redeploy repeatedly
-- you can test the retained-version flow before migrating a workstation
+`run.sh` defaults to an ephemeral VM and mounts
+`runtime-seeds/qemu-home/` into the guest for the `devbox` profile.
+On first boot the guest copies the sample files into the login
+user's home only if the target paths do not already exist.
+
+## Install and update flow
+
+### One-time destructive bootstrap
+
+Build:
+
+    ./build.sh --host cloudbox
+
+Bootstrap a target disk or raw disk image:
+
+    sudo ./scripts/bootstrap-ab-disk.sh --target /dev/sdX
+
+This destroys the target partition table, creates the ESP and two
+empty root partitions with `systemd-repart`, installs `systemd-boot`
+into the target ESP, and seeds the first retained version using
+`systemd-sysupdate` from `mkosi.output/`.
+
+### Later in-place updates
+
+On a machine already running this layout:
+
+    sudo ./scripts/sysupdate-local-update.sh --source-dir ./mkosi.output --reboot
+
+This stages the next version with `systemd-sysupdate` and reboots
+into the new trial entry.
+
+### Health checks
+
+The boot health gate waits `AB_HEALTH_DELAY_SECS` seconds after
+boot, fails if there are failed systemd units, and runs any
+executable hooks in `/usr/local/libexec/ab-health-check.d`. Status
+is recorded in `/var/lib/ab-health/status.env`.
+
+Installed system commands:
+
+* `ab-status` — current root partition label, build metadata,
+  health result, `bootctl` state, installed sysupdate versions
+* `ab-bless-boot` — requests `boot-complete.target` so
+  `systemd-bless-boot` marks the current entry good
+* `ab-mark-bad` — marks the current counted entry bad immediately
+
+## Cloudbox / Oracle ARM
+
+The `cloudbox` overlay targets ARM64 server-style machines and uses
+serial-console-friendly kernel flags via
+`hosts/cloudbox/kernel-cmdline.extra`. Because it has no desktop
+stack it's the fastest loop for validating the retained-version
+flow before migrating a workstation.
 
 ## Ansible
 
-The playbook under `ansible/playbooks/cloudbox-ab-deploy.yml` follows
-the native model. It can do either of two things:
+`ansible/playbooks/cloudbox-ab-deploy.yml` supports two modes:
 
-1. **bootstrap mode** — destructively prepare a blank/offline target
-   disk
-2. **update mode** — build a new version and stage it with
+1. **bootstrap** — destructively prepare a blank/offline target disk
+2. **update** — build a new version and stage it with
    `systemd-sysupdate`
 
-Bootstrap mode is for the first install only. Update mode is for all
-later deployments.
+Bootstrap mode is for the first install only. Update mode is for
+all later deployments. See `ansible/README.md` and
+`ansible/group_vars/cloudbox.yml.example`.
 
-See `ansible/README.md` and `ansible/group_vars/cloudbox.yml.example`.
+## Liquorix
 
-## Liquorix notes
+The `devbox` profile uses Liquorix on x86-64. The `server` profile
+keeps Debian's stock kernel. The ARM64 `cloudbox` overlay uses
+`linux-image-arm64`.
 
-The `devbox` profile uses Liquorix on x86-64.
-
-The `server` profile keeps Debian's stock kernel path. The ARM64
-`cloudbox` overlay uses `linux-image-arm64`.
-
-For the `devbox` profile we keep `dpkg` and `kmod` in the image and
-disable mkosi package-metadata cleanup. That avoids a Debian/apt cleanup
-edge case where purging `dpkg` can cause `kmod` auto-removal to fail
-because `kmod` maintainer scripts call `dpkg-maintscript-helper`.
+For the `devbox` profile `dpkg` and `kmod` stay in the image and
+mkosi package-metadata cleanup is disabled, because purging `dpkg`
+can cause `kmod` auto-removal to fail: `kmod` maintainer scripts
+call `dpkg-maintscript-helper`.
 
 ## Repo layout
 
-- `mkosi.conf`, `mkosi.conf.d/`, `mkosi.profiles/` — base image
-  definition and per-profile overrides
-- `mkosi.sysupdate/` — native sysupdate transfer definitions
-- `deploy.repart/` — one-time disk layout for bootstrap
-- `hosts/<name>/` — per-machine overlays (`cloudbox`, `evox2`,
-  `example-host`, `macbookpro13-2019-t2`)
-- `scripts/bootstrap-ab-disk.sh` — destructive first install to a
-  blank/offline target
-- `scripts/sysupdate-local-update.sh` — later in-place updates on an
-  installed system
-- `scripts/write-live-test-usb.sh` — bootstraps a removable
-  hardware-test USB and copies an installer bundle onto it
-- `scripts/live-usb-install.sh` — interactive installer used from the
-  booted hardware-test USB
-- `scripts/export-sysupdate-artifacts.sh` — exports versioned
+* `mkosi.sysupdate/` — sysupdate transfer definitions
+* `deploy.repart/` — one-time disk layout for bootstrap
+* `scripts/bootstrap-ab-disk.sh` — destructive first install
+* `scripts/sysupdate-local-update.sh` — in-place updates
+* `scripts/write-live-test-usb.sh` — hardware-test USB bootstrap
+* `scripts/live-usb-install.sh` — interactive installer run from USB
+* `scripts/export-sysupdate-artifacts.sh` — exports versioned
   root/UKI/BLS artifacts after build
-- `scripts/hash-password.sh` — password hash helper for `.users.json`
-- `scripts/ab-flash.sh` — legacy manual fallback, not the recommended
-  path
-- `docs/` — deeper dives referenced throughout this README
+* `scripts/generate-secureboot-keys.sh` — local SB key + cert
+  generator
+* `scripts/verify-no-baked-identity.sh` — preflight audit for
+  baked-in per-machine files
+* `scripts/verify-build-secrets.sh` — preflight audit for
+  `.mkosi-secrets/` shape and permissions
+* `scripts/package-credentials.sh` — encrypt per-host secrets into
+  the image's credstore
+* `hosts/cloudbox/` — ARM64 server overlay
+* `hosts/evox2/` — Intel workstation overlay
+* `hosts/macbookpro13-2019-t2/` — Intel T2 MacBook Pro overlay
+* `hosts/example-host/` — host overlay template
+* `docs/secure-boot.md` — Secure Boot enrollment per host
+* `docs/live-test-usb.md` — hardware-test USB workflow
+* `docs/home-storage.md` — /home layout trade-offs

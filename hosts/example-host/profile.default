@@ -1,0 +1,5 @@
+# Default profile when ./build.sh --host example-host is run without
+# --profile. Must match one of the [Match] Profiles= values in any of
+# this host's mkosi.conf.d/ drop-ins, otherwise those drop-ins will
+# silently skip and the host overlay will have no effect.
+devbox
