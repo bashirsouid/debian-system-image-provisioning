@@ -231,7 +231,7 @@ SOURCE
 }
 
 prepare_t2linux_trees() {
-  local suite sandbox_root key_tmp keyring_path t2_list_path firmware_list_path
+  local suite sandbox_root key_tmp keyring_path t2_sources_path firmware_sources_path
 
   suite="$(read_release_from_mkosi_conf)"
   if [[ -z "$suite" ]]; then
@@ -253,9 +253,14 @@ prepare_t2linux_trees() {
   keyring_path="$sandbox_root/etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg"
   gpg --dearmor --yes --output "$keyring_path" "$key_tmp"
 
-  t2_list_path="$sandbox_root/etc/apt/sources.list.d/t2.list"
-  # Use the stable t2-ubuntu-repo instead of GitHub releases URLs (which have JWT expiration issues)
-  cat > "$t2_list_path" <<SOURCE
+  # deb822 format rather than one-liner: the content below starts with
+  # `Types:`, which APT only accepts in *.sources files, never in *.list.
+  # Using the wrong extension produces:
+  #   E: Type 'Types:' is not known on line 1 in source list ...
+  # Fallback mirror if the GitHub Releases URL ever breaks is
+  # https://adityagarg8.github.io/t2-ubuntu-repo/ (GitHub Pages, flat).
+  t2_sources_path="$sandbox_root/etc/apt/sources.list.d/t2.sources"
+  cat > "$t2_sources_path" <<SOURCE
 Types: deb
 URIs: https://github.com/AdityaGarg8/t2-ubuntu-repo/releases/download/debian
 Suites: ${suite}
@@ -264,13 +269,15 @@ Architectures: amd64
 Signed-By: /etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg
 SOURCE
 
-  # Alternative: Apple firmware from GitHub releases - with better resilience
-  firmware_list_path="$sandbox_root/etc/apt/sources.list.d/apple-firmware.list"
-  cat > "$firmware_list_path" <<SOURCE
+  # Apple firmware is a flat repo (Suites: ./), which takes no
+  # Components line at all; a present-but-empty `Components:` makes
+  # APT log a parse warning on every sync. Same .list-vs-.sources
+  # caveat as the t2 source above.
+  firmware_sources_path="$sandbox_root/etc/apt/sources.list.d/apple-firmware.sources"
+  cat > "$firmware_sources_path" <<SOURCE
 Types: deb
 URIs: https://github.com/AdityaGarg8/Apple-Firmware/releases/download/debian
 Suites: ./
-Components: 
 Architectures: amd64
 Signed-By: /etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg
 SOURCE
