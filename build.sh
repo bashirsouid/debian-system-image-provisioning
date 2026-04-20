@@ -904,23 +904,28 @@ EOF
   build_dir="$(ab_buildmeta_stage_dir "$PROJECT_ROOT" "$build_ts" "$PROFILE" "$HOST")"
   install -d -m 0755 "$build_dir"
 
-  # Move the raw / initrd / vmlinuz that mkosi just produced into the
-  # build folder. Move (not copy) so mkosi.output/ stays clean and
-  # the next target's mkosi invocation starts from an empty namespace.
+  # Move every mkosi output that carries the "<image_id>_<version>"
+  # prefix into the build folder. Globbing the prefix (rather than
+  # enumerating specific known filenames) means any split artifact
+  # mkosi names with that prefix — .raw, .initrd, .vmlinuz, the
+  # extensionless subdir, the UKI .efi written by SplitArtifacts=uki,
+  # future additions — comes along without having to maintain a list.
+  # Move (not copy) so mkosi.output/ stays empty between targets and
+  # the next mkosi invocation starts from a clean namespace.
   local mk_out="$PROJECT_ROOT/mkosi.output"
-  local moved
+  local prefix="${target_image_id}_${IMAGE_VERSION}"
+  local moved moved_any=false
   shopt -s nullglob
-  for moved in \
-      "$mk_out/${target_image_id}_${IMAGE_VERSION}.raw" \
-      "$mk_out/${target_image_id}_${IMAGE_VERSION}.initrd" \
-      "$mk_out/${target_image_id}_${IMAGE_VERSION}.vmlinuz" \
-      "$mk_out/${target_image_id}_${IMAGE_VERSION}" \
-      "$mk_out/${target_image_id}_${IMAGE_VERSION}.efi" \
-      "$mk_out/${target_image_id}_${IMAGE_VERSION}_${TARGET_ARCH}.efi"; do
+  for moved in "$mk_out/${prefix}" "$mk_out/${prefix}".*; do
     [[ -e "$moved" ]] || continue
     mv "$moved" "$build_dir/"
+    moved_any=true
   done
   shopt -u nullglob
+  [[ "$moved_any" == true ]] || {
+    echo "ERROR: no mkosi outputs with prefix '${prefix}' found in $mk_out" >&2
+    exit 1
+  }
   built_image_path="$build_dir/$built_image_basename"
   [[ -f "$built_image_path" ]] || {
     echo "ERROR: expected built disk image at $built_image_path after staging" >&2
