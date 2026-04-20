@@ -318,6 +318,26 @@ echo "==> Installing systemd-boot into target ESP"
 bootctl --esp-path="$ESP_MOUNT" --no-variables install
 write_loader_conf "$ESP_MOUNT/loader/loader.conf"
 
+# systemd-sysupdate below is going to --image=$TARGET_FOR_SYSUPDATE,
+# which means systemd-dissect will mount EVERY partition of the
+# target disk internally (including the ESP, because the UKI and
+# loader-entry transfers have PathRelativeTo=boot). If we leave the
+# ESP mounted here from the bootctl step, dissect cannot acquire it
+# cleanly and sysupdate fails with the misleading pair:
+#     Failed to mount image: No such file or directory
+#     No transfer definitions found.
+# Unmount, sync bootctl's writes to the disk, wait for udev to
+# re-settle the partition nodes, then hand the whole disk to
+# sysupdate. This script does not need the ESP mounted again.
+echo "==> Releasing ESP so systemd-sysupdate can dissect the whole disk"
+umount "$ESP_MOUNT"
+rmdir "$ESP_MOUNT"
+ESP_MOUNT=""
+sync
+if command -v udevadm >/dev/null 2>&1; then
+  udevadm settle --timeout=10 >/dev/null 2>&1 || true
+fi
+
 echo "==> Seeding first system version with systemd-sysupdate"
 # Diagnostics: dump the exact inputs systemd-sysupdate will see, and
 # run a `list` probe before `update`. When the update step fails
