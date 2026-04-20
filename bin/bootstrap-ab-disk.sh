@@ -262,7 +262,12 @@ need_cmd install
 
 preview_repart_layout() {
   echo "==> Planned partition layout for $TARGET"
-  systemd-repart --dry-run=yes --empty=force --definitions="$REPART_DIR" "$TARGET_FOR_SYSUPDATE" || true
+  # Filter out the "Refusing to repartition, please re-run with
+  # --dry-run=no." line that systemd-repart unconditionally appends
+  # to dry-run output. The next step of this script DOES re-run with
+  # --dry-run=no, so that message is misleading here.
+  systemd-repart --dry-run=yes --empty=force --definitions="$REPART_DIR" "$TARGET_FOR_SYSUPDATE" 2>&1 \
+    | grep -v '^Refusing to repartition' || true
 }
 
 wait_for_esp_partition() {
@@ -314,6 +319,43 @@ bootctl --esp-path="$ESP_MOUNT" --no-variables install
 write_loader_conf "$ESP_MOUNT/loader/loader.conf"
 
 echo "==> Seeding first system version with systemd-sysupdate"
+# Diagnostics: dump the exact inputs systemd-sysupdate will see, and
+# run a `list` probe before `update`. When the update step fails
+# silently with something like "No transfer definitions found." the
+# preceding output pins down whether the cause is (a) no .transfer
+# files in the definitions dir, (b) no matching files in the source
+# dir, or (c) sysupdate sees both but still decides there is nothing
+# to do. Without this preamble there is no way to tell which.
+echo "    definitions:     $DEFINITIONS_DIR"
+if [[ -d "$DEFINITIONS_DIR" ]]; then
+  transfer_files=()
+  while IFS= read -r f; do
+    transfer_files+=("$f")
+  done < <(find "$DEFINITIONS_DIR" -maxdepth 1 -type f -name '*.transfer' | sort)
+  echo "    .transfer count: ${#transfer_files[@]}"
+  for f in "${transfer_files[@]}"; do
+    echo "      $(basename "$f")"
+  done
+else
+  echo "    (definitions dir does not exist)"
+fi
+echo "    transfer-source: $SOURCE_DIR"
+if [[ -d "$SOURCE_DIR" ]]; then
+  echo "    source artifacts:"
+  find "$SOURCE_DIR" -maxdepth 1 -type f \
+    \( -name '*.root.raw' -o -name '*.efi' -o -name '*.conf' -o -name '*.artifacts.env' \) \
+    -printf '      %f\n' | sort
+else
+  echo "    (source dir does not exist)"
+fi
+echo "    image:           $TARGET_FOR_SYSUPDATE"
+echo "==> systemd-sysupdate list (probe, non-fatal):"
+systemd-sysupdate \
+  --definitions="$DEFINITIONS_DIR" \
+  --transfer-source="$SOURCE_DIR" \
+  --image="$TARGET_FOR_SYSUPDATE" \
+  list 2>&1 | sed 's/^/    /' || true
+
 systemd-sysupdate \
   --definitions="$DEFINITIONS_DIR" \
   --transfer-source="$SOURCE_DIR" \

@@ -200,13 +200,19 @@ preview_current_and_planned_layout() {
 
   echo "Planned layout after repart (AFTER):"
   # Redirect stderr to stdout so the layout table lands in the panel
-  # rather than interleaving with the prompt. `|| true` because a
-  # dry-run failure (e.g. image too small for the roots) should
-  # still let the prompt proceed -- the real run will fail loudly
-  # and the user has already been warned.
+  # rather than interleaving with the prompt. Filter out the
+  # "Refusing to repartition, please re-run with --dry-run=no." line
+  # that systemd-repart unconditionally appends to dry-run output —
+  # it's misleading in a preview context because this script DOES
+  # then re-run with --dry-run=no a few lines below. `|| true`
+  # because a dry-run failure (e.g. image too small for the roots)
+  # should still let the prompt proceed; the real run will fail
+  # loudly and the user has already been warned.
   systemd-repart --dry-run=yes --empty=force \
     --definitions="$BOOTSTRAP_REPART_DIR" \
-    "$target_real" 2>&1 | sed 's/^/  /' || true
+    "$target_real" 2>&1 \
+    | grep -v '^Refusing to repartition' \
+    | sed 's/^/  /' || true
   if [[ "$INCLUDE_USB_STORAGE" == true ]]; then
     echo
     echo "  Note: the USBDATA partition above is created unformatted by"
