@@ -14,6 +14,7 @@ LOADER_TIMEOUT=3
 ASSUME_YES=false
 IMAGE_ID=""
 ALLOW_FIXED_DISK=no
+SKIP_SYSUPDATE=false
 
 usage() {
   cat <<'USAGE'
@@ -37,6 +38,10 @@ Options:
   --allow-fixed-disk     permit writing to a non-removable (internal) disk;
                          the default refuses such targets to prevent the
                          "I flashed my laptop's SSD by accident" case
+  --skip-sysupdate       only create partitions and install systemd-boot;
+                         do NOT run systemd-sysupdate to seed the first
+                         version (the caller is responsible for running
+                         sysupdate separately)
   --yes                  skip the destructive confirmation prompt
 USAGE
 }
@@ -226,6 +231,10 @@ while [[ $# -gt 0 ]]; do
       ALLOW_FIXED_DISK=yes
       shift
       ;;
+    --skip-sysupdate)
+      SKIP_SYSUPDATE=true
+      shift
+      ;;
     --yes)
       ASSUME_YES=true
       shift
@@ -338,80 +347,73 @@ if command -v udevadm >/dev/null 2>&1; then
   udevadm settle --timeout=10 >/dev/null 2>&1 || true
 fi
 
-echo "==> Seeding first system version with systemd-sysupdate"
-# Diagnostics: dump the exact inputs systemd-sysupdate will see, and
-# run a `list` probe before `update`. When the update step fails
-# silently with something like "No transfer definitions found." the
-# preceding output pins down whether the cause is (a) no .transfer
-# files in the definitions dir, (b) no matching files in the source
-# dir, or (c) sysupdate sees both but still decides there is nothing
-# to do. Without this preamble there is no way to tell which.
-echo "    definitions:     $DEFINITIONS_DIR"
-if [[ -d "$DEFINITIONS_DIR" ]]; then
-  transfer_files=()
-  while IFS= read -r f; do
-    transfer_files+=("$f")
-  done < <(find "$DEFINITIONS_DIR" -maxdepth 1 -type f -name '*.transfer' | sort)
-  echo "    .transfer count: ${#transfer_files[@]}"
-  for f in "${transfer_files[@]}"; do
-    echo "      $(basename "$f")"
-  done
+if [[ "$SKIP_SYSUPDATE" == true ]]; then
+  echo "==> Skipping systemd-sysupdate (--skip-sysupdate was passed)"
+  echo "    The caller is responsible for running sysupdate separately."
 else
-  echo "    (definitions dir does not exist)"
-fi
-echo "    transfer-source: $SOURCE_DIR"
-if [[ -d "$SOURCE_DIR" ]]; then
-  echo "    source artifacts:"
-  find "$SOURCE_DIR" -maxdepth 1 -type f \
-    \( -name '*.root.raw' -o -name '*.efi' -o -name '*.conf' -o -name '*.artifacts.env' \) \
-    -printf '      %f\n' | sort
-else
-  echo "    (source dir does not exist)"
-fi
-# systemd-sysupdate opens --image= with systemd-dissect internally.
-# The default image-policy is "*" (try to use every partition),
-# which fails here because the trailing USBDATA partition created
-# by write-live-test-usb.sh is unformatted at this point — repart
-# did not format it (linux-generic + no Format= in the repart conf)
-# and write-live-test-usb.sh's format_usb_storage_partition step
-# runs AFTER bootstrap returns. Dissect then aborts with the
-# misleading "Failed to mount image: No such file or directory"
-# because it can't mount an unformatted block range, and sysupdate
-# reports "No transfer definitions found." as the downstream
-# consequence (with no usable image mount it has no target to
-# enumerate transfers against).
-#
-# The policy below says: mount the ESP (sysupdate writes the UKI
-# and BLS entry into its /EFI/Linux and /loader/entries via
-# PathRelativeTo=boot), accept the root partitions whether they
-# carry a filesystem yet or not (sysupdate writes to them as raw
-# partitions via Type=partition + Path=auto, so dissect does not
-# need to mount them), and ignore everything else — which is what
-# lets the USBDATA partition exist unformatted without breaking
-# dissect. systemd-analyze image-policy <policy> confirms this is
-# what the flags mean.
-SYSUPDATE_IMAGE_POLICY='root=unprotected+absent:esp=unprotected:=unused+absent'
+  echo "==> Seeding first system version with systemd-sysupdate"
+  # Diagnostics: dump the exact inputs systemd-sysupdate will see, and
+  # run a `list` probe before `update`. When the update step fails
+  # silently with something like "No transfer definitions found." the
+  # preceding output pins down whether the cause is (a) no .transfer
+  # files in the definitions dir, (b) no matching files in the source
+  # dir, or (c) sysupdate sees both but still decides there is nothing
+  # to do. Without this preamble there is no way to tell which.
+  echo "    definitions:     $DEFINITIONS_DIR"
+  if [[ -d "$DEFINITIONS_DIR" ]]; then
+    transfer_files=()
+    while IFS= read -r f; do
+      transfer_files+=("$f")
+    done < <(find "$DEFINITIONS_DIR" -maxdepth 1 -type f -name '*.transfer' | sort)
+    echo "    .transfer count: ${#transfer_files[@]}"
+    for f in "${transfer_files[@]}"; do
+      echo "      $(basename "$f")"
+    done
+  else
+    echo "    (definitions dir does not exist)"
+  fi
+  echo "    transfer-source: $SOURCE_DIR"
+  if [[ -d "$SOURCE_DIR" ]]; then
+    echo "    source artifacts:"
+    find "$SOURCE_DIR" -maxdepth 1 -type f \
+      \( -name '*.root.raw' -o -name '*.efi' -o -name '*.conf' -o -name '*.artifacts.env' \) \
+      -printf '      %f\n' | sort
+  else
+    echo "    (source dir does not exist)"
+  fi
+  # The image-policy tells systemd-dissect: mount the ESP (sysupdate
+  # writes the UKI and BLS entry into /EFI/Linux and /loader/entries
+  # via PathRelativeTo=boot), accept the root partitions whether they
+  # carry a filesystem yet or not (sysupdate writes to them as raw
+  # partitions via Type=partition + Path=auto), and ignore everything
+  # else. This is important when extra partitions (like an exFAT
+  # storage partition) exist on the disk.
+  SYSUPDATE_IMAGE_POLICY='root=unprotected+absent:esp=unprotected:=unused+absent'
 
-echo "    image:           $TARGET_FOR_SYSUPDATE"
-echo "    image-policy:    $SYSUPDATE_IMAGE_POLICY"
-echo "==> systemd-sysupdate list (probe, non-fatal):"
-systemd-sysupdate \
-  --definitions="$DEFINITIONS_DIR" \
-  --transfer-source="$SOURCE_DIR" \
-  --image="$TARGET_FOR_SYSUPDATE" \
-  --image-policy="$SYSUPDATE_IMAGE_POLICY" \
-  list 2>&1 | sed 's/^/    /' || true
+  echo "    image:           $TARGET_FOR_SYSUPDATE"
+  echo "    image-policy:    $SYSUPDATE_IMAGE_POLICY"
+  echo "==> systemd-sysupdate list (probe, non-fatal):"
+  systemd-sysupdate \
+    --definitions="$DEFINITIONS_DIR" \
+    --transfer-source="$SOURCE_DIR" \
+    --image="$TARGET_FOR_SYSUPDATE" \
+    --image-policy="$SYSUPDATE_IMAGE_POLICY" \
+    list 2>&1 | sed 's/^/    /' || true
 
-systemd-sysupdate \
-  --definitions="$DEFINITIONS_DIR" \
-  --transfer-source="$SOURCE_DIR" \
-  --image="$TARGET_FOR_SYSUPDATE" \
-  --image-policy="$SYSUPDATE_IMAGE_POLICY" \
-  update
+  systemd-sysupdate \
+    --definitions="$DEFINITIONS_DIR" \
+    --transfer-source="$SOURCE_DIR" \
+    --image="$TARGET_FOR_SYSUPDATE" \
+    --image-policy="$SYSUPDATE_IMAGE_POLICY" \
+    update
+fi
 
 echo "==> Bootstrap complete"
 echo "    Target:      $TARGET"
 echo "    Source dir:  $SOURCE_DIR"
-echo "    ESP mount:   $ESP_MOUNT"
 echo ""
-echo "Next step: boot this disk/image via UEFI + systemd-boot."
+if [[ "$SKIP_SYSUPDATE" == true ]]; then
+  echo "Next step: run systemd-sysupdate to seed the first version, then boot via UEFI + systemd-boot."
+else
+  echo "Next step: boot this disk/image via UEFI + systemd-boot."
+fi

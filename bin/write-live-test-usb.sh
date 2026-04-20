@@ -680,6 +680,13 @@ bootstrap_args=(
   # so always pass --yes down. If the user wants bootstrap's prompt,
   # they should call bootstrap directly.
   --yes
+  # Skip sysupdate inside bootstrap. The USBDATA partition is
+  # unformatted at this point (repart creates it without Format= and
+  # we mkfs.exfat it ourselves below). systemd-dissect inside
+  # sysupdate cannot handle the unformatted partition and fails with
+  # "Failed to mount image: No such file or directory". We run
+  # sysupdate ourselves after formatting USBDATA.
+  --skip-sysupdate
 )
 # Propagate --allow-fixed-disk: confirm_usb_write_or_abort has already
 # enforced the removable check; bootstrap's own check would otherwise
@@ -693,12 +700,63 @@ echo "==> Bootstrapping hardware test USB on $TARGET"
 
 resolve_disk_device
 # Format the trailing exFAT storage partition (if created by repart)
-# before we go looking for the seeded root. This must happen after
-# resolve_disk_device (so DISK_DEVICE is set for a loop-attached
-# file target) and after bootstrap (so the partition exists at
-# all). It's a no-op under --no-usb-storage or if repart did not
-# allocate the partition.
+# BEFORE running sysupdate. This is critical: systemd-sysupdate uses
+# systemd-dissect internally which fails with "Failed to mount image:
+# No such file or directory" when it encounters the unformatted
+# USBDATA partition (Type=linux-generic, no filesystem). Formatting
+# it first gives dissect a valid filesystem to skip over via the
+# image-policy. It's a no-op under --no-usb-storage or if repart did
+# not allocate the partition.
 format_usb_storage_partition
+
+# Now seed the first system version. This runs after USBDATA is
+# formatted so systemd-dissect can properly handle every partition on
+# the disk.
+SYSUPDATE_IMAGE_POLICY='root=unprotected+absent:esp=unprotected:=unused+absent'
+# For block devices, sysupdate targets the device directly; for file
+# images, it targets the file (sysupdate loop-attaches it internally).
+SYSUPDATE_TARGET="$(readlink -f "$TARGET")"
+
+echo "==> Seeding first system version with systemd-sysupdate"
+echo "    definitions:     $GENERATED_DEFINITIONS_DIR"
+if [[ -d "$GENERATED_DEFINITIONS_DIR" ]]; then
+  transfer_files=()
+  while IFS= read -r f; do
+    transfer_files+=("$f")
+  done < <(find "$GENERATED_DEFINITIONS_DIR" -maxdepth 1 -type f -name '*.transfer' | sort)
+  echo "    .transfer count: ${#transfer_files[@]}"
+  for f in "${transfer_files[@]}"; do
+    echo "      $(basename "$f")"
+  done
+else
+  echo "    (definitions dir does not exist)"
+fi
+echo "    transfer-source: $SOURCE_DIR"
+if [[ -d "$SOURCE_DIR" ]]; then
+  echo "    source artifacts:"
+  find "$SOURCE_DIR" -maxdepth 1 -type f \
+    \( -name '*.root.raw' -o -name '*.efi' -o -name '*.conf' -o -name '*.artifacts.env' \) \
+    -printf '      %f\n' | sort
+else
+  echo "    (source dir does not exist)"
+fi
+echo "    image:           $SYSUPDATE_TARGET"
+echo "    image-policy:    $SYSUPDATE_IMAGE_POLICY"
+echo "==> systemd-sysupdate list (probe, non-fatal):"
+systemd-sysupdate \
+  --definitions="$GENERATED_DEFINITIONS_DIR" \
+  --transfer-source="$SOURCE_DIR" \
+  --image="$SYSUPDATE_TARGET" \
+  --image-policy="$SYSUPDATE_IMAGE_POLICY" \
+  list 2>&1 | sed 's/^/    /' || true
+
+systemd-sysupdate \
+  --definitions="$GENERATED_DEFINITIONS_DIR" \
+  --transfer-source="$SOURCE_DIR" \
+  --image="$SYSUPDATE_TARGET" \
+  --image-policy="$SYSUPDATE_IMAGE_POLICY" \
+  update
+
 ROOT_PART="$(wait_for_seeded_root_partition)" || die "unable to locate the seeded root partition on $TARGET (the USB was bootstrapped, but the newly-seeded root partition did not appear in time)"
 ROOT_MOUNT="$(mktemp -d /tmp/ab-live-root.XXXXXX)"
 mount "$ROOT_PART" "$ROOT_MOUNT"
