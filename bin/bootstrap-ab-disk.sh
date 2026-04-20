@@ -368,18 +368,45 @@ if [[ -d "$SOURCE_DIR" ]]; then
 else
   echo "    (source dir does not exist)"
 fi
+# systemd-sysupdate opens --image= with systemd-dissect internally.
+# The default image-policy is "*" (try to use every partition),
+# which fails here because the trailing USBDATA partition created
+# by write-live-test-usb.sh is unformatted at this point — repart
+# did not format it (linux-generic + no Format= in the repart conf)
+# and write-live-test-usb.sh's format_usb_storage_partition step
+# runs AFTER bootstrap returns. Dissect then aborts with the
+# misleading "Failed to mount image: No such file or directory"
+# because it can't mount an unformatted block range, and sysupdate
+# reports "No transfer definitions found." as the downstream
+# consequence (with no usable image mount it has no target to
+# enumerate transfers against).
+#
+# The policy below says: mount the ESP (sysupdate writes the UKI
+# and BLS entry into its /EFI/Linux and /loader/entries via
+# PathRelativeTo=boot), accept the root partitions whether they
+# carry a filesystem yet or not (sysupdate writes to them as raw
+# partitions via Type=partition + Path=auto, so dissect does not
+# need to mount them), and ignore everything else — which is what
+# lets the USBDATA partition exist unformatted without breaking
+# dissect. systemd-analyze image-policy <policy> confirms this is
+# what the flags mean.
+SYSUPDATE_IMAGE_POLICY='root=unprotected+absent:esp=unprotected:=unused+absent'
+
 echo "    image:           $TARGET_FOR_SYSUPDATE"
+echo "    image-policy:    $SYSUPDATE_IMAGE_POLICY"
 echo "==> systemd-sysupdate list (probe, non-fatal):"
 systemd-sysupdate \
   --definitions="$DEFINITIONS_DIR" \
   --transfer-source="$SOURCE_DIR" \
   --image="$TARGET_FOR_SYSUPDATE" \
+  --image-policy="$SYSUPDATE_IMAGE_POLICY" \
   list 2>&1 | sed 's/^/    /' || true
 
 systemd-sysupdate \
   --definitions="$DEFINITIONS_DIR" \
   --transfer-source="$SOURCE_DIR" \
   --image="$TARGET_FOR_SYSUPDATE" \
+  --image-policy="$SYSUPDATE_IMAGE_POLICY" \
   update
 
 echo "==> Bootstrap complete"
