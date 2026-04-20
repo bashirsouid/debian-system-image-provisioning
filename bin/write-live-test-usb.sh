@@ -1,6 +1,72 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# write-live-test-usb.sh
+#
+# High-level behavior
+# -------------------
+# This tool turns a removable USB disk (or raw image file) into a
+# "hardware test" / installer USB with a systemd-repart + A/B root
+# layout, and then copies an installer bundle onto the seeded root so
+# you can:
+#
+#   - Boot real hardware from the USB
+#   - Smoke-test the built image on that hardware
+#   - Optionally install onto an internal disk from the running system
+#
+# Layout (on a fresh target)
+# --------------------------
+#   - GPT with:
+#       * ESP         (vfat, label=ESP)
+#       * root-a      (ext4, label=_empty initially)
+#       * root-b      (ext4, label=_empty initially)
+#       * USBDATA     (optional, exFAT, label=$USB_STORAGE_LABEL)
+#
+#   - systemd-boot installed into the ESP
+#   - One root slot is "seeded" with the mkosi-produced *.root.raw,
+#     and its GPT PARTLABEL is set to:
+#
+#         ${IMAGE_ID}_${IMAGE_VERSION}
+#
+#     This matches what the sysupdate transfer definitions expect.
+#
+# Seeding strategy (A/B behavior)
+# -------------------------------
+# We do NOT use `systemd-sysupdate --image=/dev/sdX` to seed the first
+# version because current systemd releases are unreliable when
+# dissecting a just-repartitioned, still-empty disk image in that mode
+# (this is what caused "Failed to mount image: No such file or
+# directory" / "No transfer definitions found."). Instead:
+#
+#   - On a freshly-partitioned drive (both roots labeled "_empty"):
+#       * Seed the first root slot found with ${prefix}.root.raw
+#       * Grow the ext4 filesystem to the full partition size
+#       * Rename its GPT PARTLABEL to ${IMAGE_ID}_${IMAGE_VERSION}
+#
+#   - On reuse of an existing USB:
+#       * If any root slot is still labeled "_empty", we seed that
+#         slot and relabel it as above.
+#       * If both root slots are already in use:
+#           - With --yes: overwrite a deterministic slot (see
+#             select_root_slot_for_seed()).
+#           - Without --yes: show the candidate slots and prompt
+#             for which one to overwrite (typed path).
+#
+# This keeps the on-disk layout compatible with the sysupdate-based
+# installer and future A/B updates, while avoiding the fragile
+# sysupdate --image flow for the initial seed.
+#
+# The installer bundle written into $BUNDLE_DIR on the seeded root
+# carries:
+#   - bootstrap-ab-disk.sh
+#   - live-usb-install.sh
+#   - sysupdate-local-update.sh
+#   - mkosi.sysupdate/*.transfer
+#   - deploy.repart/*.conf
+#   - mkosi artifacts for ${IMAGE_ID}/${IMAGE_VERSION}/${IMAGE_ARCH}
+#
+# See the --help output below for CLI usage and options.
+
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=SCRIPTDIR/../scripts/lib/host-deps.sh
 source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
@@ -316,6 +382,133 @@ find_seeded_root_partition() {
   done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE")
 
   return 1
+}
+
+# Select a root partition to seed with the current image.
+# Strategy:
+#   - Prefer any root partition with PARTLABEL=_empty
+#   - Otherwise, if --yes is NOT set, prompt the user to choose
+#   - With --yes, deterministically pick the "oldest-looking"
+#     slot (lexicographically smallest PARTLABEL) so repeated
+#     invocations are predictable.
+select_root_slot_for_seed() {
+    local candidates=() labels=() part label fstype line choice i
+
+    # Collect root-like partitions: exclude ESP, HOME, DATA, USBDATA
+    while IFS= read -r line; do
+        part="${line%% *}"
+        label="${line#* }"
+        label="${label%% *}"   # strip fstype
+        fstype="${line##* }"
+
+        [[ -n "$part" ]] || continue
+        case "$label" in
+            ESP|HOME|DATA|USBDATA)
+                continue
+                ;;
+        esac
+        # root slots are ext4 according to deploy.repart
+        [[ "$fstype" == "ext4" || -z "$fstype" ]] || continue
+
+        candidates+=("$part")
+        labels+=("$label")
+    done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE")
+
+    (( ${#candidates[@]} > 0 )) || die "no candidate root partitions found on $DISK_DEVICE"
+
+    # 1) Prefer an "_empty" slot
+    for i in "${!candidates[@]}"; do
+        if [[ "${labels[$i]}" == "_empty" ]]; then
+            ROOT_PART="${candidates[$i]}"
+            echo "==> Selected empty root slot for seed: $ROOT_PART (label=_empty)"
+            return 0
+        fi
+    done
+
+    # 2) If not in --yes mode, ask the user which slot to overwrite
+    if [[ "$ASSUME_YES" != true ]]; then
+        echo "Existing root slots on $DISK_DEVICE:"
+        for i in "${!candidates[@]}"; do
+            printf "  [%d] %s (PARTLABEL=%s)\n" "$i" "${candidates[$i]}" "${labels[$i]}"
+        done
+        echo
+        echo "All root slots appear to be in use. Choose which one to overwrite."
+        echo "Type the full device path (e.g. ${candidates[0]}) and press Enter:"
+        read -r choice
+        for i in "${!candidates[@]}"; do
+            if [[ "$choice" == "${candidates[$i]}" ]]; then
+                ROOT_PART="$choice"
+                echo "==> Selected root slot for seed: $ROOT_PART (label=${labels[$i]})"
+                return 0
+            fi
+        done
+        die "no matching root slot for choice: $choice"
+    fi
+
+    # 3) With --yes and no _empty slots, pick a deterministic slot:
+    #    lowest lexicographic PARTLABEL, fallback to first candidate.
+    local best_idx=0 best_label="${labels[0]}"
+    for i in "${!labels[@]}"; do
+        if [[ "${labels[$i]}" < "$best_label" ]]; then
+            best_label="${labels[$i]}"
+            best_idx="$i"
+        fi
+    done
+
+    ROOT_PART="${candidates[$best_idx]}"
+    echo "==> Selected root slot for seed (auto --yes): $ROOT_PART (PARTLABEL=${labels[$best_idx]})"
+    return 0
+}
+
+# Seed the chosen ROOT_PART with ${prefix}.root.raw and relabel it to
+# ${IMAGE_ID}_${IMAGE_VERSION}. This replaces the previous
+# systemd-sysupdate --image seeding flow.
+seed_first_root_slot() {
+    local prefix partnum new_label
+
+    [[ -n "${IMAGE_ID:-}" && -n "${IMAGE_VERSION:-}" && -n "${IMAGE_ARCH:-}" ]] \
+        || die "seed_first_root_slot: IMAGE_ID/IMAGE_VERSION/IMAGE_ARCH not set"
+
+    prefix="${IMAGE_ID}_${IMAGE_VERSION}_${IMAGE_ARCH}"
+    [[ -f "$SOURCE_DIR/${prefix}.root.raw" ]] \
+        || die "root filesystem image not found: $SOURCE_DIR/${prefix}.root.raw"
+
+    select_root_slot_for_seed
+
+    # Write the filesystem image into the chosen partition
+    echo "==> Writing root filesystem image into $ROOT_PART from ${prefix}.root.raw"
+    dd if="$SOURCE_DIR/${prefix}.root.raw" of="$ROOT_PART" bs=4M status=progress conv=fsync
+
+    # Grow the ext4 filesystem to fill the partition (best-effort)
+    if command -v e2fsck >/dev/null 2>&1 && command -v resize2fs >/dev/null 2>&1; then
+        echo "==> Running e2fsck + resize2fs on $ROOT_PART"
+        e2fsck -f -y "$ROOT_PART" || true
+        resize2fs "$ROOT_PART" || true
+    else
+        echo "WARNING: e2fsck/resize2fs not available; skipping filesystem grow step" >&2
+    fi
+
+    # Update the GPT PARTLABEL for this partition so it encodes
+    # IMAGE_ID + IMAGE_VERSION. We assume util-linux (sfdisk) is present.
+    new_label="${IMAGE_ID}_${IMAGE_VERSION}"
+    if command -v sfdisk >/dev/null 2>&1; then
+        # Extract partition number: works for /dev/sda3, /dev/nvme0n1p2, /dev/mmcblk0p1
+        partnum="${ROOT_PART##*[!0-9]}"
+        if [[ -n "$partnum" ]]; then
+            echo "==> Setting GPT PARTLABEL for $ROOT_PART -> $new_label"
+            sfdisk --part-label "$DISK_DEVICE" "$partnum" "$new_label" || \
+                echo "WARNING: failed to update PARTLABEL for $ROOT_PART" >&2
+        else
+            echo "WARNING: could not determine partition number for $ROOT_PART; PARTLABEL unchanged" >&2
+        fi
+    else
+        echo "WARNING: sfdisk not available; leaving PARTLABEL for $ROOT_PART unchanged" >&2
+    fi
+
+    # Mount the seeded root for bundle copy
+    ROOT_MOUNT="$(mktemp -d /tmp/ab-live-root.XXXXXX)"
+    echo "==> Mounting seeded root $ROOT_PART on $ROOT_MOUNT"
+    mount "$ROOT_PART" "$ROOT_MOUNT"
 }
 
 required_bundle_files() {
@@ -663,6 +856,8 @@ need_cmd lsblk
 need_cmd mount
 need_cmd install
 need_cmd df
+need_cmd dd
+need_cmd sfdisk
 
 [[ -f "$SOURCE_DIR/$IMAGE_BASENAME" ]] || die "built disk image not found: $SOURCE_DIR/$IMAGE_BASENAME"
 
@@ -699,80 +894,28 @@ echo "==> Bootstrapping hardware test USB on $TARGET"
 "$PROJECT_ROOT/bin/bootstrap-ab-disk.sh" "${bootstrap_args[@]}"
 
 resolve_disk_device
-# Format the trailing exFAT storage partition (if created by repart)
-# BEFORE running sysupdate. This is critical: systemd-sysupdate uses
-# systemd-dissect internally which fails with "Failed to mount image:
-# No such file or directory" when it encounters the unformatted
-# USBDATA partition (Type=linux-generic, no filesystem). Formatting
-# it first gives dissect a valid filesystem to skip over via the
-# image-policy. It's a no-op under --no-usb-storage or if repart did
-# not allocate the partition.
 format_usb_storage_partition
 
-# Now seed the first system version. This runs after USBDATA is
-# formatted so systemd-dissect can properly handle every partition on
-# the disk.
-SYSUPDATE_IMAGE_POLICY='root=unprotected+absent:esp=unprotected:=unused+absent'
-# For block devices, sysupdate targets the device directly; for file
-# images, it targets the file (sysupdate loop-attaches it internally).
-SYSUPDATE_TARGET="$(readlink -f "$TARGET")"
+# Seed the first system version directly by writing the root.raw image
+# into a root slot, instead of using systemd-sysupdate --image on the
+# entire disk. This avoids fragile systemd-dissect behavior on
+# freshly-repartitioned, still-empty disks.
+seed_first_root_slot
 
-echo "==> Seeding first system version with systemd-sysupdate"
-echo "    definitions:     $GENERATED_DEFINITIONS_DIR"
-if [[ -d "$GENERATED_DEFINITIONS_DIR" ]]; then
-  transfer_files=()
-  while IFS= read -r f; do
-    transfer_files+=("$f")
-  done < <(find "$GENERATED_DEFINITIONS_DIR" -maxdepth 1 -type f -name '*.transfer' | sort)
-  echo "    .transfer count: ${#transfer_files[@]}"
-  for f in "${transfer_files[@]}"; do
-    echo "      $(basename "$f")"
-  done
-else
-  echo "    (definitions dir does not exist)"
-fi
-echo "    transfer-source: $SOURCE_DIR"
-if [[ -d "$SOURCE_DIR" ]]; then
-  echo "    source artifacts:"
-  find "$SOURCE_DIR" -maxdepth 1 -type f \
-    \( -name '*.root.raw' -o -name '*.efi' -o -name '*.conf' -o -name '*.artifacts.env' \) \
-    -printf '      %f\n' | sort
-else
-  echo "    (source dir does not exist)"
-fi
-echo "    image:           $SYSUPDATE_TARGET"
-echo "    image-policy:    $SYSUPDATE_IMAGE_POLICY"
-echo "==> systemd-sysupdate list (probe, non-fatal):"
-systemd-sysupdate \
-  --definitions="$GENERATED_DEFINITIONS_DIR" \
-  --transfer-source="$SOURCE_DIR" \
-  --image="$SYSUPDATE_TARGET" \
-  --image-policy="$SYSUPDATE_IMAGE_POLICY" \
-  list 2>&1 | sed 's/^/    /' || true
-
-systemd-sysupdate \
-  --definitions="$GENERATED_DEFINITIONS_DIR" \
-  --transfer-source="$SOURCE_DIR" \
-  --image="$SYSUPDATE_TARGET" \
-  --image-policy="$SYSUPDATE_IMAGE_POLICY" \
-  update
-
-ROOT_PART="$(wait_for_seeded_root_partition)" || die "unable to locate the seeded root partition on $TARGET (the USB was bootstrapped, but the newly-seeded root partition did not appear in time)"
-ROOT_MOUNT="$(mktemp -d /tmp/ab-live-root.XXXXXX)"
-mount "$ROOT_PART" "$ROOT_MOUNT"
-
+# With ROOT_MOUNT set by seed_first_root_slot(), copy the installer
+# bundle onto the seeded root filesystem.
 copy_bundle
 
 echo "==> Hardware test USB is ready"
-echo "    Boot target:     $TARGET"
-echo "    Seeded root:     $ROOT_PART"
-echo "    Installer entry: /root/INSTALL-TO-INTERNAL-DISK.sh"
+echo " Boot target: $TARGET"
+echo " Seeded root: $ROOT_PART"
+echo " Installer entry: /root/INSTALL-TO-INTERNAL-DISK.sh"
 if [[ "$INCLUDE_USB_STORAGE" == true ]]; then
-  STORAGE_PART="$(find_usb_storage_partition || true)"
-  if [[ -n "$STORAGE_PART" ]]; then
-    echo "    exFAT storage:   $STORAGE_PART (label=$USB_STORAGE_LABEL)"
-  fi
+    STORAGE_PART="$(find_usb_storage_partition || true)"
+    if [[ -n "$STORAGE_PART" ]]; then
+        echo " exFAT storage: $STORAGE_PART (label=$USB_STORAGE_LABEL)"
+    fi
 fi
 if [[ "$EMBED_FULL_IMAGE" == true ]]; then
-  echo "    Full raw image:  copied into $BUNDLE_DIR/mkosi.output/"
+    echo " Full raw image: copied into $BUNDLE_DIR/mkosi.output/"
 fi
