@@ -9,6 +9,7 @@ source "$PROJECT_ROOT/scripts/lib/build-meta.sh"
 
 PROFILE="devbox"
 HOST=""
+BUILD_DIR=""
 RUNTIME_HOME=false
 EPHEMERAL=true
 QEMU_HOME_SEED=true
@@ -32,8 +33,11 @@ Usage: ./run.sh [options]
 
 Options:
   --profile NAME          boot profile (default: devbox, or last built profile
-                          when mkosi.output/.latest-build.env exists)
+                          when mkosi.output/builds/ has a matching build)
   --host NAME             include runtime config from hosts/NAME/mkosi.conf.d/
+                          and reuse the image built for that host
+  --build-dir PATH        specific build folder under mkosi.output/builds/
+                          to boot; takes precedence over --host / --profile
   --runtime-home          ask mkosi to mount the invoking host home at /root
                           inside the VM for disposable compatibility testing
   --runtime-tree SPEC     mount a host directory into the VM using mkosi's
@@ -65,9 +69,9 @@ Examples:
 Notes:
   - run.sh defaults to an ephemeral VM so QEMU smoke tests do not mutate
     the built image you may later flash.
-  - If a previous build wrote mkosi.output/.latest-build.env, run.sh reuses
-    that build's image-id and image-version so mkosi vm opens the image that
-    was just built instead of recalculating a new timestamped version.
+  - If a previous build folder exists under mkosi.output/builds/, run.sh
+    reads its build.env so mkosi vm opens the image that was just built
+    instead of recalculating a new timestamped version.
   - For testing host data, prefer mkosi's native runtime mount features over
     raw QEMU arguments so we stay on the supported path.
   - RuntimeHome mounts the current host home at /root in the guest on current
@@ -99,6 +103,10 @@ while [[ $# -gt 0 ]]; do
     --host)
       HOST="${2:?missing host name}"
       EXPLICIT_HOST=true
+      shift 2
+      ;;
+    --build-dir)
+      BUILD_DIR="${2:?missing build dir}"
       shift 2
       ;;
     --runtime-home)
@@ -179,26 +187,28 @@ ab_hostdeps_ensure_commands "vm run prerequisites" "${REQUIRED_CMDS[@]}" || exit
 # metadata-load step, so metadata lookup uses the right profile key.
 # --profile on the command line always wins.
 if [[ "$EXPLICIT_PROFILE" == false && "$EXPLICIT_HOST" == true ]]; then
-  host_default_profile_file="$PROJECT_ROOT/hosts/$HOST/profile.default"
-  if [[ -f "$host_default_profile_file" ]]; then
-    host_default_profile="$(sed -e 's/[[:space:]]*#.*$//' "$host_default_profile_file" \
-                            | awk 'NF{print;exit}' | tr -d '[:space:]')"
-    case "$host_default_profile" in
-      ""|*[!A-Za-z0-9._-]*) : ;;
-      *)
-        echo "==> Using default profile from hosts/$HOST/profile.default: $host_default_profile"
-        PROFILE="$host_default_profile"
-        ;;
-    esac
+  _host_default_profile="$(ab_buildmeta_host_default_profile "$PROJECT_ROOT" "$HOST")"
+  if [[ -n "$_host_default_profile" ]]; then
+    echo "==> Using default profile from hosts/$HOST/profile.default: $_host_default_profile"
+    PROFILE="$_host_default_profile"
   fi
 fi
 
+# Resolve the build folder. --build-dir wins; otherwise pick the newest
+# build that matches --host / --profile, or fall back to the global
+# 'latest' symlink. A missing folder is not fatal here — run.sh can still
+# boot by rebuilding in-place; the metadata lookup is an optimization so
+# mkosi vm reuses the last built image-version instead of minting a new
+# one and invalidating the cache.
 METADATA_LOADED=false
-if [[ "$EXPLICIT_PROFILE" == true || "$EXPLICIT_HOST" == true ]]; then
-  if ab_buildmeta_load_for "$PROJECT_ROOT" "$PROFILE" "$HOST"; then
-    METADATA_LOADED=true
+if [[ -z "$BUILD_DIR" ]]; then
+  if [[ "$EXPLICIT_PROFILE" == true || "$EXPLICIT_HOST" == true ]]; then
+    BUILD_DIR="$(ab_buildmeta_resolve_build_dir "$PROJECT_ROOT" "$PROFILE" "$HOST" || true)"
+  else
+    BUILD_DIR="$(ab_buildmeta_resolve_build_dir "$PROJECT_ROOT" "" "" || true)"
   fi
-elif ab_buildmeta_load "$PROJECT_ROOT"; then
+fi
+if [[ -n "$BUILD_DIR" ]] && ab_buildmeta_load_env "$BUILD_DIR"; then
   METADATA_LOADED=true
   if [[ "$EXPLICIT_PROFILE" == false && -n "${AB_LAST_BUILD_PROFILE:-}" ]]; then
     PROFILE="$AB_LAST_BUILD_PROFILE"

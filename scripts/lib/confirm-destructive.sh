@@ -256,8 +256,9 @@ ab_confirm_read_existing_identity() {
     return 1
   fi
 
-  # USB-IDENTITY.env is a simple KEY=VALUE file, same format as
-  # .latest-build.*.env. Just cat the sanitized contents.
+  # USB-IDENTITY.env is a simple KEY=VALUE file, same format as the
+  # per-build build.env that build.sh writes into the staged build
+  # folder. Just cat the sanitized contents.
   awk '
     /^[A-Za-z_][A-Za-z0-9_]*=/ { print }
   ' "$id_file"

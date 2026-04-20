@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=SCRIPTDIR/../scripts/lib/host-deps.sh
 source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
-SOURCE_DIR="$PROJECT_ROOT/mkosi.output"
+SOURCE_DIR="$PROJECT_ROOT/mkosi.output/builds/latest"
 DEFINITIONS_DIR="/usr/lib/sysupdate.d"
 REBOOT_AFTER=false
 
@@ -17,8 +17,9 @@ This expects the machine to have already been bootstrapped onto the new
 systemd-repart + systemd-sysupdate layout.
 
 Options:
-  --source-dir DIR    directory containing versioned sysupdate artifacts
-                      (default: ./mkosi.output)
+  --source-dir DIR    directory containing versioned sysupdate artifacts,
+                      typically a build folder under mkosi.output/builds/
+                      (default: ./mkosi.output/builds/latest)
   --definitions DIR   sysupdate transfer definitions (default: /usr/lib/sysupdate.d)
   --reboot            reboot after the update is staged
 USAGE

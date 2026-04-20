@@ -6,7 +6,7 @@
 # real hardware.
 #
 # Usage:
-#   ./bin/verify-image-raw.sh [--image mkosi.output/debian-provisioning_<ver>.raw]
+#   ./bin/verify-image-raw.sh [--image mkosi.output/builds/latest/<image_id>_<ver>.raw]
 #
 # Checks:
 #   1. File exists and is > 100 MiB.
@@ -40,8 +40,30 @@ done
 REPO_ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 
 if [[ -z "${IMAGE}" ]]; then
-    # Pick the newest *.raw in mkosi.output
-    IMAGE="$(ls -1t "${REPO_ROOT}/mkosi.output/"*.raw 2>/dev/null | head -n1 || true)"
+    # Pick the newest .raw in the newest build folder under
+    # mkosi.output/builds/. The 'latest' symlink is refreshed by build.sh
+    # after each successful build; following it keeps this tool pointing
+    # at the build you just made without having to pass --image every
+    # time. The split-out sysupdate partitions (.root.raw, .vmlinuz.raw,
+    # .initrd.raw) are excluded so we only pick the full disk image.
+    latest_build="${REPO_ROOT}/mkosi.output/builds/latest"
+    if [[ -L "${latest_build}" || -d "${latest_build}" ]]; then
+        newest=""
+        newest_mtime=0
+        shopt -s nullglob
+        for candidate in "${latest_build}"/*.raw; do
+            case "${candidate}" in
+                *.root.raw|*.vmlinuz.raw|*.initrd.raw) continue ;;
+            esac
+            mtime="$(stat -c '%Y' "${candidate}" 2>/dev/null || echo 0)"
+            if (( mtime > newest_mtime )); then
+                newest_mtime="${mtime}"
+                newest="${candidate}"
+            fi
+        done
+        shopt -u nullglob
+        IMAGE="${newest}"
+    fi
 fi
 [[ -n "${IMAGE}" && -f "${IMAGE}" ]] || fail "could not locate an image.raw. Pass --image."
 

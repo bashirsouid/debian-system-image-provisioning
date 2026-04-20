@@ -49,6 +49,7 @@ source "$PROJECT_ROOT/scripts/lib/build-meta.sh"
 
 PROFILE=""
 HOST=""
+BUILD_DIR=""
 WORK_DIR=""
 DISK_SIZE="${AB_TEST_DISK_SIZE:-12G}"
 BOOT_COUNT="${AB_TEST_BOOT_COUNT:-5}"
@@ -68,8 +69,12 @@ Usage: ./bin/test-rollback.sh [options]
 Runs a rollback smoke test against a pre-built image.
 
 Options:
-  --profile NAME           load build metadata for a specific profile
-  --host NAME              load build metadata for a specific host overlay
+  --profile NAME           resolve mkosi.output/builds/latest-NAME when
+                           --host is not given and --build-dir is not set
+  --host NAME              resolve mkosi.output/builds/latest-NAME (the
+                           host name)
+  --build-dir PATH         specific build folder under mkosi.output/builds/
+                           to test; takes precedence over --host / --profile
   --work-dir DIR           persist all test state here (default: new tmpdir)
   --disk-size SIZE         size for the test raw disk file (default: 12G)
   --boot-count N           how many reboots to drive (default: 5)
@@ -88,6 +93,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)       PROFILE="${2:?}"; shift 2 ;;
     --host)          HOST="${2:?}"; shift 2 ;;
+    --build-dir)     BUILD_DIR="${2:?}"; shift 2 ;;
     --work-dir)      WORK_DIR="${2:?}"; shift 2 ;;
     --disk-size)     DISK_SIZE="${2:?}"; shift 2 ;;
     --boot-count)    BOOT_COUNT="${2:?}"; shift 2 ;;
@@ -134,20 +140,33 @@ for candidate in \
 done
 [[ -n "$OVMF_VARS_TEMPLATE" ]] || die "could not locate OVMF vars template"
 
-# Resolve build metadata.
-if [[ -n "$PROFILE" || -n "$HOST" ]]; then
-  ab_buildmeta_load_for "$PROJECT_ROOT" "$PROFILE" "$HOST" \
-    || die "no build metadata for profile='$PROFILE' host='$HOST'. Run ./build.sh first."
-else
-  ab_buildmeta_load "$PROJECT_ROOT" \
-    || die "no build metadata. Run ./build.sh first."
+# Resolve build folder. --host alone is enough when hosts/<host>/profile.default
+# is set; otherwise --profile or --build-dir must be given.
+if [[ -n "$HOST" && -z "$PROFILE" ]]; then
+  _host_default="$(ab_buildmeta_host_default_profile "$PROJECT_ROOT" "$HOST")"
+  [[ -n "$_host_default" ]] && PROFILE="$_host_default"
 fi
+if [[ -z "$BUILD_DIR" ]]; then
+  BUILD_DIR="$(ab_buildmeta_resolve_build_dir "$PROJECT_ROOT" "$PROFILE" "$HOST" || true)"
+fi
+if [[ -z "$BUILD_DIR" ]]; then
+  if [[ -n "$HOST" ]]; then
+    die "no build for host='$HOST' under mkosi.output/builds/. Run ./build.sh --host '$HOST' first."
+  elif [[ -n "$PROFILE" ]]; then
+    die "no build for profile='$PROFILE' under mkosi.output/builds/. Run ./build.sh --profile '$PROFILE' first."
+  else
+    die "no build under mkosi.output/builds/. Run ./build.sh first, or pass --build-dir / --host / --profile."
+  fi
+fi
+[[ -d "$BUILD_DIR" ]] || die "resolved build folder does not exist: $BUILD_DIR"
+ab_buildmeta_load_env "$BUILD_DIR" \
+  || die "build folder is missing build.env: $BUILD_DIR"
 
 IMAGE_ID="${AB_LAST_BUILD_IMAGE_ID:?}"
 IMAGE_VERSION="${AB_LAST_BUILD_IMAGE_VERSION:?}"
 IMAGE_ARCH="${AB_LAST_BUILD_ARCH:?}"
 IMAGE_BASENAME="${AB_LAST_BUILD_IMAGE_BASENAME:?}"
-SOURCE_DIR="$PROJECT_ROOT/mkosi.output"
+SOURCE_DIR="$BUILD_DIR"
 
 log "Using image: $IMAGE_ID $IMAGE_VERSION ($IMAGE_ARCH)"
 log "  built artifact: $SOURCE_DIR/$IMAGE_BASENAME"

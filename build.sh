@@ -148,22 +148,9 @@ read_host_kernel_args() {
   fi
 }
 
-# Read hosts/<name>/profile.default for a host and echo the profile name.
-# Prints nothing if the host has no default or the file is empty/malformed.
-# Exits non-zero only if the host dir itself is missing (caller decides).
-read_host_default_profile() {
-  local host_name="$1"
-  local path="$PROJECT_ROOT/hosts/$host_name/profile.default"
-  local value
-  [[ -f "$path" ]] || return 0
-  # Strip comments, leading/trailing whitespace, take first non-empty line.
-  value="$(sed -e 's/[[:space:]]*#.*$//' "$path" | awk 'NF{print;exit}' | tr -d '[:space:]')"
-  # Validate: only simple profile names (matches what mkosi accepts).
-  case "$value" in
-    ""|*[!A-Za-z0-9._-]*) return 0 ;;
-    *) printf '%s\n' "$value" ;;
-  esac
-}
+# Per-host default profile resolution lives in scripts/lib/build-meta.sh
+# as ab_buildmeta_host_default_profile (shared with run.sh and the
+# live-test-USB / rollback-test tools).
 
 fetch_url() {
   local url="$1"
@@ -495,14 +482,12 @@ sanitize_image_component() {
 }
 
 image_id_for_target() {
-  # Always produce a (profile,host)-specific image id so artifacts in
-  # mkosi.output/ from one target never silently clobber another target's
-  # artifacts of the same name. Previously this only applied in --all
-  # mode; in single-target mode two back-to-back builds with different
-  # profiles would overwrite each other's image.raw / .root.raw / .efi /
-  # .conf / SHA256SUMS, and the per-host .latest-build.<p>.<h>.env
-  # metadata would then point to files containing the other target's
-  # bits. BUILD_ALL still exists but no longer changes the scheme.
+  # Produce a (profile,host)-specific image id so artifacts within a
+  # single build folder never collide with another target's artifacts of
+  # the same name, and so partition labels on a flashed disk identify
+  # which target produced them. Per-build folders under
+  # mkosi.output/builds/<ts>__<profile>[__<host>]/ then add a second
+  # layer of isolation across builds.
   #
   # If the host overlay provides hosts/<name>/image-id-suffix, the
   # first non-empty, non-comment token in that file replaces the whole
@@ -901,31 +886,69 @@ EOF
 
   built_image_basename="$(basename "$built_image_path")"
 
-  echo "==> Exporting sysupdate artifacts for $target_image_id..."
+  # Stage into a dedicated per-build folder and never pollute the shared
+  # mkosi.output/ namespace. All of this build's artifacts — the full
+  # disk .raw, the split-out sysupdate bits, per-build SHA256SUMS, and
+  # the build.env metadata — live under one folder so back-to-back
+  # builds of the same or different targets cannot overwrite each
+  # other, and so write-live-test-usb / test-rollback / run.sh can
+  # address a single build by a single path.
+  #
+  # The folder timestamp is wall-clock at staging time and is
+  # independent of IMAGE_VERSION. When the config checksum is unchanged
+  # IMAGE_VERSION is reused from .config-version (see top of this
+  # file), but the folder is still fresh so "list of builds ever made"
+  # reflects actual build invocations.
+  local build_ts build_dir
+  build_ts="$(ab_buildmeta_timestamp)"
+  build_dir="$(ab_buildmeta_stage_dir "$PROJECT_ROOT" "$build_ts" "$PROFILE" "$HOST")"
+  install -d -m 0755 "$build_dir"
+
+  # Move the raw / initrd / vmlinuz that mkosi just produced into the
+  # build folder. Move (not copy) so mkosi.output/ stays clean and
+  # the next target's mkosi invocation starts from an empty namespace.
+  local mk_out="$PROJECT_ROOT/mkosi.output"
+  local moved
+  shopt -s nullglob
+  for moved in \
+      "$mk_out/${target_image_id}_${IMAGE_VERSION}.raw" \
+      "$mk_out/${target_image_id}_${IMAGE_VERSION}.initrd" \
+      "$mk_out/${target_image_id}_${IMAGE_VERSION}.vmlinuz" \
+      "$mk_out/${target_image_id}_${IMAGE_VERSION}" \
+      "$mk_out/${target_image_id}_${IMAGE_VERSION}.efi" \
+      "$mk_out/${target_image_id}_${IMAGE_VERSION}_${TARGET_ARCH}.efi"; do
+    [[ -e "$moved" ]] || continue
+    mv "$moved" "$build_dir/"
+  done
+  shopt -u nullglob
+  built_image_path="$build_dir/$built_image_basename"
+  [[ -f "$built_image_path" ]] || {
+    echo "ERROR: expected built disk image at $built_image_path after staging" >&2
+    exit 1
+  }
+
+  echo "==> Exporting sysupdate artifacts for $target_image_id into $build_dir"
   "$PROJECT_ROOT/scripts/export-sysupdate-artifacts.sh" \
     --image-id "$target_image_id" \
     --version "$IMAGE_VERSION" \
     --arch "$TARGET_ARCH" \
     --image "$built_image_path" \
-    --output-dir "$PROJECT_ROOT/mkosi.output" \
+    --output-dir "$build_dir" \
     --entry-title "Debian Provisioning ($PROFILE${HOST:+/$HOST})" \
     --extra-kernel-args "$HOST_KERNEL_ARGS"
 
-  ab_buildmeta_write "$PROJECT_ROOT" \
+  ab_buildmeta_write_env "$build_dir" \
     AB_LAST_BUILD_IMAGE_ID "$target_image_id" \
     AB_LAST_BUILD_IMAGE_VERSION "$IMAGE_VERSION" \
     AB_LAST_BUILD_PROFILE "$PROFILE" \
     AB_LAST_BUILD_HOST "$HOST" \
     AB_LAST_BUILD_ARCH "$TARGET_ARCH" \
-    AB_LAST_BUILD_IMAGE_BASENAME "$built_image_basename"
+    AB_LAST_BUILD_IMAGE_BASENAME "$built_image_basename" \
+    AB_LAST_BUILD_TIMESTAMP "$build_ts"
 
-  ab_buildmeta_write_for "$PROJECT_ROOT" "$PROFILE" "$HOST" \
-    AB_LAST_BUILD_IMAGE_ID "$target_image_id" \
-    AB_LAST_BUILD_IMAGE_VERSION "$IMAGE_VERSION" \
-    AB_LAST_BUILD_PROFILE "$PROFILE" \
-    AB_LAST_BUILD_HOST "$HOST" \
-    AB_LAST_BUILD_ARCH "$TARGET_ARCH" \
-    AB_LAST_BUILD_IMAGE_BASENAME "$built_image_basename"
+  ab_buildmeta_update_latest_symlinks "$PROJECT_ROOT" "$build_dir" "$PROFILE" "$HOST"
+
+  echo "==> Build folder: $build_dir"
 }
 
 BUILD_TARGETS=()
@@ -998,7 +1021,7 @@ fi
 # (build the server profile) without having to remember to also type
 # --profile server every time.
 if [[ "$BUILD_ALL" == false && "$PROFILE_SET" == false && "$HOST_SET" == true ]]; then
-  host_default_profile="$(read_host_default_profile "$HOST")"
+  host_default_profile="$(ab_buildmeta_host_default_profile "$PROJECT_ROOT" "$HOST")"
   if [[ -n "$host_default_profile" ]]; then
     echo "==> Using default profile from hosts/$HOST/profile.default: $host_default_profile"
     PROFILE="$host_default_profile"

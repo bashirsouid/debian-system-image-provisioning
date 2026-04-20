@@ -10,7 +10,8 @@ source "$PROJECT_ROOT/scripts/lib/build-meta.sh"
 source "$PROJECT_ROOT/scripts/lib/confirm-destructive.sh"
 
 TARGET=""
-SOURCE_DIR="$PROJECT_ROOT/mkosi.output"
+BUILD_DIR=""
+SOURCE_DIR=""
 DEFINITIONS_DIR="$PROJECT_ROOT/mkosi.sysupdate"
 REPART_DIR="$PROJECT_ROOT/deploy.repart"
 BUNDLE_DIR="/root/ab-installer"
@@ -45,13 +46,17 @@ an internal disk from the running USB system.
 
 Options:
   --target PATH         removable USB disk device (or raw disk image file)
-  --source-dir DIR      built sysupdate artifacts directory (default: ./mkosi.output)
+  --build-dir PATH      specific build folder under mkosi.output/builds/ to
+                        flash. Takes precedence over --host / --profile.
   --definitions DIR     sysupdate transfer definitions (default: ./mkosi.sysupdate)
   --repart-dir DIR      bootstrap repart definitions (default: ./deploy.repart)
   --bundle-dir PATH     path inside the USB root where the installer bundle is copied
                         (default: /root/ab-installer)
-  --profile NAME        load build metadata for a specific profile
-  --host NAME           load build metadata for a specific host overlay
+  --profile NAME        resolve mkosi.output/builds/latest-NAME when --host
+                        is not given and --build-dir is not set
+  --host NAME           resolve mkosi.output/builds/latest-NAME (the host
+                        name); with no --build-dir this is the usual way
+                        to pick the right build
   --loader-timeout N    loader menu timeout to write to the USB ESP (default: 3)
   --usb-esp-size SIZE   override the ESP size used for the USB bootstrap
   --usb-root-size SIZE  override the per-slot root size used for the USB bootstrap
@@ -89,21 +94,46 @@ cleanup() {
 trap cleanup EXIT
 
 load_build_metadata() {
-  if [[ -n "$PROFILE" || -n "$HOST" ]]; then
-    ab_buildmeta_load_for "$PROJECT_ROOT" "$PROFILE" "$HOST" || die "no saved build metadata found for profile='$PROFILE' host='$HOST'"
-  else
-    ab_buildmeta_load "$PROJECT_ROOT" || die "no saved build metadata found; run ./build.sh first"
+  # Per-host profile default: when --host is given and --profile is not,
+  # look at hosts/<host>/profile.default so the tool picks the same
+  # profile build.sh would have used by default. This is only for
+  # display / identity output — resolution itself is by host symlink.
+  if [[ -n "$HOST" && -z "$PROFILE" ]]; then
+    local host_default_profile
+    host_default_profile="$(ab_buildmeta_host_default_profile "$PROJECT_ROOT" "$HOST")"
+    [[ -n "$host_default_profile" ]] && PROFILE="$host_default_profile"
   fi
+
+  if [[ -z "$BUILD_DIR" ]]; then
+    BUILD_DIR="$(ab_buildmeta_resolve_build_dir "$PROJECT_ROOT" "$PROFILE" "$HOST" || true)"
+  fi
+
+  if [[ -z "$BUILD_DIR" ]]; then
+    if [[ -n "$HOST" ]]; then
+      die "no build found for host='$HOST' under mkosi.output/builds/ — run ./build.sh --host '$HOST' first"
+    elif [[ -n "$PROFILE" ]]; then
+      die "no build found for profile='$PROFILE' under mkosi.output/builds/ — run ./build.sh --profile '$PROFILE' first"
+    else
+      die "no build found under mkosi.output/builds/ — run ./build.sh first, or pass --build-dir / --host / --profile"
+    fi
+  fi
+
+  [[ -d "$BUILD_DIR" ]] || die "resolved build folder does not exist: $BUILD_DIR"
+  ab_buildmeta_load_env "$BUILD_DIR" \
+    || die "build folder is missing build.env: $BUILD_DIR"
 
   IMAGE_ID="${AB_LAST_BUILD_IMAGE_ID:-}"
   IMAGE_VERSION="${AB_LAST_BUILD_IMAGE_VERSION:-}"
   IMAGE_ARCH="${AB_LAST_BUILD_ARCH:-}"
   IMAGE_BASENAME="${AB_LAST_BUILD_IMAGE_BASENAME:-}"
 
-  [[ -n "$IMAGE_ID" ]] || die "saved build metadata is missing AB_LAST_BUILD_IMAGE_ID"
-  [[ -n "$IMAGE_VERSION" ]] || die "saved build metadata is missing AB_LAST_BUILD_IMAGE_VERSION"
-  [[ -n "$IMAGE_ARCH" ]] || die "saved build metadata is missing AB_LAST_BUILD_ARCH"
-  [[ -n "$IMAGE_BASENAME" ]] || die "saved build metadata is missing AB_LAST_BUILD_IMAGE_BASENAME"
+  [[ -n "$IMAGE_ID" ]] || die "build.env is missing AB_LAST_BUILD_IMAGE_ID"
+  [[ -n "$IMAGE_VERSION" ]] || die "build.env is missing AB_LAST_BUILD_IMAGE_VERSION"
+  [[ -n "$IMAGE_ARCH" ]] || die "build.env is missing AB_LAST_BUILD_ARCH"
+  [[ -n "$IMAGE_BASENAME" ]] || die "build.env is missing AB_LAST_BUILD_IMAGE_BASENAME"
+
+  # Every path below this point reads from the resolved build folder.
+  SOURCE_DIR="$BUILD_DIR"
 }
 
 prepare_sysupdate_definitions_dir() {
@@ -127,9 +157,10 @@ prepare_sysupdate_definitions_dir() {
 
 print_selected_build() {
   local artifact_prefix="$IMAGE_ID""_""$IMAGE_VERSION""_""$IMAGE_ARCH"
-  echo "==> Selected build artifacts"
-  echo "    Profile:        ${PROFILE:-${AB_LAST_BUILD_PROFILE:-}}"
-  echo "    Host:           ${HOST:-${AB_LAST_BUILD_HOST:-}}"
+  echo "==> Selected build"
+  echo "    Build folder:   $BUILD_DIR"
+  echo "    Profile:        ${AB_LAST_BUILD_PROFILE:-${PROFILE:-unknown}}"
+  echo "    Host:           ${AB_LAST_BUILD_HOST:-${HOST:-none}}"
   echo "    Image id:       $IMAGE_ID"
   echo "    Image version:  $IMAGE_VERSION"
   echo "    Artifact prefix:$artifact_prefix"
@@ -205,8 +236,8 @@ confirm_usb_write_or_abort() {
   echo
   echo "Image to install:"
   ab_confirm_describe_image \
-    "${PROFILE:-${AB_LAST_BUILD_PROFILE:-unknown}}" \
-    "${HOST:-${AB_LAST_BUILD_HOST:-none}}" \
+    "${AB_LAST_BUILD_PROFILE:-unknown}" \
+    "${AB_LAST_BUILD_HOST:-none}" \
     "$IMAGE_ID" \
     "$IMAGE_VERSION" \
     "$IMAGE_ARCH" \
@@ -224,8 +255,8 @@ confirm_usb_write_or_abort() {
   existing_identity="$(ab_confirm_read_existing_identity "$TARGET" 2>/dev/null || true)"
   if [[ -n "$existing_identity" ]]; then
     ab_confirm_identity_mismatch \
-      "${PROFILE:-${AB_LAST_BUILD_PROFILE:-unknown}}" \
-      "${HOST:-${AB_LAST_BUILD_HOST:-none}}" \
+      "${AB_LAST_BUILD_PROFILE:-unknown}" \
+      "${AB_LAST_BUILD_HOST:-none}" \
       "$IMAGE_ID" \
       "$IMAGE_VERSION" \
       "$IMAGE_ARCH" \
@@ -289,20 +320,16 @@ required_bundle_files() {
     "$SOURCE_DIR/${prefix}.conf" \
     "$SOURCE_DIR/${prefix}.artifacts.env" \
     "$SOURCE_DIR/SHA256SUMS" \
+    "$SOURCE_DIR/build.env" \
     "$PROJECT_ROOT/bin/bootstrap-ab-disk.sh" \
     "$PROJECT_ROOT/installer/live-usb-install.sh" \
     "$PROJECT_ROOT/bin/sysupdate-local-update.sh" \
-    "$PROJECT_ROOT/scripts/lib/host-deps.sh"
+    "$PROJECT_ROOT/scripts/lib/host-deps.sh" \
+    "$PROJECT_ROOT/scripts/lib/build-meta.sh"
 
   find "${GENERATED_DEFINITIONS_DIR:-$PROJECT_ROOT/mkosi.sysupdate}" -maxdepth 1 -type f -name '*.transfer' -print
   find "$PROJECT_ROOT/deploy.repart" -maxdepth 1 -type f -name '*.conf' -print
 
-  if [[ -f "$SOURCE_DIR/.latest-build.env" ]]; then
-    printf '%s\n' "$SOURCE_DIR/.latest-build.env"
-  fi
-  if [[ -f "$(ab_buildmeta_file_for "$PROJECT_ROOT" "${PROFILE:-${AB_LAST_BUILD_PROFILE:-}}" "${HOST:-${AB_LAST_BUILD_HOST:-}}")" ]]; then
-    printf '%s\n' "$(ab_buildmeta_file_for "$PROJECT_ROOT" "${PROFILE:-${AB_LAST_BUILD_PROFILE:-}}" "${HOST:-${AB_LAST_BUILD_HOST:-}}")"
-  fi
   if [[ "$EMBED_FULL_IMAGE" == true ]]; then
     printf '%s\n' "$SOURCE_DIR/$IMAGE_BASENAME"
   fi
@@ -452,24 +479,24 @@ copy_bundle() {
   copy_file_preserving_layout "$PROJECT_ROOT/installer/live-usb-install.sh" "$bundle_root/installer/live-usb-install.sh"
   copy_file_preserving_layout "$PROJECT_ROOT/bin/sysupdate-local-update.sh" "$bundle_root/bin/sysupdate-local-update.sh"
   copy_file_preserving_layout "$PROJECT_ROOT/scripts/lib/host-deps.sh" "$bundle_root/scripts/lib/host-deps.sh"
+  copy_file_preserving_layout "$PROJECT_ROOT/scripts/lib/build-meta.sh" "$bundle_root/scripts/lib/build-meta.sh"
   chmod 0755 "$bundle_root/bin/bootstrap-ab-disk.sh" "$bundle_root/installer/live-usb-install.sh" "$bundle_root/bin/sysupdate-local-update.sh"
 
   cp -a "${GENERATED_DEFINITIONS_DIR:-$PROJECT_ROOT/mkosi.sysupdate}/." "$bundle_root/mkosi.sysupdate/"
   cp -a "$PROJECT_ROOT/deploy.repart/." "$bundle_root/deploy.repart/"
 
+  # The bundle's mkosi.output/ is flat (no builds/ subtree) because the
+  # installer on the USB expects a single transfer-source directory. We
+  # copy only the artifacts that installer + bootstrap need, and carry
+  # build.env alongside so the installer has full identity info.
   local prefix="$IMAGE_ID""_""$IMAGE_VERSION""_""$IMAGE_ARCH"
   copy_file_preserving_layout "$SOURCE_DIR/${prefix}.root.raw" "$bundle_root/mkosi.output/${prefix}.root.raw"
   copy_file_preserving_layout "$SOURCE_DIR/${prefix}.efi" "$bundle_root/mkosi.output/${prefix}.efi"
   copy_file_preserving_layout "$SOURCE_DIR/${prefix}.conf" "$bundle_root/mkosi.output/${prefix}.conf"
   copy_file_preserving_layout "$SOURCE_DIR/${prefix}.artifacts.env" "$bundle_root/mkosi.output/${prefix}.artifacts.env"
   copy_file_preserving_layout "$SOURCE_DIR/SHA256SUMS" "$bundle_root/mkosi.output/SHA256SUMS"
+  copy_file_preserving_layout "$SOURCE_DIR/build.env" "$bundle_root/mkosi.output/build.env"
 
-  if [[ -f "$SOURCE_DIR/.latest-build.env" ]]; then
-    copy_file_preserving_layout "$SOURCE_DIR/.latest-build.env" "$bundle_root/mkosi.output/.latest-build.env"
-  fi
-  if [[ -f "$(ab_buildmeta_file_for "$PROJECT_ROOT" "${PROFILE:-${AB_LAST_BUILD_PROFILE:-}}" "${HOST:-${AB_LAST_BUILD_HOST:-}}")" ]]; then
-    copy_file_preserving_layout "$(ab_buildmeta_file_for "$PROJECT_ROOT" "${PROFILE:-${AB_LAST_BUILD_PROFILE:-}}" "${HOST:-${AB_LAST_BUILD_HOST:-}}")" "$bundle_root/mkosi.output/$(basename "$(ab_buildmeta_file_for "$PROJECT_ROOT" "${PROFILE:-${AB_LAST_BUILD_PROFILE:-}}" "${HOST:-${AB_LAST_BUILD_HOST:-}}")")"
-  fi
   if [[ "$EMBED_FULL_IMAGE" == true ]]; then
     copy_file_preserving_layout "$SOURCE_DIR/$IMAGE_BASENAME" "$bundle_root/mkosi.output/$IMAGE_BASENAME"
   fi
@@ -515,8 +542,8 @@ EOF2
   git_rev="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
   ab_confirm_write_usb_identity \
     "$bundle_root/USB-IDENTITY.env" \
-    "${PROFILE:-${AB_LAST_BUILD_PROFILE:-unknown}}" \
-    "${HOST:-${AB_LAST_BUILD_HOST:-}}" \
+    "${AB_LAST_BUILD_PROFILE:-unknown}" \
+    "${AB_LAST_BUILD_HOST:-}" \
     "$IMAGE_ID" \
     "$IMAGE_VERSION" \
     "$IMAGE_ARCH" \
@@ -529,8 +556,8 @@ while [[ $# -gt 0 ]]; do
       TARGET="${2:?missing target path}"
       shift 2
       ;;
-    --source-dir)
-      SOURCE_DIR="${2:?missing source dir}"
+    --build-dir)
+      BUILD_DIR="${2:?missing build dir}"
       shift 2
       ;;
     --definitions)
@@ -597,7 +624,6 @@ done
 
 [[ $EUID -eq 0 ]] || die "write-live-test-usb.sh must run as root"
 [[ -n "$TARGET" ]] || die "--target is required"
-[[ -d "$SOURCE_DIR" ]] || die "source directory not found: $SOURCE_DIR"
 [[ -d "$DEFINITIONS_DIR" ]] || die "definitions directory not found: $DEFINITIONS_DIR"
 [[ -d "$REPART_DIR" ]] || die "repart directory not found: $REPART_DIR"
 

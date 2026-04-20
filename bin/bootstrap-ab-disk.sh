@@ -7,7 +7,7 @@ source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
 # shellcheck source=SCRIPTDIR/../scripts/lib/confirm-destructive.sh
 source "$PROJECT_ROOT/scripts/lib/confirm-destructive.sh"
 TARGET=""
-SOURCE_DIR="$PROJECT_ROOT/mkosi.output"
+SOURCE_DIR="$PROJECT_ROOT/mkosi.output/builds/latest"
 DEFINITIONS_DIR="$PROJECT_ROOT/mkosi.sysupdate"
 REPART_DIR="$PROJECT_ROOT/deploy.repart"
 LOADER_TIMEOUT=3
@@ -27,7 +27,9 @@ systemd A/B-like workflow:
 
 Options:
   --target PATH          whole disk block device or raw disk image file
-  --source-dir DIR       sysupdate source artifact directory (default: ./mkosi.output)
+  --source-dir DIR       sysupdate source artifact directory, typically a
+                         build folder under mkosi.output/builds/
+                         (default: ./mkosi.output/builds/latest)
   --definitions DIR      sysupdate transfer definitions (default: ./mkosi.sysupdate)
   --repart-dir DIR       repart definitions (default: ./deploy.repart)
   --loader-timeout N     write loader.conf timeout value (default: 3)
@@ -164,12 +166,10 @@ EOF2
 }
 
 infer_image_id() {
-  local latest_env
   [[ -n "$IMAGE_ID" ]] && return 0
-  latest_env="$SOURCE_DIR/.latest-build.env"
-  if [[ -f "$latest_env" ]]; then
-    # shellcheck disable=SC1090
-    source "$latest_env"
+  if [[ -r "$SOURCE_DIR/build.env" ]]; then
+    # shellcheck disable=SC1091
+    . "$SOURCE_DIR/build.env"
     IMAGE_ID="${AB_LAST_BUILD_IMAGE_ID:-}"
   fi
 }
