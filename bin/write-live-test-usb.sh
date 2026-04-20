@@ -2,11 +2,11 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/lib/host-deps.sh
+# shellcheck source=SCRIPTDIR/../scripts/lib/host-deps.sh
 source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
-# shellcheck source=scripts/lib/build-meta.sh
+# shellcheck source=SCRIPTDIR/../scripts/lib/build-meta.sh
 source "$PROJECT_ROOT/scripts/lib/build-meta.sh"
-# shellcheck source=scripts/lib/confirm-destructive.sh
+# shellcheck source=SCRIPTDIR/../scripts/lib/confirm-destructive.sh
 source "$PROJECT_ROOT/scripts/lib/confirm-destructive.sh"
 
 TARGET=""
@@ -36,7 +36,7 @@ USB_STORAGE_LABEL="USBDATA"
 
 usage() {
   cat <<'USAGE'
-Usage: sudo ./scripts/write-live-test-usb.sh --target /dev/sdX [options]
+Usage: sudo ./bin/write-live-test-usb.sh --target /dev/sdX [options]
 
 Bootstraps a removable USB drive with the native systemd-repart +
 systemd-sysupdate layout, then copies an installer bundle onto the USB so you
@@ -289,9 +289,9 @@ required_bundle_files() {
     "$SOURCE_DIR/${prefix}.conf" \
     "$SOURCE_DIR/${prefix}.artifacts.env" \
     "$SOURCE_DIR/SHA256SUMS" \
-    "$PROJECT_ROOT/scripts/bootstrap-ab-disk.sh" \
-    "$PROJECT_ROOT/scripts/live-usb-install.sh" \
-    "$PROJECT_ROOT/scripts/sysupdate-local-update.sh" \
+    "$PROJECT_ROOT/bin/bootstrap-ab-disk.sh" \
+    "$PROJECT_ROOT/installer/live-usb-install.sh" \
+    "$PROJECT_ROOT/bin/sysupdate-local-update.sh" \
     "$PROJECT_ROOT/scripts/lib/host-deps.sh"
 
   find "${GENERATED_DEFINITIONS_DIR:-$PROJECT_ROOT/mkosi.sysupdate}" -maxdepth 1 -type f -name '*.transfer' -print
@@ -446,13 +446,13 @@ copy_bundle() {
 
   echo "==> Copying installer bundle into $BUNDLE_DIR"
   install -d -m 0700 "$bundle_root"
-  install -d -m 0755 "$bundle_root/scripts/lib" "$bundle_root/mkosi.output" "$bundle_root/mkosi.sysupdate" "$bundle_root/deploy.repart"
+  install -d -m 0755 "$bundle_root/bin" "$bundle_root/installer" "$bundle_root/scripts/lib" "$bundle_root/mkosi.output" "$bundle_root/mkosi.sysupdate" "$bundle_root/deploy.repart"
 
-  copy_file_preserving_layout "$PROJECT_ROOT/scripts/bootstrap-ab-disk.sh" "$bundle_root/scripts/bootstrap-ab-disk.sh"
-  copy_file_preserving_layout "$PROJECT_ROOT/scripts/live-usb-install.sh" "$bundle_root/scripts/live-usb-install.sh"
-  copy_file_preserving_layout "$PROJECT_ROOT/scripts/sysupdate-local-update.sh" "$bundle_root/scripts/sysupdate-local-update.sh"
+  copy_file_preserving_layout "$PROJECT_ROOT/bin/bootstrap-ab-disk.sh" "$bundle_root/bin/bootstrap-ab-disk.sh"
+  copy_file_preserving_layout "$PROJECT_ROOT/installer/live-usb-install.sh" "$bundle_root/installer/live-usb-install.sh"
+  copy_file_preserving_layout "$PROJECT_ROOT/bin/sysupdate-local-update.sh" "$bundle_root/bin/sysupdate-local-update.sh"
   copy_file_preserving_layout "$PROJECT_ROOT/scripts/lib/host-deps.sh" "$bundle_root/scripts/lib/host-deps.sh"
-  chmod 0755 "$bundle_root/scripts/bootstrap-ab-disk.sh" "$bundle_root/scripts/live-usb-install.sh" "$bundle_root/scripts/sysupdate-local-update.sh"
+  chmod 0755 "$bundle_root/bin/bootstrap-ab-disk.sh" "$bundle_root/installer/live-usb-install.sh" "$bundle_root/bin/sysupdate-local-update.sh"
 
   cp -a "${GENERATED_DEFINITIONS_DIR:-$PROJECT_ROOT/mkosi.sysupdate}/." "$bundle_root/mkosi.sysupdate/"
   cp -a "$PROJECT_ROOT/deploy.repart/." "$bundle_root/deploy.repart/"
@@ -487,7 +487,7 @@ Recommended workflow after booting from the USB:
   sudo /root/INSTALL-TO-INTERNAL-DISK.sh
 
 That wrapper runs:
-  $BUNDLE_DIR/scripts/live-usb-install.sh
+  $BUNDLE_DIR/installer/live-usb-install.sh
 
 The bundled installer defaults to a fresh destructive A/B bootstrap onto the
 selected target disk. By default it creates:
@@ -502,7 +502,7 @@ EOF2
 
   cat > "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh" <<EOF2
 #!/usr/bin/env bash
-exec $BUNDLE_DIR/scripts/live-usb-install.sh "\$@"
+exec $BUNDLE_DIR/installer/live-usb-install.sh "\$@"
 EOF2
   chmod 0750 "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh"
 
@@ -657,7 +657,7 @@ bootstrap_args=(
 [[ -n "$IMAGE_ID" ]] && bootstrap_args+=(--image-id "$IMAGE_ID")
 
 echo "==> Bootstrapping hardware test USB on $TARGET"
-"$PROJECT_ROOT/scripts/bootstrap-ab-disk.sh" "${bootstrap_args[@]}"
+"$PROJECT_ROOT/bin/bootstrap-ab-disk.sh" "${bootstrap_args[@]}"
 
 resolve_disk_device
 # Format the trailing exFAT storage partition (if created by repart)

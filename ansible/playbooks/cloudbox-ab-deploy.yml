@@ -157,7 +157,7 @@
       ansible.builtin.command:
         chdir: "{{ remote_project_root }}"
         argv:
-          - ./scripts/bootstrap-ab-disk.sh
+          - ./bin/bootstrap-ab-disk.sh
           - --target
           - "{{ cloudbox_bootstrap_target }}"
           - --loader-timeout
@@ -170,7 +170,7 @@
       ansible.builtin.command:
         chdir: "{{ remote_project_root }}"
         argv:
-          - ./scripts/sysupdate-local-update.sh
+          - ./bin/sysupdate-local-update.sh
           - --source-dir
           - ./mkosi.output
       when: not cloudbox_bootstrap_mode

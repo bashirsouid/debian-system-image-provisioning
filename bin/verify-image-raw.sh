@@ -1,12 +1,12 @@
 #!/bin/bash
-# scripts/verify-image-raw.sh
+# bin/verify-image-raw.sh
 #
 # Sanity-checks a built image.raw before you flash or publish it. Fails
 # loudly if anything is wrong so you do not boot a broken image onto
 # real hardware.
 #
 # Usage:
-#   ./scripts/verify-image-raw.sh [--image mkosi.output/debian-provisioning_<ver>.raw]
+#   ./bin/verify-image-raw.sh [--image mkosi.output/debian-provisioning_<ver>.raw]
 #
 # Checks:
 #   1. File exists and is > 100 MiB.

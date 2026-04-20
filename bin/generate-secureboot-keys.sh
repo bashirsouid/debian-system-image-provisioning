@@ -32,7 +32,7 @@ FORCE=0
 
 usage() {
   cat <<'USAGE'
-Usage: ./scripts/generate-secureboot-keys.sh [--force] [--cn "Name"] [--days N]
+Usage: ./bin/generate-secureboot-keys.sh [--force] [--cn "Name"] [--days N]
 
 Generates a local Secure Boot signing key + self-signed cert under
 .secureboot/. Refuses to overwrite unless --force is passed.

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/lib/host-deps.sh
+# shellcheck source=SCRIPTDIR/../scripts/lib/host-deps.sh
 source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
 SOURCE_DIR="$PROJECT_ROOT/mkosi.output"
 DEFINITIONS_DIR="/usr/lib/sysupdate.d"
@@ -10,7 +10,7 @@ REBOOT_AFTER=false
 
 usage() {
   cat <<'USAGE'
-Usage: sudo ./scripts/sysupdate-local-update.sh [options]
+Usage: sudo ./bin/sysupdate-local-update.sh [options]
 
 Apply the native systemd-sysupdate flow to the currently installed system.
 This expects the machine to have already been bootstrapped onto the new

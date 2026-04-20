@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/test-rollback.sh
+# bin/test-rollback.sh
 #
 # Automated smoke test for the retained-version rollback path:
 #
@@ -42,9 +42,9 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/lib/host-deps.sh
+# shellcheck source=SCRIPTDIR/../scripts/lib/host-deps.sh
 source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
-# shellcheck source=scripts/lib/build-meta.sh
+# shellcheck source=SCRIPTDIR/../scripts/lib/build-meta.sh
 source "$PROJECT_ROOT/scripts/lib/build-meta.sh"
 
 PROFILE=""
@@ -63,7 +63,7 @@ die()  { printf '[test-rollback] ERROR: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'USAGE'
-Usage: ./scripts/test-rollback.sh [options]
+Usage: ./bin/test-rollback.sh [options]
 
 Runs a rollback smoke test against a pre-built image.
 
@@ -238,7 +238,7 @@ inject_failing_hook() {
   install -d -m 0755 "$MOUNT_DIR/usr/local/libexec/ab-health-check.d"
   cat > "$MOUNT_DIR/usr/local/libexec/ab-health-check.d/99-test-fail" <<'HOOK'
 #!/usr/bin/env bash
-# Installed by scripts/test-rollback.sh. Deliberately fails so the
+# Installed by bin/test-rollback.sh. Deliberately fails so the
 # health gate marks every boot of this version unhealthy, driving the
 # boot-counter path through systemd-boot.
 echo "test-rollback: forcing health hook failure" >&2
@@ -276,7 +276,7 @@ bootstrap_disk() {
   log "Creating $DISK_SIZE raw disk at $DISK_IMG"
   truncate -s "$DISK_SIZE" "$DISK_IMG"
   log "Bootstrapping with bootstrap-ab-disk.sh"
-  "$PROJECT_ROOT/scripts/bootstrap-ab-disk.sh" \
+  "$PROJECT_ROOT/bin/bootstrap-ab-disk.sh" \
     --target "$DISK_IMG" \
     --source-dir "$SOURCE_DIR" \
     --image-id "$IMAGE_ID" \

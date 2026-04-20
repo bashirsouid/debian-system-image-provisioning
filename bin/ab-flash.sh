@@ -3,7 +3,7 @@ set -euo pipefail
 shopt -s nullglob
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/lib/host-deps.sh
+# shellcheck source=SCRIPTDIR/../scripts/lib/host-deps.sh
 source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
 IMAGE="$PROJECT_ROOT/mkosi.output/image.raw"
 CONFIG_FILE="$PROJECT_ROOT/ab-flash.conf"
@@ -11,7 +11,7 @@ ASSUME_YES=false
 
 usage() {
   cat <<'USAGE'
-Usage: sudo ./scripts/ab-flash.sh [options]
+Usage: sudo ./bin/ab-flash.sh [options]
 
 LEGACY PATH: this script predates the native systemd-repart +
 systemd-sysupdate workflow. Keep it only as a manual fallback.
@@ -186,7 +186,7 @@ write_loader_conf() {
   local timeout="$2"
   install -d -m 0755 "$(dirname "$path")"
   cat > "$path" <<EOF2
-# Managed by scripts/ab-flash.sh
+# Managed by bin/ab-flash.sh
 timeout $timeout
 editor yes
 console-mode keep
@@ -204,7 +204,7 @@ write_loader_entry() {
 
   install -d -m 0755 "$(dirname "$path")"
   cat > "$path" <<EOF2
-# Managed by scripts/ab-flash.sh
+# Managed by bin/ab-flash.sh
 title $title
 sort-key debian-ab
 version $version

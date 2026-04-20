@@ -86,7 +86,7 @@ Meaning: more than 7 days since a successful A/B bless on this slot.
 
 Not a paging event; this is a warning. Indicates you have stopped
 deploying updates. Either:
-- deploy a new image (recommended: `./scripts/sysupdate-local-update.sh`),
+- deploy a new image (recommended: `./bin/sysupdate-local-update.sh`),
 - or adjust `AB_MONITOR_STALE_AB_SECS` in `/etc/default/ab-monitor`
   if 7 days is wrong for this host.
 

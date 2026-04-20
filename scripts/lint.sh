@@ -31,9 +31,9 @@ OVERLAY_SCRIPTS_WE_OWN=(
     scripts/verify-build-secrets.sh
     scripts/package-credentials.sh
     scripts/package-alert-credentials.sh
-    scripts/hash-password.sh
+    bin/hash-password.sh
     scripts/usb-write-and-verify.sh
-    scripts/verify-image-raw.sh
+    bin/verify-image-raw.sh
     scripts/fetch-third-party-keys.sh
 )
 

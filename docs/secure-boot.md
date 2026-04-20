@@ -41,7 +41,7 @@ chain, and never get flashed.
 
 ## What the repo does
 
-* `scripts/generate-secureboot-keys.sh` generates a local RSA-4096
+* `bin/generate-secureboot-keys.sh` generates a local RSA-4096
   signing key + self-signed X.509 cert in `.secureboot/`.
 * `.secureboot/` is gitignored.
 * `hosts/<n>/mkosi.conf.d/30-secure-boot.conf` points mkosi at the
@@ -69,7 +69,7 @@ The repo does NOT do:
 
 ```
 apt-get install openssl sbsigntool efitools
-./scripts/generate-secureboot-keys.sh
+./bin/generate-secureboot-keys.sh
 ```
 
 Files produced under `.secureboot/`:
@@ -192,7 +192,7 @@ routine use.
 
 ## Key rotation
 
-1. `./scripts/generate-secureboot-keys.sh --force` (copy
+1. `./bin/generate-secureboot-keys.sh --force` (copy
    `.secureboot/` to `.secureboot-old/` first if you want both keys
    active during the transition).
 2. Rebuild and deploy new images to every host while the OLD key is

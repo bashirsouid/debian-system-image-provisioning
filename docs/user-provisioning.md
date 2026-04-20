@@ -80,9 +80,9 @@ sample ships a usable plaintext default instead.
 ## Generating `password_hash` without touching disk
 
 ```bash
-./scripts/hash-password.sh
+./bin/hash-password.sh
 # or, with a ready-to-paste JSON entry:
-./scripts/hash-password.sh --json --username demo --uid 1000
+./bin/hash-password.sh --json --username demo --uid 1000
 ```
 
 The script:

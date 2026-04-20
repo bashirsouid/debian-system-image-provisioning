@@ -37,7 +37,7 @@ The script:
 5. Reads back exactly the source size from the target and hashes.
 6. Refuses to report success if the hashes differ.
 
-Integrate it into `scripts/write-live-test-usb.sh` by replacing the
+Integrate it into `bin/write-live-test-usb.sh` by replacing the
 `dd` line that writes the image with a call to the helper. See
 `PATCH.md` at the root of this bundle for the exact patch.
 

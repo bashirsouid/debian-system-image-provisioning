@@ -237,12 +237,39 @@ matching UKI and supplying the root partition label plus
 host-specific extra kernel arguments. When Secure Boot is enabled
 for the host, the `.efi` is signed with `.secureboot/db.key`.
 
+## Verifying a built image
+
+Before flashing to a USB or publishing an image, sanity-check the
+`.raw` with:
+
+    ./bin/verify-image-raw.sh                               # picks newest mkosi.output/*.raw
+    ./bin/verify-image-raw.sh --image path/to/image.raw     # specific file
+
+That runs fast partition-level checks (size, GPT layout, presence of an
+ESP and a Linux root partition). Re-run with `sudo` for filesystem-level
+checks that mount the image read-only via `systemd-dissect` and
+verify:
+
+* the ESP contains a valid bootloader (`/EFI/BOOT/BOOT*.EFI` fallback
+  or `/EFI/systemd/`)
+* the root partition has a recognizable Debian `/etc/os-release`
+* `package-credentials.sh` substituted a real username into
+  `/etc/ssh/sshd_config.d/50-hardening.conf` (not the
+  `__INITIAL_USERNAME__` placeholder)
+* optional encrypted credstore blobs
+  (`tailscale-authkey`, `cloudflared-token`) exist with mode `0600`
+* `/var/lib/systemd/credential.secret` exists with mode `0400`
+
+The script fails loudly on any hard check; soft checks print warnings
+and continue. This is cheap to run after every build and before every
+`./bin/write-live-test-usb.sh` or remote deploy.
+
 ## Host dependency auto-install
 
 The repo scripts auto-install missing host-side tools on Debian and
 Ubuntu build or deploy machines before they fail, so `./build.sh`,
-`./run.sh`, `./clean.sh`, `./scripts/bootstrap-ab-disk.sh`, and
-`./scripts/sysupdate-local-update.sh` behave like project
+`./run.sh`, `./clean.sh`, `./bin/bootstrap-ab-disk.sh`, and
+`./bin/sysupdate-local-update.sh` behave like project
 entrypoints.
 
 * auto-install is enabled by default
@@ -316,7 +343,7 @@ See `hosts/macbookpro13-2019-t2/README.md` for host-specific notes.
 After a successful build, turn the current version into a bootable
 hardware-test USB:
 
-    sudo ./scripts/write-live-test-usb.sh --target /dev/sdX --host macbookpro13-2019-t2
+    sudo ./bin/write-live-test-usb.sh --target /dev/sdX --host macbookpro13-2019-t2
 
 The USB bootstraps itself with `systemd-repart` +
 `systemd-sysupdate`, boots the exact version just built, and
@@ -399,7 +426,7 @@ Build:
 
 Bootstrap a target disk or raw disk image:
 
-    sudo ./scripts/bootstrap-ab-disk.sh --target /dev/sdX
+    sudo ./bin/bootstrap-ab-disk.sh --target /dev/sdX
 
 This destroys the target partition table, creates the ESP and two
 empty root partitions with `systemd-repart`, installs `systemd-boot`
@@ -410,7 +437,7 @@ into the target ESP, and seeds the first retained version using
 
 On a machine already running this layout:
 
-    sudo ./scripts/sysupdate-local-update.sh --source-dir ./mkosi.output --reboot
+    sudo ./bin/sysupdate-local-update.sh --source-dir ./mkosi.output --reboot
 
 This stages the next version with `systemd-sysupdate` and reboots
 into the new trial entry.
@@ -463,22 +490,63 @@ call `dpkg-maintscript-helper`.
 
 ## Repo layout
 
-* `mkosi.sysupdate/` — sysupdate transfer definitions
-* `deploy.repart/` — one-time disk layout for bootstrap
-* `scripts/bootstrap-ab-disk.sh` — destructive first install
-* `scripts/sysupdate-local-update.sh` — in-place updates
-* `scripts/write-live-test-usb.sh` — hardware-test USB bootstrap
-* `scripts/live-usb-install.sh` — interactive installer run from USB
-* `scripts/export-sysupdate-artifacts.sh` — exports versioned
-  root/UKI/BLS artifacts after build
-* `scripts/generate-secureboot-keys.sh` — local SB key + cert
-  generator
-* `scripts/verify-no-baked-identity.sh` — preflight audit for
-  baked-in per-machine files
-* `scripts/verify-build-secrets.sh` — preflight audit for
-  `.mkosi-secrets/` shape and permissions
-* `scripts/package-credentials.sh` — encrypt per-host secrets into
-  the image's credstore
+Shell scripts in this repo are split into three directories by who or what
+actually runs them. Each of those directories also has its own short
+`README.md` that lists the scripts it contains:
+
+* `bin/` — **commands you run by hand on a build or admin host.** This is the
+  supported public surface. Everything here has a `Usage:` help block and is
+  referenced from the docs and the top-level `README.md`.
+  + `bin/bootstrap-ab-disk.sh` — destructive first install onto a blank or
+    offline target
+  + `bin/sysupdate-local-update.sh` — in-place updates on an already
+    bootstrapped machine
+  + `bin/write-live-test-usb.sh` — hardware-test USB bootstrap
+  + `bin/verify-image-raw.sh` — sanity-check a built `image.raw` before
+    flashing (GPT layout, ESP bootloader, rootfs identity, credential
+    permissions)
+  + `bin/generate-secureboot-keys.sh` — local Secure Boot key + cert
+    generator
+  + `bin/hash-password.sh` — interactive helper that prints a yescrypt hash
+    or a `.users.json` entry
+  + `bin/test-rollback.sh` — smoke test for the retained-version rollback
+    path in QEMU
+  + `bin/ab-flash.sh` — **legacy** manual A/B flasher, kept as a fallback
+    only (the native `bootstrap-ab-disk.sh` + `sysupdate-local-update.sh`
+    path is the design center now)
+* `scripts/` — **build-pipeline internals.** These are invoked by `build.sh`,
+  `update-3rd-party-deps.sh`, CI, or by each other. They are not meant to be
+  run by hand, they are not individually documented as a user-facing command,
+  and their argument shapes are allowed to change when the build scripts
+  change.
+  + `scripts/fetch-third-party-keys.sh` — fetch and pin third-party apt keys
+  + `scripts/package-credentials.sh`,
+    `scripts/package-alert-credentials.sh` — encrypt per-host secrets into
+    the image's credstore
+  + `scripts/export-sysupdate-artifacts.sh` — export versioned
+    root/UKI/BLS artifacts after a build
+  + `scripts/verify-build-secrets.sh`,
+    `scripts/verify-no-baked-identity.sh` — preflight checks that
+    `build.sh` runs automatically
+  + `scripts/usb-write-and-verify.sh` — raw-image write + hash-back helper
+    called from `bin/write-live-test-usb.sh`
+  + `scripts/lint.sh` — shellcheck runner used by `build.sh` and CI
+  + `scripts/lib/` — sourced helpers (`host-deps.sh`, `build-meta.sh`,
+    `confirm-destructive.sh`); these are not executable entry points
+* `installer/` — **scripts copied into the hardware-test USB bundle and run
+  from the booted USB**, not from your build host.
+  + `installer/live-usb-install.sh` — interactive installer that
+    `write-live-test-usb.sh` embeds in the USB image, invoked from the
+    booted USB via `/root/INSTALL-TO-INTERNAL-DISK.sh`
+
+Other directories worth knowing about:
+
+* `mkosi.sysupdate/` — sysupdate transfer definitions baked into the image
+* `deploy.repart/` — one-time disk layout used during bootstrap
+* `mkosi.extra/usr/local/` — code that actually ends up running on the
+  booted target machine (health gate, user provisioning, remote-access
+  helpers, etc.) — distinct from everything under `bin/`, `scripts/`, and
+  `installer/`, which all run off-target
 * `hosts/cloudbox/` — ARM64 server overlay
 * `hosts/evox2/` — Intel workstation overlay
 * `hosts/macbookpro13-2019-t2/` — Intel T2 MacBook Pro overlay

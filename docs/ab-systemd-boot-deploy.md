@@ -1,6 +1,6 @@
 # Native retained-version deployment with systemd-boot
 
-The repository no longer treats `scripts/ab-flash.sh` as the preferred updater.
+The repository no longer treats `bin/ab-flash.sh` as the preferred updater.
 
 The recommended path is now:
 
@@ -11,7 +11,7 @@ The recommended path is now:
 
 ## The first install
 
-Use `scripts/bootstrap-ab-disk.sh` against a blank or offline target disk or raw image.
+Use `bin/bootstrap-ab-disk.sh` against a blank or offline target disk or raw image.
 That script:
 
 - destroys the target partition table
@@ -19,9 +19,16 @@ That script:
 - installs `systemd-boot`
 - seeds the first retained version from `mkosi.output/` using `systemd-sysupdate`
 
+Before running `bootstrap-ab-disk.sh` (or a remote Ansible deploy) against
+real hardware, it is cheap and worth running
+`./bin/verify-image-raw.sh` on the freshly built `mkosi.output/*.raw`.
+It catches truncated writes, missing ESP bootloader, and unsubstituted
+credential templates that would otherwise only surface on the target
+after flashing.
+
 ## Later updates
 
-Use `scripts/sysupdate-local-update.sh` on an already bootstrapped machine.
+Use `bin/sysupdate-local-update.sh` on an already bootstrapped machine.
 That stages a new retained version with `systemd-sysupdate`. The next boot becomes a trial boot.
 
 ## Why this is preferred

@@ -1,14 +1,14 @@
 #!/bin/bash
-# scripts/hash-password.sh
+# bin/hash-password.sh
 #
 # Interactive helper: prompts for a password (no echo), prints either:
 #   1. just the yescrypt hash (default, back-compatible with old callers), or
 #   2. a ready-to-paste JSON user entry for .users.json (with --json).
 #
 # Usage:
-#   ./scripts/hash-password.sh                          # print hash only
-#   ./scripts/hash-password.sh --json --username demo   # print full entry
-#   ./scripts/hash-password.sh --json --username alice --uid 1001
+#   ./bin/hash-password.sh                          # print hash only
+#   ./bin/hash-password.sh --json --username demo   # print full entry
+#   ./bin/hash-password.sh --json --username alice --uid 1001
 #
 # Does not write the password or the hash to any file.
 
@@ -21,7 +21,7 @@ GROUPS_VAL="sudo,audio,video,render,input,plugdev,dialout"
 
 usage() {
     cat <<'USAGE'
-Usage: ./scripts/hash-password.sh [options]
+Usage: ./bin/hash-password.sh [options]
 
 Options:
   --json              emit a complete JSON entry ready for .users.json
@@ -38,10 +38,10 @@ host's mkpasswd supports it, sha512crypt otherwise.
 
 Examples:
   # Produce just the hash (back-compatible behavior):
-  ./scripts/hash-password.sh
+  ./bin/hash-password.sh
 
   # Produce a full user entry to paste into .users.json:
-  ./scripts/hash-password.sh --json --username bashir --uid 1000
+  ./bin/hash-password.sh --json --username bashir --uid 1000
 USAGE
 }
 

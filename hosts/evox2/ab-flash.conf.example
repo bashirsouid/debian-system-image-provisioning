@@ -1,7 +1,7 @@
 # Example evox2-oriented A/B deployment config.
 #
 # Replace these with the real stable by-partlabel/by-partuuid symlinks from the
-# machine before using scripts/ab-flash.sh.
+# machine before using bin/ab-flash.sh.
 
 ESP_PART=/dev/disk/by-partlabel/ESP
 SLOT_A_ROOT=/dev/disk/by-partlabel/ROOT_A

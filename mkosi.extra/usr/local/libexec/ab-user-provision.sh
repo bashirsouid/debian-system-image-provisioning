@@ -127,7 +127,7 @@ for idx in $(seq 0 $((user_count - 1))); do
             usermod -p "${password_hash}" "${username}"
         elif [[ -n "${password_plain}" ]]; then
             if [[ "${VARIANT_ID}" == "prod" ]]; then
-                fail "refusing to apply plaintext password for ${username} on a prod image. Use password_hash. See scripts/hash-password.sh."
+                fail "refusing to apply plaintext password for ${username} on a prod image. Use password_hash. See bin/hash-password.sh."
             fi
             log "WARN: applying plaintext password for ${username} (VARIANT_ID=${VARIANT_ID}; dev-only path)"
             # chpasswd with -c yescrypt asks libcrypt to hash it correctly.

@@ -755,7 +755,7 @@ ERROR: Secure Boot is enabled for host $HOST (see $sb_drop_in)
 but the signing key and certificate are missing from .secureboot/.
 
 Run:
-  ./scripts/generate-secureboot-keys.sh
+  ./bin/generate-secureboot-keys.sh
 
 Back up .secureboot/db.key offline before rebuilding — losing it
 orphans every machine already enrolled with it.
@@ -771,7 +771,7 @@ explicit opt-out. Every host-targeted build must do one of:
   * Opt in (recommended): create
       hosts/$HOST/mkosi.conf.d/30-secure-boot.conf
     (see hosts/evox2/mkosi.conf.d/30-secure-boot.conf for a template)
-    and run ./scripts/generate-secureboot-keys.sh.
+    and run ./bin/generate-secureboot-keys.sh.
 
   * Opt out: create hosts/$HOST/secure-boot.disabled with a one-line
     reason. The reason is printed on every build so the exception
@@ -1023,7 +1023,7 @@ To create it:
   \$EDITOR $USERS_FILE              # set a real password / password_hash
 
 Prefer password_hash over password. Generate one with:
-  ./scripts/hash-password.sh --hash-only
+  ./bin/hash-password.sh --hash-only
 EOF
   exit 1
 fi

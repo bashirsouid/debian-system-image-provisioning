@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-# shellcheck source=scripts/lib/host-deps.sh
+# shellcheck source=SCRIPTDIR/../scripts/lib/host-deps.sh
 source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
 
 TARGET=""
@@ -18,7 +18,7 @@ DATA_SIZE_TOKEN="${AB_INSTALL_DATA_SIZE:-none}"
 
 usage() {
   cat <<'USAGE'
-Usage: sudo ./scripts/live-usb-install.sh [options]
+Usage: sudo ./installer/live-usb-install.sh [options]
 
 Interactive installer intended for a booted hardware-test USB. By default it
 asks for a target disk, offers a destructive fresh A/B bootstrap, and can also
@@ -315,7 +315,7 @@ run_fresh_bootstrap() {
   trap 'rm -rf "$tmp_repart"' RETURN
   generate_repart_dir "$tmp_repart"
 
-  "$PROJECT_ROOT/scripts/bootstrap-ab-disk.sh" \
+  "$PROJECT_ROOT/bin/bootstrap-ab-disk.sh" \
     --target "$TARGET" \
     --source-dir "$SOURCE_DIR" \
     --definitions "$DEFINITIONS_DIR" \

@@ -34,7 +34,7 @@ Intentional choices:
 Practical notes:
 
 - disable Secure Boot in macOS Recovery before trying to boot Linux on a T2 Mac
-- the recommended first real-hardware test is now a removable USB created with `sudo ./scripts/write-live-test-usb.sh --target /dev/sdX`
+- the recommended first real-hardware test is now a removable USB created with `sudo ./bin/write-live-test-usb.sh --target /dev/sdX`
 - boot that USB from Startup Manager, verify Wi-Fi/Bluetooth/audio/sleep on real hardware, and only then run `/root/INSTALL-TO-INTERNAL-DISK.sh` from the booted USB
 - keep some macOS recovery/firmware path around if you can; it is still the cleanest way to handle Apple firmware updates and recovery
 - if Bluetooth audio glitches, prefer 5 GHz Wi-Fi over 2.4 GHz on BCM4377-based machines

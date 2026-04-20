@@ -2,9 +2,9 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/lib/host-deps.sh
+# shellcheck source=SCRIPTDIR/../scripts/lib/host-deps.sh
 source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
-# shellcheck source=scripts/lib/confirm-destructive.sh
+# shellcheck source=SCRIPTDIR/../scripts/lib/confirm-destructive.sh
 source "$PROJECT_ROOT/scripts/lib/confirm-destructive.sh"
 TARGET=""
 SOURCE_DIR="$PROJECT_ROOT/mkosi.output"
@@ -17,7 +17,7 @@ ALLOW_FIXED_DISK=no
 
 usage() {
   cat <<'USAGE'
-Usage: sudo ./scripts/bootstrap-ab-disk.sh --target /dev/sdX [options]
+Usage: sudo ./bin/bootstrap-ab-disk.sh --target /dev/sdX [options]
 
 Destructively prepare a blank/offline disk or raw disk image for the native
 systemd A/B-like workflow:
@@ -155,7 +155,7 @@ write_loader_conf() {
   local path="$1"
   install -d -m 0755 "$(dirname "$path")"
   cat > "$path" <<EOF2
-# Managed by scripts/bootstrap-ab-disk.sh
+# Managed by bin/bootstrap-ab-disk.sh
 default *@saved
 editor yes
 timeout $LOADER_TIMEOUT

@@ -5,7 +5,7 @@
       "",
       "Password options, in order of precedence:",
       "  1. 'password_hash' — a pre-hashed crypt string. Generate one with:",
-      "        ./scripts/hash-password.sh --hash-only",
+      "        ./bin/hash-password.sh --hash-only",
       "     A password_hash of '!' or '*' means the account is LOCKED and",
       "     no login is possible. That is a lock marker, not a real hash.",
       "  2. 'password' — plaintext; build.sh hashes it at build time.",
