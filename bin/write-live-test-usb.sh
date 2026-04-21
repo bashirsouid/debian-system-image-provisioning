@@ -463,22 +463,25 @@ select_root_slot_for_seed() {
 # Seed the chosen ROOT_PART with ${prefix}.root.raw and relabel it to
 # ${IMAGE_ID}_${IMAGE_VERSION}. This replaces the previous
 # systemd-sysupdate --image seeding flow.
+# Seed the chosen ROOT_PART with ${prefix}.root.raw and relabel it to
+# ${IMAGE_ID}_${IMAGE_VERSION}. This replaces the previous
+# systemd-sysupdate --image seeding flow.
 seed_first_root_slot() {
     local prefix partnum new_label
-
+    
     [[ -n "${IMAGE_ID:-}" && -n "${IMAGE_VERSION:-}" && -n "${IMAGE_ARCH:-}" ]] \
         || die "seed_first_root_slot: IMAGE_ID/IMAGE_VERSION/IMAGE_ARCH not set"
-
+    
     prefix="${IMAGE_ID}_${IMAGE_VERSION}_${IMAGE_ARCH}"
     [[ -f "$SOURCE_DIR/${prefix}.root.raw" ]] \
         || die "root filesystem image not found: $SOURCE_DIR/${prefix}.root.raw"
-
+    
     select_root_slot_for_seed
-
+    
     # Write the filesystem image into the chosen partition
     echo "==> Writing root filesystem image into $ROOT_PART from ${prefix}.root.raw"
     dd if="$SOURCE_DIR/${prefix}.root.raw" of="$ROOT_PART" bs=4M status=progress conv=fsync
-
+    
     # Grow the ext4 filesystem to fill the partition (best-effort)
     if command -v e2fsck >/dev/null 2>&1 && command -v resize2fs >/dev/null 2>&1; then
         echo "==> Running e2fsck + resize2fs on $ROOT_PART"
@@ -487,13 +490,12 @@ seed_first_root_slot() {
     else
         echo "WARNING: e2fsck/resize2fs not available; skipping filesystem grow step" >&2
     fi
-
+    
     # Update the GPT PARTLABEL for this partition so it encodes
     # IMAGE_ID + IMAGE_VERSION. We assume util-linux (sfdisk) is present.
     new_label="${IMAGE_ID}_${IMAGE_VERSION}"
+    partnum="${ROOT_PART##*[!0-9]}"
     if command -v sfdisk >/dev/null 2>&1; then
-        # Extract partition number: works for /dev/sda3, /dev/nvme0n1p2, /dev/mmcblk0p1
-        partnum="${ROOT_PART##*[!0-9]}"
         if [[ -n "$partnum" ]]; then
             echo "==> Setting GPT PARTLABEL for $ROOT_PART -> $new_label"
             sfdisk --part-label "$DISK_DEVICE" "$partnum" "$new_label" || \
@@ -505,6 +507,18 @@ seed_first_root_slot() {
         echo "WARNING: sfdisk not available; leaving PARTLABEL for $ROOT_PART unchanged" >&2
     fi
 
+    # --- NEW: Set A/B Discoverable Partition Flags ---
+    # The mkosi UKI relies on systemd-gpt-auto-generator to find the root partition.
+    # For A/B partitions, systemd requires the GPT "Successful" flag (bit 56) to be set, 
+    # otherwise it ignores the partition and fails with "Failed to start initrd-switch-root.service".
+    if command -v sgdisk >/dev/null 2>&1 && [[ -n "$partnum" ]]; then
+        echo "==> Setting GPT A/B 'Successful' flag (bit 56) on $ROOT_PART"
+        sgdisk --attributes="$partnum:set:56" "$DISK_DEVICE" >/dev/null || \
+            echo "WARNING: failed to set GPT attribute 56 on $ROOT_PART" >&2
+    else
+        echo "WARNING: sgdisk not available; UKI might fail to discover root partition" >&2
+    fi
+    
     # Mount the seeded root for bundle copy
     ROOT_MOUNT="$(mktemp -d /tmp/ab-live-root.XXXXXX)"
     echo "==> Mounting seeded root $ROOT_PART on $ROOT_MOUNT"
@@ -521,7 +535,7 @@ seed_first_root_slot() {
     if command -v blockdev >/dev/null 2>&1; then
         blockdev --rereadpt "$DISK_DEVICE" >/dev/null 2>&1 || true
     fi
-
+    
     local esp_part
     esp_part="$(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE" | awk '$2 == "ESP" { print $1; exit }')"
     if [[ -n "$esp_part" ]]; then
@@ -529,19 +543,19 @@ seed_first_root_slot() {
         esp_mount="$(mktemp -d /tmp/ab-live-esp.XXXXXX)"
         echo "==> Mounting ESP $esp_part to seed bootloader files"
         mount "$esp_part" "$esp_mount"
-
+        
         install -d -m 0755 "$esp_mount/EFI/Linux" "$esp_mount/loader/entries"
-
+        
         if [[ -f "$SOURCE_DIR/${prefix}.efi" ]]; then
             echo "==> Copying UKI to ESP: ${prefix}.efi"
             cp "$SOURCE_DIR/${prefix}.efi" "$esp_mount/EFI/Linux/"
         fi
-
+        
         if [[ -f "$SOURCE_DIR/${prefix}.conf" ]]; then
             echo "==> Copying boot entry to ESP: ${prefix}.conf"
             cp "$SOURCE_DIR/${prefix}.conf" "$esp_mount/loader/entries/"
         fi
-
+        
         umount "$esp_mount"
         rmdir "$esp_mount"
     else
