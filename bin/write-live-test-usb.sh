@@ -506,18 +506,6 @@ seed_first_root_slot() {
     else
         echo "WARNING: sfdisk not available; leaving PARTLABEL for $ROOT_PART unchanged" >&2
     fi
-
-    # --- NEW: Set A/B Discoverable Partition Flags ---
-    # The mkosi UKI relies on systemd-gpt-auto-generator to find the root partition.
-    # For A/B partitions, systemd requires the GPT "Successful" flag (bit 56) to be set, 
-    # otherwise it ignores the partition and fails with "Failed to start initrd-switch-root.service".
-    if command -v sgdisk >/dev/null 2>&1 && [[ -n "$partnum" ]]; then
-        echo "==> Setting GPT A/B 'Successful' flag (bit 56) on $ROOT_PART"
-        sgdisk --attributes="$partnum:set:56" "$DISK_DEVICE" >/dev/null || \
-            echo "WARNING: failed to set GPT attribute 56 on $ROOT_PART" >&2
-    else
-        echo "WARNING: sgdisk not available; UKI might fail to discover root partition" >&2
-    fi
     
     # Mount the seeded root for bundle copy
     ROOT_MOUNT="$(mktemp -d /tmp/ab-live-root.XXXXXX)"
@@ -552,8 +540,19 @@ seed_first_root_slot() {
         fi
         
         if [[ -f "$SOURCE_DIR/${prefix}.conf" ]]; then
-            echo "==> Copying boot entry to ESP: ${prefix}.conf"
+            echo "==> Copying boot entry to ESP: ${prefix}.conf and injecting PARTUUID override"
+            
+            # Get the exact PARTUUID of the root partition we just flashed
+            local root_uuid
+            root_uuid="$(lsblk -nrpo PARTUUID "$ROOT_PART")"
+            
+            # Copy the conf file to the ESP
             cp "$SOURCE_DIR/${prefix}.conf" "$esp_mount/loader/entries/"
+            
+            # Inject the explicit root=PARTUUID=... override so the UKI initrd doesn't fail
+            if [[ -n "$root_uuid" ]]; then
+                sed -i "s|^options .*|& root=PARTUUID=$root_uuid rootfstype=ext4 rw|" "$esp_mount/loader/entries/${prefix}.conf"
+            fi
         fi
         
         umount "$esp_mount"
