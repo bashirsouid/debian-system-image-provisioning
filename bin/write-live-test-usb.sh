@@ -148,14 +148,14 @@ need_cmd() {
 }
 
 cleanup() {
-  set +e
-  [[ -n "${ROOT_MOUNT:-}" ]] && mountpoint -q "$ROOT_MOUNT" && umount "$ROOT_MOUNT"
-  [[ -n "${ROOT_MOUNT:-}" && -d "$ROOT_MOUNT" ]] && rmdir "$ROOT_MOUNT"
-  [[ -n "${TEMP_REPART_DIR:-}" && -d "$TEMP_REPART_DIR" ]] && rm -rf "$TEMP_REPART_DIR"
-  [[ -n "${TEMP_DEFINITIONS_DIR:-}" && -d "$TEMP_DEFINITIONS_DIR" ]] && rm -rf "$TEMP_DEFINITIONS_DIR"
-  if [[ -n "${LOOPDEV:-}" ]]; then
-    losetup -d "$LOOPDEV" >/dev/null 2>&1 || true
-  fi
+    set +e
+    [[ -n "${ROOT_MOUNT:-}" ]] && mountpoint -q "$ROOT_MOUNT" && umount "$ROOT_MOUNT"
+    [[ -n "${ROOT_MOUNT:-}" && -d "$ROOT_MOUNT" ]] && rmdir "$ROOT_MOUNT"
+    [[ -n "${TEMP_REPART_DIR:-}" && -d "$TEMP_REPART_DIR" ]] && rm -rf "$TEMP_REPART_DIR"
+    [[ -n "${TEMP_DEFINITIONS_DIR:-}" && -d "$TEMP_DEFINITIONS_DIR" ]] && rm -rf "$TEMP_DEFINITIONS_DIR"
+    if [[ -n "${LOOPDEV:-}" ]]; then
+        losetup -d "$LOOPDEV" >/dev/null 2>&1 || true
+    fi
 }
 trap cleanup EXIT
 
@@ -957,6 +957,9 @@ seed_first_root_slot
 # With ROOT_MOUNT set by seed_first_root_slot(), copy the installer
 # bundle onto the seeded root filesystem.
 copy_bundle
+
+echo "==> Syncing data to USB drive (this may take several minutes)..."
+sync
 
 echo "==> Hardware test USB is ready"
 echo " Boot target: $TARGET"
