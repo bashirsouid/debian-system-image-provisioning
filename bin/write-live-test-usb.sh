@@ -509,6 +509,35 @@ seed_first_root_slot() {
     ROOT_MOUNT="$(mktemp -d /tmp/ab-live-root.XXXXXX)"
     echo "==> Mounting seeded root $ROOT_PART on $ROOT_MOUNT"
     mount "$ROOT_PART" "$ROOT_MOUNT"
+
+    # --- Seed the ESP ---
+    # We also need to copy the UKI (.efi) and bootloader entry (.conf) to the ESP,
+    # because we skipped systemd-sysupdate which normally handles this step.
+    local esp_part
+    esp_part="$(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE" | awk '$2 == "ESP" { print $1; exit }')"
+    if [[ -n "$esp_part" ]]; then
+        local esp_mount
+        esp_mount="$(mktemp -d /tmp/ab-live-esp.XXXXXX)"
+        echo "==> Mounting ESP $esp_part to seed bootloader files"
+        mount "$esp_part" "$esp_mount"
+
+        install -d -m 0755 "$esp_mount/EFI/Linux" "$esp_mount/loader/entries"
+
+        if [[ -f "$SOURCE_DIR/${prefix}.efi" ]]; then
+            echo "==> Copying UKI to ESP: ${prefix}.efi"
+            cp "$SOURCE_DIR/${prefix}.efi" "$esp_mount/EFI/Linux/"
+        fi
+
+        if [[ -f "$SOURCE_DIR/${prefix}.conf" ]]; then
+            echo "==> Copying boot entry to ESP: ${prefix}.conf"
+            cp "$SOURCE_DIR/${prefix}.conf" "$esp_mount/loader/entries/"
+        fi
+
+        umount "$esp_mount"
+        rmdir "$esp_mount"
+    else
+        echo "WARNING: Could not locate ESP partition to copy bootloader files." >&2
+    fi
 }
 
 required_bundle_files() {
