@@ -513,6 +513,15 @@ seed_first_root_slot() {
     # --- Seed the ESP ---
     # We also need to copy the UKI (.efi) and bootloader entry (.conf) to the ESP,
     # because we skipped systemd-sysupdate which normally handles this step.
+    
+    # Wait for udev to see the new partitions from systemd-repart
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm settle --timeout=5 >/dev/null 2>&1 || true
+    fi
+    if command -v blockdev >/dev/null 2>&1; then
+        blockdev --rereadpt "$DISK_DEVICE" >/dev/null 2>&1 || true
+    fi
+
     local esp_part
     esp_part="$(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE" | awk '$2 == "ESP" { print $1; exit }')"
     if [[ -n "$esp_part" ]]; then
