@@ -34,6 +34,7 @@ HOST_KERNEL_ARGS=""
 CURRENT_CHECKSUM=""
 NON_INTERACTIVE=false
 ALLOW_ROOT_LOGIN=false
+ALLOW_EMERGENCY_ROOT=false
 ROOT_PASSWORD_HASH=""
 
 HOST_USER_NAME="$(id -un)"
@@ -60,7 +61,8 @@ Options:
   --sync-host-ids=yes|no   when username matches the invoking host user,
                            copy that user's uid/gid/group into the image
   --non-interactive        disable all interactive prompts (default to No)
-  --allow-root             TEMPORARY: allow root login with password 'llama'
+  --allow-root             TEMPORARY: allow root login with password (interactive)
+  --allow-emergency-shell  TEMPORARY: enable passwordless root shell on tty9
 USAGE
 }
 
@@ -427,6 +429,8 @@ render_build_info() {
   local image_version="$3"
   local target_arch="$4"
   local host_kernel_args="$5"
+  local root_password_hash="$6"
+  local allow_emergency_root="$7"
   local build_time build_user build_host build_git_rev build_git_dirty
   local awesome_git_rev awesome_git_dirty kernel_track mkosi_version host_overlay
 
@@ -458,7 +462,9 @@ render_build_info() {
     AB_IMAGE_ID "$image_id" \
     AB_IMAGE_VERSION "$image_version" \
     AB_IMAGE_ARCH "$target_arch" \
-    AB_HOST_KERNEL_ARGS "$host_kernel_args"
+    AB_HOST_KERNEL_ARGS "$host_kernel_args" \
+    AB_ROOT_PASSWORD_HASH "$root_password_hash" \
+    AB_ALLOW_EMERGENCY_ROOT "$allow_emergency_root"
 }
 
 render_sysupdate_transfers() {
@@ -827,7 +833,9 @@ EOF
   render_users_conf "$METADATA_DIR/usr/local/etc/users.conf"
   USERS_FILE="$_original_users_file"
   chmod 0600 "$METADATA_DIR/usr/local/etc/users.conf"
-  render_build_info "$METADATA_DIR/usr/local/share/ab-image-meta/build-info.env" "$target_image_id" "$IMAGE_VERSION" "$TARGET_ARCH" "$HOST_KERNEL_ARGS"
+  render_build_info "$METADATA_DIR/usr/local/share/ab-image-meta/build-info.env" \
+    "$target_image_id" "$IMAGE_VERSION" "$TARGET_ARCH" "$HOST_KERNEL_ARGS" \
+    "$ROOT_PASSWORD_HASH" "$ALLOW_EMERGENCY_ROOT"
   render_sysupdate_transfers "$METADATA_DIR/usr/lib/sysupdate.d" "$target_image_id"
 
   if [[ "${AB_SKIP_OVERLAY_GATES:-no}" != "yes" ]]; then
@@ -958,7 +966,8 @@ EOF
     --image "$built_image_path" \
     --output-dir "$build_dir" \
     --entry-title "Debian Provisioning ($PROFILE${HOST:+/$HOST})" \
-    --extra-kernel-args "$HOST_KERNEL_ARGS"
+    --extra-kernel-args "$HOST_KERNEL_ARGS" \
+    --allow-emergency-shell "$ALLOW_EMERGENCY_ROOT"
 
   ab_buildmeta_write_env "$build_dir" \
     AB_LAST_BUILD_IMAGE_ID "$target_image_id" \
@@ -967,7 +976,8 @@ EOF
     AB_LAST_BUILD_HOST "$HOST" \
     AB_LAST_BUILD_ARCH "$TARGET_ARCH" \
     AB_LAST_BUILD_IMAGE_BASENAME "$built_image_basename" \
-    AB_LAST_BUILD_TIMESTAMP "$build_ts"
+    AB_LAST_BUILD_TIMESTAMP "$build_ts" \
+    AB_ALLOW_EMERGENCY_ROOT "$ALLOW_EMERGENCY_ROOT"
 
   ab_buildmeta_update_latest_symlinks "$PROJECT_ROOT" "$build_dir" "$PROFILE" "$HOST"
 
@@ -1018,6 +1028,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-root)
       ALLOW_ROOT_LOGIN=true
+      shift
+      ;;
+    --allow-emergency-shell)
+      ALLOW_EMERGENCY_ROOT=true
       shift
       ;;
     -h|--help)

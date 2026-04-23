@@ -579,6 +579,14 @@ seed_first_root_slot() {
             else
                 echo "WARNING: root PARTUUID unknown; leaving boot entry root= unchanged." >&2
             fi
+
+            # Patch systemd.debug-shell=1 if requested
+            if [[ "${AB_ALLOW_EMERGENCY_ROOT:-}" == "true" ]]; then
+                echo "==> Patching boot entry with systemd.debug-shell=1"
+                if ! grep -q 'systemd.debug-shell=1' "$conf_dest"; then
+                    sed -i -E 's#^options(.*)#options\1 systemd.debug-shell=1#g' "$conf_dest"
+                fi
+            fi
         fi
         
         umount "$esp_mount"

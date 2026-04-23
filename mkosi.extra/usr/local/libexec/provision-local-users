@@ -224,7 +224,12 @@ apply_password_state() {
 NOLOGIN_SHELL="$(pick_nologin_shell)"
 
 echo "==> [FIRSTBOOT] provisioning local users"
-usermod -L -s "$NOLOGIN_SHELL" root || true
+# Only lock root if it is not explicitly provisioned in the users file.
+# This ensures that build-time root provisioning (for emergency mode)
+# or first-boot root provisioning is not accidentally wiped out.
+if ! grep -q '^root:' "$USERS_FILE"; then
+    usermod -L -s "$NOLOGIN_SHELL" root || true
+fi
 
 if [[ ! -s "$USERS_FILE" ]]; then
     echo "==> [FIRSTBOOT] no user data found; nothing to do"

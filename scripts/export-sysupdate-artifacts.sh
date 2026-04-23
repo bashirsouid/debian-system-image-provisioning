@@ -12,6 +12,7 @@ IMAGE_PATH=""
 OUTPUT_DIR=""
 ENTRY_TITLE="Debian Provisioning"
 EXTRA_KERNEL_ARGS=""
+ALLOW_EMERGENCY_ROOT=false
 
 usage() {
   cat <<'USAGE'
@@ -20,6 +21,7 @@ Usage: export-sysupdate-artifacts.sh --image-id ID --version VER --arch ARCH --i
 Options:
   --entry-title TITLE        title to use in generated Boot Loader Specification entry
   --extra-kernel-args ARGS   extra host-specific kernel command line arguments
+  --allow-emergency-shell B  enable passwordless root shell on tty9 (true/false)
 USAGE
 }
 
@@ -67,6 +69,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --extra-kernel-args)
       EXTRA_KERNEL_ARGS="${2:-}"
+      shift 2
+      ;;
+    --allow-emergency-shell)
+      ALLOW_EMERGENCY_ROOT="${2:-false}"
       shift 2
       ;;
     -h|--help)
@@ -149,6 +155,9 @@ install -m 0644 "$uki_source" "$uki_artifact"
 entry_options="root=PARTLABEL=${IMAGE_ID}_${IMAGE_VERSION} rw"
 if [[ -n "$EXTRA_KERNEL_ARGS" ]]; then
   entry_options="$entry_options $(trim "$EXTRA_KERNEL_ARGS")"
+fi
+if [[ "$ALLOW_EMERGENCY_ROOT" == "true" ]]; then
+  entry_options="$entry_options systemd.debug-shell=1"
 fi
 
 cat > "$entry_artifact" <<EOF2

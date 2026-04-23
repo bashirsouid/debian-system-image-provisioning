@@ -68,6 +68,15 @@ enable_target_unit multi-user.target provision-local-users.service
 enable_target_unit boot-complete.target ab-health-gate.service
 
 load_build_info
+if [[ -n "${AB_ROOT_PASSWORD_HASH:-}" ]]; then
+  echo "==> [FINALIZE] applying temporary root password for emergency mode"
+  # usermod -p sets the encrypted password; usermod -U unlocks the account.
+  # We use chroot to ensure the commands run against the image's /etc/shadow.
+  chroot "$ROOT" usermod -p "$AB_ROOT_PASSWORD_HASH" root
+  chroot "$ROOT" usermod -U root
+  # Ensure root has a real shell for emergency mode
+  chroot "$ROOT" usermod -s /bin/bash root
+fi
 if [[ -n "${AB_IMAGE_ID:-}" ]]; then
   echo "==> [FINALIZE] setting IMAGE_ID=$AB_IMAGE_ID in /usr/lib/os-release"
   append_or_replace_os_release_key IMAGE_ID "$AB_IMAGE_ID"
