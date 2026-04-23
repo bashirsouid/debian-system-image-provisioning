@@ -33,6 +33,8 @@ TARGET_ARCH=""
 HOST_KERNEL_ARGS=""
 CURRENT_CHECKSUM=""
 NON_INTERACTIVE=false
+ALLOW_ROOT_LOGIN=false
+ROOT_PASSWORD_HASH=""
 
 HOST_USER_NAME="$(id -un)"
 HOST_UID="$(id -u)"
@@ -58,6 +60,7 @@ Options:
   --sync-host-ids=yes|no   when username matches the invoking host user,
                            copy that user's uid/gid/group into the image
   --non-interactive        disable all interactive prompts (default to No)
+  --allow-root             TEMPORARY: allow root login with password 'llama'
 USAGE
 }
 
@@ -296,6 +299,7 @@ render_users_conf() {
   local output="$1"
   : > "$output"
 
+    local root_seen=false
   while IFS= read -r entry; do
     local username can_login requested_shell password_hash password_plain groups_csv
     local requested_uid requested_gid requested_primary_group requested_home
@@ -320,7 +324,16 @@ render_users_conf() {
     requested_primary_group="$(jq -r '.primary_group // empty' <<<"$entry")"
     requested_home="$(jq -r '.home // empty' <<<"$entry")"
 
-    [[ -n "$username" && "$username" != "root" ]] || continue
+    if [[ "$username" == "root" ]]; then
+      root_seen=true
+      if [[ "$ALLOW_ROOT_LOGIN" != "true" ]]; then
+        continue
+      fi
+      # Always use the interactively provided password for root
+      password_hash="$ROOT_PASSWORD_HASH"
+    else
+      [[ -n "$username" ]] || continue
+    fi
 
     if [[ -z "$password_hash" && -n "$password_plain" ]]; then
       password_hash="$(hash_password "$password_plain")"
@@ -359,6 +372,11 @@ render_users_conf() {
       "$effective_primary_group" \
       "$effective_home" >> "$output"
   done < <(jq -c '.[]' "$USERS_FILE")
+
+  if [[ "$ALLOW_ROOT_LOGIN" == "true" && "$root_seen" == "false" ]]; then
+    printf 'root:true:/bin/bash::%s:0:0:root:/root\n' \
+      "$ROOT_PASSWORD_HASH" >> "$output"
+  fi
 }
 
 git_value() {
@@ -998,6 +1016,10 @@ while [[ $# -gt 0 ]]; do
       NON_INTERACTIVE=true
       shift
       ;;
+    --allow-root)
+      ALLOW_ROOT_LOGIN=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -1009,6 +1031,42 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$ALLOW_ROOT_LOGIN" == true ]]; then
+  if [[ "$NON_INTERACTIVE" == true ]]; then
+    echo "ERROR: --allow-root requires interaction to set a password but --non-interactive is set." >&2
+    exit 1
+  fi
+
+  echo "==> [SECURITY] Root login enabled for this build."
+  echo "    Please enter the temporary root password."
+  
+  # Ensure we have a TTY for reading password
+  if [[ ! -t 0 ]]; then
+    echo "ERROR: --allow-root requires an interactive terminal." >&2
+    exit 1
+  fi
+
+  stty -echo
+  printf "Password: "
+  read -r root_pass
+  printf "\nConfirm Password: "
+  read -r root_confirm
+  stty echo
+  printf "\n"
+
+  if [[ "$root_pass" != "$root_confirm" ]]; then
+    echo "ERROR: Passwords do not match." >&2
+    exit 1
+  fi
+
+  if [[ -z "$root_pass" ]]; then
+    echo "ERROR: Password cannot be empty." >&2
+    exit 1
+  fi
+
+  ROOT_PASSWORD_HASH="$(hash_password "$root_pass")"
+fi
 
 if [[ "$BUILD_ALL" == true && ( "$PROFILE_SET" == true || "$HOST_SET" == true ) ]]; then
   echo "ERROR: --all cannot be combined with explicit --profile or --host" >&2

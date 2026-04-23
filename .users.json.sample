@@ -20,7 +20,10 @@
       "--host <name>.",
       "",
       "Fields that are understood:",
-      "  username              required, cannot be 'root' (root is always locked)",
+      "  username              required. 'root' is normally locked but can be",
+      "                        temporarily enabled via ./build.sh --allow-root (which",
+      "                        sets the password to 'llama').",
+      "",
       "  can_login             default true; false => system/service account",
       "  uid, gid              optional; default is auto-assigned. May be 'host'",
       "                        to copy the build host's value, useful for the",
@@ -50,4 +53,13 @@
     "force_password_change_on_first_login": false,
     "ssh_authorized_keys_file": ".mkosi-secrets/ssh-authorized-keys"
   }
+  /*
+  ,
+  {
+    "username": "root",
+    "comment": "Root login (only works if build.sh --allow-root is used)",
+    "can_login": true,
+    "password": "rootroot"
+  }
+  */
 ]

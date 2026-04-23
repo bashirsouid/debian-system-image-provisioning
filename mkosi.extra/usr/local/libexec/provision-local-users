@@ -234,7 +234,6 @@ fi
 
 while IFS=':' read -r username can_login requested_shell groups_csv password_hash requested_uid requested_gid primary_group requested_home; do
     [[ -n "$username" ]] || continue
-    [[ "$username" != "root" ]] || continue
 
     primary_group="$(trim "$primary_group")"
     requested_home="$(trim "$requested_home")"
