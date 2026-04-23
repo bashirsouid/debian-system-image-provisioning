@@ -35,6 +35,7 @@ CURRENT_CHECKSUM=""
 NON_INTERACTIVE=false
 ALLOW_ROOT_LOGIN=false
 ALLOW_EMERGENCY_ROOT=false
+FORCE_EMERGENCY_SHELL=false
 ROOT_PASSWORD_HASH=""
 
 HOST_USER_NAME="$(id -un)"
@@ -63,6 +64,7 @@ Options:
   --non-interactive        disable all interactive prompts (default to No)
   --allow-root             TEMPORARY: allow root login with password (interactive)
   --allow-emergency-shell  TEMPORARY: enable passwordless root shell on tty9
+  --force-emergency-shell  TEMPORARY: force debug shell to tty1 (implies --allow-emergency-shell)
 USAGE
 }
 
@@ -431,6 +433,7 @@ render_build_info() {
   local host_kernel_args="$5"
   local root_password_hash="$6"
   local allow_emergency_root="$7"
+  local force_emergency_shell="$8"
   local build_time build_user build_host build_git_rev build_git_dirty
   local awesome_git_rev awesome_git_dirty kernel_track mkosi_version host_overlay
 
@@ -464,7 +467,8 @@ render_build_info() {
     AB_IMAGE_ARCH "$target_arch" \
     AB_HOST_KERNEL_ARGS "$host_kernel_args" \
     AB_ROOT_PASSWORD_HASH "$root_password_hash" \
-    AB_ALLOW_EMERGENCY_ROOT "$allow_emergency_root"
+    AB_ALLOW_EMERGENCY_ROOT "$allow_emergency_root" \
+    AB_FORCE_EMERGENCY_SHELL "$force_emergency_shell"
 }
 
 render_sysupdate_transfers() {
@@ -835,7 +839,7 @@ EOF
   chmod 0600 "$METADATA_DIR/usr/local/etc/users.conf"
   render_build_info "$METADATA_DIR/usr/local/share/ab-image-meta/build-info.env" \
     "$target_image_id" "$IMAGE_VERSION" "$TARGET_ARCH" "$HOST_KERNEL_ARGS" \
-    "$ROOT_PASSWORD_HASH" "$ALLOW_EMERGENCY_ROOT"
+    "$ROOT_PASSWORD_HASH" "$ALLOW_EMERGENCY_ROOT" "$FORCE_EMERGENCY_SHELL"
   render_sysupdate_transfers "$METADATA_DIR/usr/lib/sysupdate.d" "$target_image_id"
 
   if [[ "${AB_SKIP_OVERLAY_GATES:-no}" != "yes" ]]; then
@@ -967,7 +971,8 @@ EOF
     --output-dir "$build_dir" \
     --entry-title "Debian Provisioning ($PROFILE${HOST:+/$HOST})" \
     --extra-kernel-args "$HOST_KERNEL_ARGS" \
-    --allow-emergency-shell "$ALLOW_EMERGENCY_ROOT"
+    --allow-emergency-shell "$ALLOW_EMERGENCY_ROOT" \
+    --force-emergency-shell "$FORCE_EMERGENCY_SHELL"
 
   ab_buildmeta_write_env "$build_dir" \
     AB_LAST_BUILD_IMAGE_ID "$target_image_id" \
@@ -977,7 +982,8 @@ EOF
     AB_LAST_BUILD_ARCH "$TARGET_ARCH" \
     AB_LAST_BUILD_IMAGE_BASENAME "$built_image_basename" \
     AB_LAST_BUILD_TIMESTAMP "$build_ts" \
-    AB_ALLOW_EMERGENCY_ROOT "$ALLOW_EMERGENCY_ROOT"
+    AB_ALLOW_EMERGENCY_ROOT "$ALLOW_EMERGENCY_ROOT" \
+    AB_FORCE_EMERGENCY_SHELL "$FORCE_EMERGENCY_SHELL"
 
   ab_buildmeta_update_latest_symlinks "$PROJECT_ROOT" "$build_dir" "$PROFILE" "$HOST"
 
@@ -1032,6 +1038,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-emergency-shell)
       ALLOW_EMERGENCY_ROOT=true
+      shift
+      ;;
+    --force-emergency-shell)
+      ALLOW_EMERGENCY_ROOT=true
+      FORCE_EMERGENCY_SHELL=true
       shift
       ;;
     -h|--help)

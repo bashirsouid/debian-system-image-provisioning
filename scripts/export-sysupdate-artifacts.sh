@@ -13,6 +13,7 @@ OUTPUT_DIR=""
 ENTRY_TITLE="Debian Provisioning"
 EXTRA_KERNEL_ARGS=""
 ALLOW_EMERGENCY_ROOT=false
+FORCE_EMERGENCY_SHELL=false
 
 usage() {
   cat <<'USAGE'
@@ -22,6 +23,7 @@ Options:
   --entry-title TITLE        title to use in generated Boot Loader Specification entry
   --extra-kernel-args ARGS   extra host-specific kernel command line arguments
   --allow-emergency-shell B  enable passwordless root shell on tty9 (true/false)
+  --force-emergency-shell B  force debug shell to tty1 (true/false)
 USAGE
 }
 
@@ -73,6 +75,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-emergency-shell)
       ALLOW_EMERGENCY_ROOT="${2:-false}"
+      shift 2
+      ;;
+    --force-emergency-shell)
+      FORCE_EMERGENCY_SHELL="${2:-false}"
       shift 2
       ;;
     -h|--help)
@@ -158,6 +164,9 @@ if [[ -n "$EXTRA_KERNEL_ARGS" ]]; then
 fi
 if [[ "$ALLOW_EMERGENCY_ROOT" == "true" ]]; then
   entry_options="$entry_options systemd.debug-shell=1"
+fi
+if [[ "$FORCE_EMERGENCY_SHELL" == "true" ]]; then
+  entry_options="$entry_options systemd.unit=debug-shell.service"
 fi
 
 cat > "$entry_artifact" <<EOF2

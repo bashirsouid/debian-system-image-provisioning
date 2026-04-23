@@ -587,6 +587,14 @@ seed_first_root_slot() {
                     sed -i -E 's#^options(.*)#options\1 systemd.debug-shell=1#g' "$conf_dest"
                 fi
             fi
+
+            # Patch systemd.unit=debug-shell.service if requested
+            if [[ "${AB_FORCE_EMERGENCY_SHELL:-}" == "true" ]]; then
+                echo "==> Patching boot entry with systemd.unit=debug-shell.service"
+                if ! grep -q 'systemd.unit=debug-shell.service' "$conf_dest"; then
+                    sed -i -E 's#^options(.*)#options\1 systemd.unit=debug-shell.service#g' "$conf_dest"
+                fi
+            fi
         fi
         
         umount "$esp_mount"
