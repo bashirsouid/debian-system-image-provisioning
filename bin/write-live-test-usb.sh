@@ -521,6 +521,19 @@ seed_first_root_slot() {
     echo "==> Mounting seeded root $ROOT_PART on $ROOT_MOUNT"
     mount "$ROOT_PART" "$ROOT_MOUNT"
 
+    # Determine PARTUUID of the seeded root partition for boot entry
+    local root_partuuid=""
+    if command -v blkid >/dev/null 2>&1; then
+        root_partuuid="$(blkid -s PARTUUID -o value "$ROOT_PART" 2>/dev/null || true)"
+        if [[ -z "$root_partuuid" ]]; then
+            echo "WARNING: could not determine PARTUUID for $ROOT_PART; boot entry will not be patched" >&2
+        else
+            echo "==> Seeded root PARTUUID: $root_partuuid"
+        fi
+    else
+        echo "WARNING: blkid not available; boot entry will not be patched with PARTUUID." >&2
+    fi
+
     # --- Seed the ESP ---
     # We also need to copy the UKI (.efi) and bootloader entry (.conf) to the ESP,
     # because we skipped systemd-sysupdate which normally handles this step.
@@ -549,18 +562,22 @@ seed_first_root_slot() {
         fi
         
         if [[ -f "$SOURCE_DIR/${prefix}.conf" ]]; then
-            echo "==> Copying boot entry to ESP: ${prefix}.conf and injecting PARTUUID override"
-            
-            # Get the exact PARTUUID of the root partition we just flashed
-            local root_uuid
-            root_uuid="$(lsblk -nrpo PARTUUID "$ROOT_PART")"
-            
-            # Copy the conf file to the ESP
-            cp "$SOURCE_DIR/${prefix}.conf" "$esp_mount/loader/entries/"
-            
-            # Inject the explicit root=PARTUUID=... override so the UKI initrd doesn't fail
-            if [[ -n "$root_uuid" ]]; then
-                sed -i "s|^options .*|& root=PARTUUID=$root_uuid rootfstype=ext4 rw|" "$esp_mount/loader/entries/${prefix}.conf"
+            echo "==> Copying boot entry to ESP: ${prefix}.conf"
+            local conf_dest="$esp_mount/loader/entries/${prefix}.conf"
+            cp "$SOURCE_DIR/${prefix}.conf" "$conf_dest"
+
+            # Patch root= in the copied entry to use the seeded PARTUUID
+            if [[ -n "$root_partuuid" ]]; then
+                echo "==> Patching boot entry with root=PARTUUID=$root_partuuid"
+                if grep -q 'root=' "$conf_dest"; then
+                    # Replace any existing root=... with PARTUUID
+                    sed -i -E "s#root=[^ ]*#root=PARTUUID=$root_partuuid#g" "$conf_dest"
+                else
+                    # No root= present; append one
+                    sed -i -E "s#^options(.*)#options\1 root=PARTUUID=$root_partuuid rootfstype=ext4 rw#g" "$conf_dest"
+                fi
+            else
+                echo "WARNING: root PARTUUID unknown; leaving boot entry root= unchanged." >&2
             fi
         fi
         
@@ -886,10 +903,10 @@ done
 [[ -d "$DEFINITIONS_DIR" ]] || die "definitions directory not found: $DEFINITIONS_DIR"
 [[ -d "$REPART_DIR" ]] || die "repart directory not found: $REPART_DIR"
 
-if ! ab_hostdeps_have_all_commands systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df; then
+if ! ab_hostdeps_have_all_commands systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df blkid; then
   ab_hostdeps_ensure_packages "hardware test USB prerequisites" systemd-container systemd-repart systemd-boot-tools systemd-boot-efi dosfstools fdisk util-linux || exit 1
 fi
-ab_hostdeps_ensure_commands "hardware test USB prerequisites" systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df || {
+ab_hostdeps_ensure_commands "hardware test USB prerequisites" systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df blkid || {
   echo "==> If this host still cannot provide systemd-sysupdate, use a newer Debian/systemd host for the native USB workflow." >&2
   echo "==> Fast fallback for a hardware smoke test: write the built .raw image directly to the USB instead of using the native installer USB flow." >&2
   exit 1
@@ -918,6 +935,7 @@ need_cmd install
 need_cmd df
 need_cmd dd
 need_cmd sfdisk
+need_cmd blkid
 
 [[ -f "$SOURCE_DIR/$IMAGE_BASENAME" ]] || die "built disk image not found: $SOURCE_DIR/$IMAGE_BASENAME"
 
