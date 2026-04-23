@@ -507,6 +507,15 @@ seed_first_root_slot() {
         echo "WARNING: sfdisk not available; leaving PARTLABEL for $ROOT_PART unchanged" >&2
     fi
     
+    # Wait for block devices to reappear after sfdisk altered the partition table
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm settle --timeout=10 >/dev/null 2>&1 || true
+    fi
+    
+    # A tiny sleep ensures that even if udevadm returns instantly, the kernel has 
+    # definitely finished recreating the /dev/sdaX nodes before mount fires.
+    sleep 2
+    
     # Mount the seeded root for bundle copy
     ROOT_MOUNT="$(mktemp -d /tmp/ab-live-root.XXXXXX)"
     echo "==> Mounting seeded root $ROOT_PART on $ROOT_MOUNT"
