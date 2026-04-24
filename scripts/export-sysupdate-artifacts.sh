@@ -166,7 +166,12 @@ if [[ "$ALLOW_EMERGENCY_ROOT" == "true" ]]; then
   entry_options="$entry_options systemd.debug-shell=1"
 fi
 if [[ "$FORCE_EMERGENCY_SHELL" == "true" ]]; then
-  entry_options="$entry_options systemd.unit=debug-shell.service"
+  # systemd.unit=debug-shell.service is acted on by the initrd PID 1 and
+  # prevents the switch-root unit chain from executing — the operator ends
+  # up in a locked shell with /sysroot empty rather than seeing the real
+  # error.  rd.break=pre-switch-root drops into a passwordless initrd shell
+  # right before switch-root so the mount failure is directly visible.
+  entry_options="$entry_options rd.break=pre-switch-root systemd.log_level=debug systemd.log_target=console systemd.journald.forward_to_console=1 console=tty0"
 fi
 
 cat > "$entry_artifact" <<EOF2

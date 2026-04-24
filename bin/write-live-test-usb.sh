@@ -561,6 +561,42 @@ seed_first_root_slot() {
         if [[ -f "$SOURCE_DIR/${prefix}.efi" ]]; then
             echo "==> Copying UKI to ESP: ${prefix}.efi"
             cp "$SOURCE_DIR/${prefix}.efi" "$esp_mount/EFI/Linux/"
+
+            # ── Patch the UKI's embedded .cmdline PE section ────────────────────────
+            # Type-2 BLS entries (uki= key): systemd-boot <254 ignores .conf options=
+            # and passes only the UKI's baked-in .cmdline to the kernel.  Rewrite
+            # that section in-place so root= is correct on all systemd-boot versions.
+            if [[ -n "$root_partuuid" ]] && command -v objcopy >/dev/null 2>&1; then
+                local _uki_path="$esp_mount/EFI/Linux/${prefix}.efi"
+                local _cmdline_tmp
+                _cmdline_tmp="$(mktemp /tmp/ab-uki-cmdline.XXXXXX)"
+                objcopy -O binary --only-section=.cmdline "$_uki_path" "$_cmdline_tmp" 2>/dev/null || true
+                if [[ -s "$_cmdline_tmp" ]]; then
+                    local _cur _new
+                    _cur="$(tr -d '\0' < "$_cmdline_tmp")"
+                    if printf '%s' "$_cur" | grep -q 'root='; then
+                        _new="$(printf '%s' "$_cur" | \
+                            sed -E "s#root=[^ ]*#root=PARTUUID=$root_partuuid#g")"
+                    else
+                        _new="$_cur root=PARTUUID=$root_partuuid"
+                    fi
+                    printf '%s' "$_new" | grep -q 'rootfstype=' || \
+                        _new="$_new rootfstype=ext4"
+                    printf '%s' "$_new" | grep -qw 'rootwait' || \
+                        _new="$_new rootwait"
+                    printf '%s' "$_new" > "$_cmdline_tmp"
+                    if objcopy --update-section ".cmdline=$_cmdline_tmp" "$_uki_path" 2>/dev/null; then
+                        echo "==> Patched UKI .cmdline: root=PARTUUID=$root_partuuid rootfstype=ext4 rootwait"
+                    else
+                        echo "WARNING: objcopy could not update UKI .cmdline; boot relies on .conf options= only" >&2
+                    fi
+                else
+                    echo "WARNING: UKI carries no .cmdline section; boot relies on .conf options= only" >&2
+                fi
+                rm -f "$_cmdline_tmp"
+            elif [[ -n "$root_partuuid" ]]; then
+                echo "WARNING: objcopy not found (install binutils); cannot patch UKI .cmdline" >&2
+            fi
         fi
         
         if [[ -f "$SOURCE_DIR/${prefix}.conf" ]]; then
@@ -578,6 +614,12 @@ seed_first_root_slot() {
                     # No root= present; append one
                     sed -i -E "s#^options(.*)#options\1 root=PARTUUID=$root_partuuid rootfstype=ext4 rw#g" "$conf_dest"
                 fi
+                # USB drives enumerate slowly — ensure rootfstype and rootwait are always
+                # present so the initrd does not race /dev/disk/by-partuuid/<uuid>.
+                grep -q 'rootfstype=' "$conf_dest" || \
+                    sed -i -E "s#^options(.*)#options\\1 rootfstype=ext4#g" "$conf_dest"
+                grep -qw 'rootwait' "$conf_dest" || \
+                    sed -i -E "s#^options(.*)#options\\1 rootwait#g" "$conf_dest"
             else
                 echo "WARNING: root PARTUUID unknown; leaving boot entry root= unchanged." >&2
             fi
