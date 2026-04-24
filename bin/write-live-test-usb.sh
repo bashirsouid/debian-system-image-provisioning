@@ -100,6 +100,7 @@ ALLOW_FIXED_DISK=no
 # with --no-usb-storage.
 INCLUDE_USB_STORAGE=true
 USB_STORAGE_LABEL="USBDATA"
+DIAGNOSTIC_MODE=false
 
 usage() {
   cat <<'USAGE'
@@ -135,6 +136,7 @@ Options:
                         the default refuses such targets to prevent the
                         "I flashed my laptop's SSD by accident" case
   --yes                 skip destructive confirmation prompts
+  --diagnostic-mode     append initrd debug params to the boot entry
 USAGE
 }
 
@@ -580,20 +582,25 @@ seed_first_root_slot() {
                 echo "WARNING: root PARTUUID unknown; leaving boot entry root= unchanged." >&2
             fi
 
-            # Patch systemd.debug-shell=1 if requested
-            if [[ "${AB_ALLOW_EMERGENCY_ROOT:-}" == "true" ]]; then
-                echo "==> Patching boot entry with systemd.debug-shell=1"
-                if ! grep -q 'systemd.debug-shell=1' "$conf_dest"; then
-                    sed -i -E 's#^options(.*)#options\1 systemd.debug-shell=1#g' "$conf_dest"
-                fi
-            fi
-
-            # Patch systemd.unit=debug-shell.service if requested
-            if [[ "${AB_FORCE_EMERGENCY_SHELL:-}" == "true" ]]; then
-                echo "==> Patching boot entry with systemd.unit=debug-shell.service"
-                if ! grep -q 'systemd.unit=debug-shell.service' "$conf_dest"; then
-                    sed -i -E 's#^options(.*)#options\1 systemd.unit=debug-shell.service#g' "$conf_dest"
-                fi
+            # Patch diagnostic boot params if requested
+            if [[ "$DIAGNOSTIC_MODE" == true ]]; then
+                echo "==> Diagnostic mode: patching boot entry with initrd debug params"
+                # These params operate in the INITRD, where switch-root failures occur.
+                # rd.break=pre-switch-root drops to a root shell right before the
+                # failing step so /sysroot can be inspected.
+                local diag_params=(
+                    "rd.break=pre-switch-root"
+                    "systemd.log_level=debug"
+                    "systemd.log_target=console"
+                    "systemd.journald.forward_to_console=1"
+                    "console=tty0"
+                )
+                for p in "${diag_params[@]}"; do
+                    if ! grep -q "$p" "$conf_dest"; then
+                        echo "==> Patching boot entry with ${p}"
+                        sed -i -E "s#^options(.*)#options\1 ${p}#g" "$conf_dest"
+                    fi
+                done
             fi
         fi
         
@@ -902,6 +909,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --yes)
       ASSUME_YES=true
+      shift
+      ;;
+    --diagnostic-mode)
+      DIAGNOSTIC_MODE=true
       shift
       ;;
     -h|--help)
