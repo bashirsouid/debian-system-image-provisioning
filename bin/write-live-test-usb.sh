@@ -558,45 +558,21 @@ seed_first_root_slot() {
         
         install -d -m 0755 "$esp_mount/EFI/Linux" "$esp_mount/loader/entries"
         
+        # Fundamental fix: Wipe any old entries to prevent booting the wrong version
+        echo "==> Wiping old boot entries from USB ESP"
+        rm -f "$esp_mount/loader/entries/"*.conf
+
+        # Set the new entry as the explicit default in loader.conf
+        echo "==> Setting ${prefix}.conf as the default boot entry"
+        if [[ -f "$esp_mount/loader/loader.conf" ]]; then
+            sed -i -E "s/^default .*/default ${prefix}.conf/" "$esp_mount/loader/loader.conf"
+        else
+            printf "default %s.conf\ntimeout 5\nconsole-mode keep\n" "${prefix}" > "$esp_mount/loader/loader.conf"
+        fi
+        
         if [[ -f "$SOURCE_DIR/${prefix}.efi" ]]; then
             echo "==> Copying UKI to ESP: ${prefix}.efi"
             cp "$SOURCE_DIR/${prefix}.efi" "$esp_mount/EFI/Linux/"
-
-            # ── Patch the UKI's embedded .cmdline PE section ────────────────────────
-            # Type-2 BLS entries (uki= key): systemd-boot <254 ignores .conf options=
-            # and passes only the UKI's baked-in .cmdline to the kernel.  Rewrite
-            # that section in-place so root= is correct on all systemd-boot versions.
-            if [[ -n "$root_partuuid" ]] && command -v objcopy >/dev/null 2>&1; then
-                local _uki_path="$esp_mount/EFI/Linux/${prefix}.efi"
-                local _cmdline_tmp
-                _cmdline_tmp="$(mktemp /tmp/ab-uki-cmdline.XXXXXX)"
-                objcopy -O binary --only-section=.cmdline "$_uki_path" "$_cmdline_tmp" 2>/dev/null || true
-                if [[ -s "$_cmdline_tmp" ]]; then
-                    local _cur _new
-                    _cur="$(tr -d '\0' < "$_cmdline_tmp")"
-                    if printf '%s' "$_cur" | grep -q 'root='; then
-                        _new="$(printf '%s' "$_cur" | \
-                            sed -E "s#root=[^ ]*#root=PARTUUID=$root_partuuid#g")"
-                    else
-                        _new="$_cur root=PARTUUID=$root_partuuid"
-                    fi
-                    printf '%s' "$_new" | grep -q 'rootfstype=' || \
-                        _new="$_new rootfstype=ext4"
-                    printf '%s' "$_new" | grep -qw 'rootwait' || \
-                        _new="$_new rootwait"
-                    printf '%s' "$_new" > "$_cmdline_tmp"
-                    if objcopy --update-section ".cmdline=$_cmdline_tmp" "$_uki_path" 2>/dev/null; then
-                        echo "==> Patched UKI .cmdline: root=PARTUUID=$root_partuuid rootfstype=ext4 rootwait"
-                    else
-                        echo "WARNING: objcopy could not update UKI .cmdline; boot relies on .conf options= only" >&2
-                    fi
-                else
-                    echo "WARNING: UKI carries no .cmdline section; boot relies on .conf options= only" >&2
-                fi
-                rm -f "$_cmdline_tmp"
-            elif [[ -n "$root_partuuid" ]]; then
-                echo "WARNING: objcopy not found (install binutils); cannot patch UKI .cmdline" >&2
-            fi
         fi
         
         if [[ -f "$SOURCE_DIR/${prefix}.conf" ]]; then
@@ -627,15 +603,20 @@ seed_first_root_slot() {
             # Patch diagnostic boot params if requested
             if [[ "$DIAGNOSTIC_MODE" == true ]]; then
                 echo "==> Diagnostic mode: patching boot entry with initrd debug params"
+                # Remove 'quiet' to see boot progress
+                sed -i -E "s#quiet##g" "$conf_dest"
                 # These params operate in the INITRD, where switch-root failures occur.
-                # rd.break=pre-switch-root drops to a root shell right before the
-                # failing step so /sysroot can be inspected.
                 local diag_params=(
                     "rd.break=pre-switch-root"
+                    "break=mount"
+                    "break=bottom"
                     "systemd.log_level=debug"
                     "systemd.log_target=console"
                     "systemd.journald.forward_to_console=1"
                     "console=tty0"
+                    "systemd.show_status=1"
+                    "systemd.setenv=SYSTEMD_SULOGIN_FORCE=1"
+                    "systemd.debug-shell=1"
                 )
                 for p in "${diag_params[@]}"; do
                     if ! grep -q "$p" "$conf_dest"; then
@@ -643,6 +624,26 @@ seed_first_root_slot() {
                         sed -i -E "s#^options(.*)#options\1 ${p}#g" "$conf_dest"
                     fi
                 done
+            fi
+
+            # ── Patch the UKI's embedded .cmdline PE section ────────────────────────
+            # Extract the final options from the .conf file and bake them into the UKI
+            if [[ -f "$SOURCE_DIR/${prefix}.efi" ]] && command -v objcopy >/dev/null 2>&1; then
+                local _uki_path="$esp_mount/EFI/Linux/${prefix}.efi"
+                local _final_options
+                _final_options="$(grep '^options ' "$conf_dest" | sed 's/^options //')"
+                
+                if [[ -n "$_final_options" ]]; then
+                    local _cmdline_tmp
+                    _cmdline_tmp="$(mktemp /tmp/ab-uki-cmdline.XXXXXX)"
+                    printf '%s' "$_final_options" > "$_cmdline_tmp"
+                    if objcopy --update-section ".cmdline=$_cmdline_tmp" "$_uki_path" 2>/dev/null; then
+                        echo "==> Patched UKI .cmdline with full options from boot entry"
+                    else
+                        echo "WARNING: objcopy could not update UKI .cmdline" >&2
+                    fi
+                    rm -f "$_cmdline_tmp"
+                fi
             fi
         fi
         

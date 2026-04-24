@@ -2,3 +2,8 @@
 snd
 snd_pcm
 apple-bce
+apple-ib-drv
+apple-ib-tb
+industrialio
+spi-pxa2xx-platform
+spi-pxa2xx-pci
