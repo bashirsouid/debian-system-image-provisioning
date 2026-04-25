@@ -139,11 +139,8 @@ ab_buildmeta_host_default_profile() {
   [[ -n "$host" ]] || return 0
   path="$project_root/hosts/$host/profile.default"
   [[ -f "$path" ]] || return 0
-  value="$(sed -e 's/[[:space:]]*#.*$//' "$path" | awk 'NF{print;exit}' | tr -d '[:space:]')"
-  case "$value" in
-    ""|*[!A-Za-z0-9._-]*) return 0 ;;
-    *) printf '%s\n' "$value" ;;
-  esac
+  # Read all non-comment tokens from the file.
+  sed -e 's/[[:space:]]*#.*$//' "$path" | xargs echo -n
 }
 
 # Resolve the build folder that matches the caller's intent.

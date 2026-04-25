@@ -445,8 +445,11 @@ render_build_info() {
   awesome_git_rev="$(git_rev "$PROJECT_ROOT/third-party/awesome")"
   awesome_git_dirty="$(git_dirty "$PROJECT_ROOT/third-party/awesome")"
   kernel_track="debian"
-  [[ "$PROFILE" == "devbox" ]] && kernel_track="liquorix"
-  [[ "$PROFILE" == "macbook" ]] && kernel_track="t2linux"
+  if profile_has_one_of "$PROFILE" devbox; then
+    kernel_track="liquorix"
+  elif profile_has_one_of "$PROFILE" macbook; then
+    kernel_track="t2linux"
+  fi
   mkosi_version="$(mkosi --version 2>/dev/null | head -n1 || true)"
   host_overlay="${HOST:-none}"
 
@@ -493,12 +496,26 @@ render_sysupdate_transfers() {
   done
 }
 
+profile_has_one_of() {
+  local profiles="$1"
+  shift
+  local p match
+  for p in $profiles; do
+    for match in "$@"; do
+      if [[ "$p" == "$match" ]]; then
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
 profile_needs_awesome() {
-  [[ "$1" == "devbox" || "$1" == "macbook" ]]
+  profile_has_one_of "$1" devbox macbook
 }
 
 profile_needs_macbook_audio() {
-  [[ "$1" == "macbook" ]]
+  profile_has_one_of "$1" macbook
 }
 
 profile_needs_managed_third_party() {
@@ -866,13 +883,13 @@ EOF
   extra_args+=("--extra-tree=$METADATA_DIR:/")
   extra_args+=("--sandbox-tree=$PROJECT_ROOT/mkosi.extra:/")
 
-  if [[ "$PROFILE" == "devbox" ]]; then
+  if profile_has_one_of "$PROFILE" devbox; then
     echo "==> Preparing Liquorix repository metadata for devbox..."
     prepare_liquorix_trees
     extra_args+=("--sandbox-tree=$THIRD_PARTY_DIR/liquorix-sandbox:/")
   fi
 
-  if [[ "$PROFILE" == "macbook" ]]; then
+  if profile_has_one_of "$PROFILE" macbook; then
     echo "==> Preparing t2linux and Apple firmware repository metadata for macbook..."
     prepare_t2linux_trees
     extra_args+=("--sandbox-tree=$THIRD_PARTY_DIR/t2linux-sandbox:/")
@@ -896,7 +913,10 @@ EOF
     fi
   fi
 
-  mkosi_args=("--profile=$PROFILE" "--image-id=$target_image_id" "--image-version=$IMAGE_VERSION")
+  mkosi_args=("--image-id=$target_image_id" "--image-version=$IMAGE_VERSION")
+  for p in $PROFILE; do
+    mkosi_args+=("--profile=$p")
+  done
 
   echo "==> Starting mkosi build (profile: $PROFILE${HOST:+, host: $HOST}, force: ${target_force:-none})..."
   if [[ -n "$target_force" ]]; then
