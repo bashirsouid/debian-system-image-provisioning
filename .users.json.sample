@@ -47,7 +47,15 @@
     "uid": 1000,
     "gid": 1000,
     "primary_group": "demo",
-    "groups": ["sudo", "audio", "video", "render", "input", "plugdev", "dialout"],
+    "_groups_notes": [
+      "tty: needed for X (open /dev/tty[1-12]) when xserver-xorg-legacy",
+      "     wraps Xorg with allowed_users=anybody.",
+      "audio/video/render/input: device access for desktop apps.",
+      "plugdev/dialout: USB / serial peripherals.",
+      "sudo: ability to run privileged commands.",
+      "netdev: NetworkManager / iwd connection management."
+    ],
+    "groups": ["sudo", "audio", "video", "render", "input", "tty", "plugdev", "dialout", "netdev"],
     "shell": "/bin/bash",
     "password": "change-me-now",
     "force_password_change_on_first_login": false,

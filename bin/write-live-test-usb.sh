@@ -101,6 +101,13 @@ ALLOW_FIXED_DISK=no
 INCLUDE_USB_STORAGE=true
 USB_STORAGE_LABEL="USBDATA"
 DIAGNOSTIC_MODE=false
+# When true, do NOT repartition the target. Reuse the existing GPT
+# layout (ESP + root-a + root-b + USBDATA), pick the *inactive* root
+# slot, write the new image into it, and leave USBDATA + the active
+# slot completely untouched. This is the "iterate on the build by
+# rewriting the same USB" path; the destructive default is for fresh
+# bootstraps where the target has no usable A/B layout yet.
+REFLASH=false
 
 usage() {
   cat <<'USAGE'
@@ -137,6 +144,12 @@ Options:
                         "I flashed my laptop's SSD by accident" case
   --yes                 skip destructive confirmation prompts
   --diagnostic-mode     append initrd debug params to the boot entry
+  --reflash             do NOT repartition. Detect the existing A/B layout,
+                        write the new image into the *inactive* root slot,
+                        and leave the active slot + USBDATA untouched. Use
+                        this for iterating on the build by rewriting the
+                        same USB without losing what's on USBDATA or the
+                        currently-booting slot.
 USAGE
 }
 
@@ -301,9 +314,16 @@ confirm_usb_write_or_abort() {
   [[ "$ASSUME_YES" == true ]] && return 0
 
   echo
-  echo "===================================================================="
-  echo "DESTRUCTIVE OPERATION: all partition data on the target will be lost"
-  echo "===================================================================="
+  if [[ "$REFLASH" == true ]]; then
+    echo "===================================================================="
+    echo "RE-FLASH (non-destructive): writes to the *inactive* root slot only;"
+    echo "the active slot, USBDATA partition, and ESP fallback entries are kept."
+    echo "===================================================================="
+  else
+    echo "===================================================================="
+    echo "DESTRUCTIVE OPERATION: all partition data on the target will be lost"
+    echo "===================================================================="
+  fi
   echo
   echo "Target device:"
   ab_confirm_describe_target "$TARGET"
@@ -318,7 +338,14 @@ confirm_usb_write_or_abort() {
     "$SOURCE_DIR/$IMAGE_BASENAME"
   echo
 
-  preview_current_and_planned_layout
+  if [[ "$REFLASH" == true ]]; then
+    echo "Current partition table on target (will be REUSED in --reflash mode):"
+    lsblk -o NAME,SIZE,TYPE,FSTYPE,PARTLABEL,LABEL,MOUNTPOINT "$(readlink -f "$TARGET")" 2>/dev/null \
+      || echo "  (lsblk failed)"
+    echo
+  else
+    preview_current_and_planned_layout
+  fi
 
   # Cross-host re-flash detector. If the target USB already has a
   # USB-IDENTITY.env from a previous flash, read it (read-only mount)
@@ -462,9 +489,176 @@ select_root_slot_for_seed() {
     return 0
 }
 
-# Seed the chosen ROOT_PART with ${prefix}.root.raw and relabel it to
-# ${IMAGE_ID}_${IMAGE_VERSION}. This replaces the previous
-# systemd-sysupdate --image seeding flow.
+# --reflash helpers ---------------------------------------------------------
+# Validate that $DISK_DEVICE already has the GPT layout we expect:
+# at least one ESP partition and two root-shaped partitions (ext4 or
+# unformatted, PARTLABEL not in {ESP,USBDATA,DATA,HOME}). Errors out
+# if the layout cannot be reused — the user should either drop
+# --reflash to do a destructive bootstrap, or fix the disk manually.
+validate_existing_ab_layout() {
+    local part label fstype esp_count=0 root_count=0
+
+    while read -r part label fstype; do
+        [[ -n "$part" ]] || continue
+        case "$label" in
+            ESP)
+                esp_count=$((esp_count + 1))
+                ;;
+            USBDATA|DATA|HOME)
+                continue
+                ;;
+            *)
+                if [[ "$fstype" == "ext4" || -z "$fstype" ]]; then
+                    root_count=$((root_count + 1))
+                fi
+                ;;
+        esac
+    done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE")
+
+    (( esp_count >= 1 )) \
+        || die "--reflash: target $DISK_DEVICE has no ESP partition; do a fresh write (drop --reflash) first"
+    (( root_count >= 2 )) \
+        || die "--reflash: target $DISK_DEVICE has fewer than 2 root slots ($root_count found); do a fresh write (drop --reflash) first"
+}
+
+# Read the loader.conf `default` entry on the USB's ESP and return
+# the PARTUUID that entry's `options root=PARTUUID=...` resolves to.
+# Empty string if the ESP can't be read, the default entry file
+# is missing, or the entry has no root=PARTUUID= option.
+#
+# We match by PARTUUID rather than by PARTLABEL because a fresh-write
+# always sets BOTH slots' PARTLABELs to "${IMAGE_ID}_${IMAGE_VERSION}"
+# (sysupdate convention), and after the first reseed both slots end
+# up with the same PARTLABEL — making PARTLABEL useless for telling
+# the slots apart. PARTUUID, on the other hand, is assigned per-slot
+# at systemd-repart time and stays stable as long as we don't
+# repartition, so it's the right key for identifying "the slot the
+# user is currently booting from".
+read_default_entry_root_partuuid() {
+    local esp_part esp_mount default_line default_entry options_line result=""
+    esp_part="$(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE" \
+                | awk '$2 == "ESP" || $3 == "vfat" { print $1; exit }')"
+    [[ -n "$esp_part" ]] || { printf ''; return 0; }
+
+    esp_mount="$(mktemp -d /tmp/ab-reflash-esp.XXXXXX)"
+    if ! mount -o ro "$esp_part" "$esp_mount" 2>/dev/null; then
+        rmdir "$esp_mount"
+        printf ''
+        return 0
+    fi
+
+    if [[ -f "$esp_mount/loader/loader.conf" ]]; then
+        default_line="$(awk '/^default / { print $2; exit }' "$esp_mount/loader/loader.conf" || true)"
+        default_entry="${default_line%.conf}"
+        if [[ -n "$default_entry" && -f "$esp_mount/loader/entries/${default_entry}.conf" ]]; then
+            options_line="$(awk '/^options / { sub(/^options /, ""); print; exit }' \
+                "$esp_mount/loader/entries/${default_entry}.conf")"
+            # Pull the PARTUUID value out of `root=PARTUUID=XXX`.
+            # Use bash regex so we don't depend on awk/sed niceties.
+            if [[ "$options_line" =~ root=PARTUUID=([A-Fa-f0-9-]+) ]]; then
+                result="${BASH_REMATCH[1]}"
+            fi
+        fi
+    fi
+
+    umount "$esp_mount" 2>/dev/null || true
+    rmdir "$esp_mount" 2>/dev/null || true
+    printf '%s' "$result"
+}
+
+# --reflash slot selector. Picks the root slot whose PARTUUID is NOT
+# the one referenced by the current loader.conf default entry's
+# `root=PARTUUID=...` option — i.e. the slot the user is NOT booting
+# from. Falls back to "_empty preferred, otherwise lex-smallest" if
+# loader.conf can't be parsed.
+select_inactive_root_slot_for_reseed() {
+    local part label fstype line partuuid
+    local -a candidates=() labels=() partuuids=()
+    local i active_partuuid active_idx=-1
+
+    while IFS= read -r line; do
+        part="${line%% *}"
+        label="${line#* }"
+        label="${label%% *}"
+        fstype="${line##* }"
+
+        [[ -n "$part" ]] || continue
+        case "$label" in
+            ESP|USBDATA|DATA|HOME)
+                continue
+                ;;
+        esac
+        [[ "$fstype" == "ext4" || -z "$fstype" ]] || continue
+
+        partuuid="$(blkid -s PARTUUID -o value "$part" 2>/dev/null || true)"
+        candidates+=("$part")
+        labels+=("$label")
+        partuuids+=("$partuuid")
+    done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE")
+
+    (( ${#candidates[@]} >= 2 )) \
+        || die "--reflash: expected ≥2 root slots on $DISK_DEVICE, found ${#candidates[@]}"
+
+    # 1) An empty slot is unambiguously "not the active one".
+    for i in "${!candidates[@]}"; do
+        if [[ "${labels[$i]}" == "_empty" ]]; then
+            ROOT_PART="${candidates[$i]}"
+            echo "==> --reflash: selected empty slot $ROOT_PART (label=_empty)"
+            return 0
+        fi
+    done
+
+    # 2) Match loader.conf default's root=PARTUUID against candidate PARTUUIDs.
+    active_partuuid="$(read_default_entry_root_partuuid)"
+    if [[ -n "$active_partuuid" ]]; then
+        for i in "${!candidates[@]}"; do
+            # PARTUUID comparison is case-insensitive in practice (some tools
+            # uppercase, others lowercase). Normalize both sides.
+            if [[ "${partuuids[$i]^^}" == "${active_partuuid^^}" ]]; then
+                active_idx="$i"
+                break
+            fi
+        done
+    fi
+
+    if (( active_idx >= 0 )); then
+        for i in "${!candidates[@]}"; do
+            if (( i != active_idx )); then
+                ROOT_PART="${candidates[$i]}"
+                echo "==> --reflash: selected inactive slot $ROOT_PART"
+                echo "    (active is ${candidates[$active_idx]} PARTUUID=${active_partuuid})"
+                return 0
+            fi
+        done
+    fi
+
+    # 3) Couldn't identify the active slot. With --yes pick the first
+    # non-_empty candidate deterministically. Otherwise fall through
+    # to the existing interactive picker.
+    echo "==> --reflash: could not determine the active slot from loader.conf"
+    echo "    (loader.conf default=$(read_default_entry_root_partuuid || echo none))"
+    if [[ "$ASSUME_YES" == true ]]; then
+        ROOT_PART="${candidates[0]}"
+        echo "==> --reflash: --yes, defaulting to first candidate $ROOT_PART (PARTLABEL=${labels[0]})"
+        return 0
+    fi
+    select_root_slot_for_seed
+}
+
+# Returns 0 if the existing USBDATA partition already has a usable
+# filesystem (exfat/vfat/ntfs/etc) — i.e. a re-flash should NOT mkfs
+# it, because that wipes the user's USB-stick contents which is
+# precisely the regression --reflash is meant to avoid.
+usbdata_partition_already_formatted() {
+    local part fstype
+    part="$(find_usb_storage_partition || true)"
+    [[ -n "$part" ]] || return 1
+    fstype="$(blkid -s TYPE -o value "$part" 2>/dev/null || true)"
+    [[ -n "$fstype" ]] || return 1
+    return 0
+}
+# --- end --reflash helpers -------------------------------------------------
+
 # Seed the chosen ROOT_PART with ${prefix}.root.raw and relabel it to
 # ${IMAGE_ID}_${IMAGE_VERSION}. This replaces the previous
 # systemd-sysupdate --image seeding flow.
@@ -477,8 +671,12 @@ seed_first_root_slot() {
     prefix="${IMAGE_ID}_${IMAGE_VERSION}_${IMAGE_ARCH}"
     [[ -f "$SOURCE_DIR/${prefix}.root.raw" ]] \
         || die "root filesystem image not found: $SOURCE_DIR/${prefix}.root.raw"
-    
-    select_root_slot_for_seed
+
+    if [[ "$REFLASH" == true ]]; then
+        select_inactive_root_slot_for_reseed
+    else
+        select_root_slot_for_seed
+    fi
     
     # Write the filesystem image into the chosen partition
     echo "==> Writing root filesystem image into $ROOT_PART from ${prefix}.root.raw"
@@ -557,17 +755,32 @@ seed_first_root_slot() {
         mount "$esp_part" "$esp_mount"
         
         install -d -m 0755 "$esp_mount/EFI/Linux" "$esp_mount/loader/entries"
-        
-        # Fundamental fix: Wipe any old entries to prevent booting the wrong version
-        echo "==> Wiping old boot entries from USB ESP"
-        rm -f "$esp_mount/loader/entries/"*.conf
 
-        # Set the new entry as the explicit default in loader.conf
-        echo "==> Setting ${prefix}.conf as the default boot entry"
-        if [[ -f "$esp_mount/loader/loader.conf" ]]; then
-            sed -i -E "s/^default .*/default ${prefix}.conf/" "$esp_mount/loader/loader.conf"
+        # In --reflash mode the entry filename is suffixed with the
+        # target slot's basename so both A and B slots can coexist as
+        # named entries in /loader/entries/. The previously-default
+        # entry stays in place as a known-good fallback you can pick
+        # from the systemd-boot menu if the new one fails to come up.
+        # In fresh-write mode the entry file is just ${prefix}.conf
+        # and any stale entries from a previous flash get wiped, since
+        # the rest of the disk has already been repartitioned anyway.
+        local entry_basename
+        if [[ "$REFLASH" == true ]]; then
+            entry_basename="${prefix}_$(basename "$ROOT_PART")"
+            echo "==> --reflash: keeping previously-installed boot entries as fallback"
         else
-            printf "default %s.conf\ntimeout 5\nconsole-mode keep\n" "${prefix}" > "$esp_mount/loader/loader.conf"
+            entry_basename="${prefix}"
+            echo "==> Wiping old boot entries from USB ESP"
+            rm -f "$esp_mount/loader/entries/"*.conf
+        fi
+
+        # Set the new entry as the explicit default in loader.conf so
+        # systemd-boot picks the freshly-flashed slot on next boot.
+        echo "==> Setting ${entry_basename}.conf as the default boot entry"
+        if [[ -f "$esp_mount/loader/loader.conf" ]]; then
+            sed -i -E "s/^default .*/default ${entry_basename}.conf/" "$esp_mount/loader/loader.conf"
+        else
+            printf "default %s.conf\ntimeout 5\nconsole-mode keep\n" "${entry_basename}" > "$esp_mount/loader/loader.conf"
         fi
         
         # ── Extract kernel + initrd from the UKI for Type 1 BLS booting ──────────
@@ -629,7 +842,9 @@ seed_first_root_slot() {
         fi
 
         if [[ -f "$SOURCE_DIR/${prefix}.conf" ]]; then
-            local conf_dest="$esp_mount/loader/entries/${prefix}.conf"
+            # entry_basename is set above; in --reflash mode it's
+            # ${prefix}_<root-slot-basename>, otherwise ${prefix}.
+            local conf_dest="$esp_mount/loader/entries/${entry_basename}.conf"
 
             # Read source options (everything after the leading "options ").
             local _src_options
@@ -665,10 +880,17 @@ seed_first_root_slot() {
             # Write a Type 1 BLS entry. Crucially: NO `uki` line, so systemd-boot
             # uses linux=/initrd=/options= directly and does not look for an
             # embedded cmdline.
+            local _slot_tag=""
+            [[ "$REFLASH" == true ]] && _slot_tag=" [slot=$(basename "$ROOT_PART")]"
+
             {
                 echo "# Generated by bin/write-live-test-usb.sh (Type 1 BLS for live-test USB)"
-                echo "title Debian TEST BOOT (${IMAGE_ID}) ${IMAGE_VERSION}"
-                echo "sort-key ${IMAGE_ID}"
+                echo "title Debian TEST BOOT (${IMAGE_ID}) ${IMAGE_VERSION}${_slot_tag}"
+                # sort-key includes slot basename so multiple coexisting
+                # entries (one per slot) sort deterministically in the
+                # systemd-boot menu instead of all collapsing on top of
+                # each other and confusing the user about which is which.
+                echo "sort-key ${IMAGE_ID}_$(basename "$ROOT_PART")"
                 echo "version ${IMAGE_VERSION}"
                 echo "linux /EFI/Linux/${prefix}.linux"
                 echo "initrd /EFI/Linux/${prefix}.initrd"
@@ -898,6 +1120,18 @@ selected target disk. By default it creates:
   - no /mnt/data partition unless you ask for one
 
 Use the live installer prompts to change that layout.
+
+To iterate on the build without losing the USB's DATA/USBDATA partition,
+use --reflash on the host:
+  sudo ./bin/write-live-test-usb.sh --target /dev/sdX --reflash --yes
+That writes the new image into whichever root slot is NOT currently the
+default-boot slot, leaves the active slot in place as a known-good
+fallback, and does not repartition or wipe USBDATA.
+
+Subsequent updates of the *internal* disk after install go through
+systemd-sysupdate (`./bin/sysupdate-local-update.sh`) which is also
+non-destructive: it writes only the inactive root slot and never
+touches DATA / HOME / ESP partition data.
 EOF2
   chmod 0644 "$bundle_root/README.txt"
 
@@ -990,6 +1224,10 @@ while [[ $# -gt 0 ]]; do
       DIAGNOSTIC_MODE=true
       shift
       ;;
+    --reflash)
+      REFLASH=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -1044,40 +1282,61 @@ need_cmd blkid
 
 [[ -f "$SOURCE_DIR/$IMAGE_BASENAME" ]] || die "built disk image not found: $SOURCE_DIR/$IMAGE_BASENAME"
 
-prepare_bootstrap_repart_dir
-confirm_usb_write_or_abort
+if [[ "$REFLASH" == true ]]; then
+    # --reflash: validate the existing layout, skip systemd-repart and
+    # bootctl install entirely. The user has already booted from this
+    # USB at least once, so the systemd-boot binary on the ESP is
+    # known-working; we don't need to rewrite it. We also don't touch
+    # USBDATA — preserving the user's files on the stick is the whole
+    # point of this mode.
+    resolve_disk_device
+    validate_existing_ab_layout
+    confirm_usb_write_or_abort
+    if usbdata_partition_already_formatted; then
+        echo "==> --reflash: USBDATA partition already formatted, leaving it untouched"
+    elif [[ "$INCLUDE_USB_STORAGE" == true ]]; then
+        # Edge case: layout is valid but USBDATA was never mkfs'd
+        # (e.g. an interrupted previous run). Format it so the live
+        # session has a usable scratch partition; this is non-
+        # destructive because there's no filesystem on it yet.
+        format_usb_storage_partition
+    fi
+else
+    prepare_bootstrap_repart_dir
+    confirm_usb_write_or_abort
 
-bootstrap_args=(
-  --target "$TARGET"
-  --source-dir "$SOURCE_DIR"
-  --definitions "$GENERATED_DEFINITIONS_DIR"
-  --repart-dir "$BOOTSTRAP_REPART_DIR"
-  --loader-timeout "$LOADER_TIMEOUT"
-  # Confirmation already happened in confirm_usb_write_or_abort above
-  # with strictly more context than bootstrap's own prompt can provide,
-  # so always pass --yes down. If the user wants bootstrap's prompt,
-  # they should call bootstrap directly.
-  --yes
-  # Skip sysupdate inside bootstrap. The USBDATA partition is
-  # unformatted at this point (repart creates it without Format= and
-  # we mkfs.exfat it ourselves below). systemd-dissect inside
-  # sysupdate cannot handle the unformatted partition and fails with
-  # "Failed to mount image: No such file or directory". We run
-  # sysupdate ourselves after formatting USBDATA.
-  --skip-sysupdate
-)
-# Propagate --allow-fixed-disk: confirm_usb_write_or_abort has already
-# enforced the removable check; bootstrap's own check would otherwise
-# reject the target again and there's no way for the user to recover
-# without this pass-through.
-[[ "$ALLOW_FIXED_DISK" == "yes" ]] && bootstrap_args+=(--allow-fixed-disk)
-[[ -n "$IMAGE_ID" ]] && bootstrap_args+=(--image-id "$IMAGE_ID")
+    bootstrap_args=(
+      --target "$TARGET"
+      --source-dir "$SOURCE_DIR"
+      --definitions "$GENERATED_DEFINITIONS_DIR"
+      --repart-dir "$BOOTSTRAP_REPART_DIR"
+      --loader-timeout "$LOADER_TIMEOUT"
+      # Confirmation already happened in confirm_usb_write_or_abort above
+      # with strictly more context than bootstrap's own prompt can provide,
+      # so always pass --yes down. If the user wants bootstrap's prompt,
+      # they should call bootstrap directly.
+      --yes
+      # Skip sysupdate inside bootstrap. The USBDATA partition is
+      # unformatted at this point (repart creates it without Format= and
+      # we mkfs.exfat it ourselves below). systemd-dissect inside
+      # sysupdate cannot handle the unformatted partition and fails with
+      # "Failed to mount image: No such file or directory". We run
+      # sysupdate ourselves after formatting USBDATA.
+      --skip-sysupdate
+    )
+    # Propagate --allow-fixed-disk: confirm_usb_write_or_abort has already
+    # enforced the removable check; bootstrap's own check would otherwise
+    # reject the target again and there's no way for the user to recover
+    # without this pass-through.
+    [[ "$ALLOW_FIXED_DISK" == "yes" ]] && bootstrap_args+=(--allow-fixed-disk)
+    [[ -n "$IMAGE_ID" ]] && bootstrap_args+=(--image-id "$IMAGE_ID")
 
-echo "==> Bootstrapping hardware test USB on $TARGET"
-"$PROJECT_ROOT/bin/bootstrap-ab-disk.sh" "${bootstrap_args[@]}"
+    echo "==> Bootstrapping hardware test USB on $TARGET"
+    "$PROJECT_ROOT/bin/bootstrap-ab-disk.sh" "${bootstrap_args[@]}"
 
-resolve_disk_device
-format_usb_storage_partition
+    resolve_disk_device
+    format_usb_storage_partition
+fi
 
 # Seed the first system version directly by writing the root.raw image
 # into a root slot, instead of using systemd-sysupdate --image on the

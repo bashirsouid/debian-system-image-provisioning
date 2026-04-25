@@ -1,4 +1,9 @@
 # Optional persistent data partition shared across retained versions.
-# If a GPT partition labeled DATA exists, mount it at /mnt/data. The nofail
-# flag keeps systems without a DATA partition bootable.
-PARTLABEL=DATA /mnt/data ext4 defaults,nofail,x-systemd.device-timeout=10s 0 2
+#
+# Mount lazily via systemd's automount support so a missing or absent
+# DATA partition produces no [TIME]/[DEPEND]/[FAILED] red lines on the
+# console at boot. With `noauto,x-systemd.automount` the device is
+# only resolved when something actually accesses /mnt/data, and
+# `nofail` keeps the failure quiet if the partition genuinely never
+# appears (e.g. on the live-test USB which has USBDATA, not DATA).
+PARTLABEL=DATA /mnt/data ext4 noauto,nofail,x-systemd.automount,x-systemd.device-timeout=2s 0 2

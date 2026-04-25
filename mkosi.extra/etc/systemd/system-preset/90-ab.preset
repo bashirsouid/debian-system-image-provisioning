@@ -20,9 +20,23 @@ enable systemd-resolved.service
 enable systemd-timesyncd.service
 enable systemd-oomd.service
 enable ab-runtime-validate-firstboot.service
+# Streams the current-boot journal to /root/last-boot.log for offline
+# diagnosis. Wiped on each boot so it always shows the current boot only.
+enable ab-boot-log-capture.service
 # Disable systemd-boot-update on the test/sysupdate path. It runs
 # `bootctl update` against /boot, which on a USB ESP can take 60-90
 # seconds (FAT32 + slow USB writes), and the live-test USB doesn't
 # need its bootloader rewritten on every boot. Production sysupdate
 # handles its own bootloader bookkeeping via the .transfer files.
 disable systemd-boot-update.service
+# We use NetworkManager (with iwd) for connectivity, not systemd-networkd.
+# Debian's systemd package leaves networkd's units installed-but-disabled,
+# but on some kernels/configs systemd-networkd.socket still tries to
+# listen and fails with "Failed to listen on systemd-networkd.socket -
+# Network Service Netlink Socket" — a bright red [FAILED] line on every
+# boot. Explicitly disable both the service and its sockets here so
+# preset-all writes through and there is no leftover wants-symlink.
+disable systemd-networkd.service
+disable systemd-networkd.socket
+disable systemd-networkd-wait-online.service
+disable systemd-networkd-persistent-storage.service

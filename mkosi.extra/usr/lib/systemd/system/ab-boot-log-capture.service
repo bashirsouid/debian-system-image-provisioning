@@ -1,0 +1,44 @@
+[Unit]
+Description=Stream the current-boot journal to /root/last-boot.log
+# Run as early as possible after the journal is up so we capture
+# everything from boot, including late failures that would
+# otherwise prevent multi-user.target from reaching. Journald is
+# socket-activated so by the time /root is writable, journald
+# already has all the early-boot messages buffered.
+After=systemd-journald.service local-fs.target
+Wants=systemd-journald.service
+RequiresMountsFor=/root
+DefaultDependencies=no
+ConditionPathIsDirectory=/root
+
+[Service]
+# `Type=simple` with `journalctl -f` keeps the file fresh in
+# real-time. If a later boot stage hangs, you can still read
+# /root/last-boot.log from another VT or by mounting the disk
+# offline and see exactly when the hang happened.
+Type=simple
+# Wipe the previous boot's file so /root/last-boot.log always
+# describes the *current* boot only — what the user asked for
+# (no unbounded append across reboots).
+ExecStartPre=/bin/sh -c ': > /root/last-boot.log && chmod 0600 /root/last-boot.log'
+# `journalctl -b 0`     - current boot only
+# `--no-pager`          - non-interactive
+# `-o short-precise`    - microsecond timestamps (useful for
+#                          chasing the 60s+ device-wait stalls
+#                          that show up as TIME-OUT lines)
+# `-f`                  - follow; service runs for the lifetime
+#                          of the boot, journalctl exits when
+#                          systemd reaps it during shutdown.
+ExecStart=/bin/sh -c 'exec journalctl -b 0 --no-pager -o short-precise -f >> /root/last-boot.log 2>&1'
+# We're a diagnostic helper, not load-bearing. Don't restart
+# storms if the journal goes away mid-boot.
+Restart=no
+# Make sure the unit doesn't fail-stop the rest of the boot.
+SuccessExitStatus=0 1 SIGTERM
+
+[Install]
+# Wire into both targets. multi-user.target is the normal path;
+# emergency/rescue paths typically don't reach it but in those
+# cases the user is already at a shell and can read the journal
+# interactively.
+WantedBy=multi-user.target

@@ -160,6 +160,21 @@ if [[ -f "$ROOT/usr/lib/systemd/system/systemd-boot-update.service" ]]; then
   ln -snf /dev/null "$ROOT/etc/systemd/system/systemd-boot-update.service"
 fi
 
+# Same for systemd-networkd: this image uses NetworkManager. The preset
+# disables networkd, but on some Debian/kernel combos networkd.socket
+# is wired to other targets via static unit files we don't override,
+# and you still get a [FAILED] red line at boot:
+#   "Failed to listen on systemd-networkd.socket - Network Service Netlink Socket"
+# Mask the socket and service so they cannot be pulled in by anything.
+for _nu in systemd-networkd.service systemd-networkd.socket \
+           systemd-networkd-wait-online.service \
+           systemd-networkd-persistent-storage.service; do
+  if [[ -f "$ROOT/usr/lib/systemd/system/$_nu" ]]; then
+    echo "==> [FINALIZE] masking $_nu (this image uses NetworkManager)"
+    ln -snf /dev/null "$ROOT/etc/systemd/system/$_nu"
+  fi
+done
+
 # Same for ssh.socket — Debian ships both ssh.service and ssh.socket enabled
 # by default and they fight over :22. The preset disables ssh.socket for new
 # enables, but if the package's postinst already wrote the wants-symlink,
