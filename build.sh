@@ -1013,6 +1013,18 @@ EOF
     mkosi_args+=("--profile=$p")
   done
 
+  # SYSTEMD_OFFLINE=1 tells systemctl to treat itself as if no system
+  # bus is reachable, which is exactly the case inside mkosi's build
+  # sandbox (no PID1, no /run/dbus). Without it, package postinst
+  # scripts that do `systemctl enable --now <unit>` (e.g. t2fanrd)
+  # try to actually START the unit, fail to talk to a non-existent
+  # PID1, and exit non-zero — dpkg then aborts the install with
+  # "Errors were encountered while processing: <pkg>". With OFFLINE
+  # mode the `--now` half becomes a no-op and the enable half (which
+  # is just filesystem symlink work) succeeds. The booted image is
+  # unaffected: SYSTEMD_OFFLINE only applies to the build sandbox.
+  mkosi_args+=("--environment=SYSTEMD_OFFLINE=1")
+
   echo "==> Starting mkosi build (profile: $PROFILE${HOST:+, host: $HOST}, force: ${target_force:-none})..."
   if [[ -n "$target_force" ]]; then
     # shellcheck disable=SC2206

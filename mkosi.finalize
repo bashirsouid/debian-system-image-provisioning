@@ -137,6 +137,64 @@ if chroot "$ROOT" command -v update-initramfs >/dev/null 2>&1; then
     shopt -u nullglob
   fi
 fi
+# Bypass apt for t2fanrd: the upstream Debian package's postinst runs
+#
+#   systemctl enable --now t2fanrd.service
+#
+# The `--now` half attempts an immediate `start` of the unit, which
+# fails inside mkosi's build sandbox because there is no real PID1 /
+# dbus to talk to. The postinst then exits non-zero and dpkg aborts
+# the whole apt-get install with "Errors were encountered while
+# processing: t2fanrd". Because dpkg/apt have no option to ignore
+# postinst failures, the only fix is to never let dpkg run that
+# postinst — install the package's files directly via `dpkg-deb -x`
+# and create the unit-enable symlink ourselves.
+#
+# Gated on the presence of a linux-t2 kernel module directory so
+# non-macbook builds skip this step entirely. dpkg won't track t2fanrd
+# as installed, but in this A/B-image model that's fine: each new
+# build is a from-scratch image (no in-place apt-upgrade), and the
+# binary + .service + multi-user.target.wants symlink is everything
+# the booted system needs.
+shopt -s nullglob
+_t2_module_dirs=("$ROOT"/usr/lib/modules/*-t2-*)
+shopt -u nullglob
+if (( ${#_t2_module_dirs[@]} > 0 )); then
+  echo "==> [FINALIZE] T2 kernel detected; installing t2fanrd via dpkg-deb -x (postinst bypass)"
+  _t2_repo="https://adityagarg8.github.io/t2-ubuntu-repo"
+  _t2_tmp="$(mktemp -d)"
+  if ! curl -fsSL "$_t2_repo/Packages" -o "$_t2_tmp/Packages"; then
+    echo "WARNING: [FINALIZE] could not fetch $_t2_repo/Packages; t2fanrd will not be installed" >&2
+  else
+    # Walk the Packages index for the latest t2fanrd entry. Format:
+    #   Package: t2fanrd
+    #   Version: x.y.z-r
+    #   Filename: ./t2fanrd_x.y.z-r_amd64.deb
+    _t2fanrd_filename="$(awk '
+      /^Package:[[:space:]]*t2fanrd[[:space:]]*$/ { in_block=1; next }
+      in_block && /^Filename:/                   { sub(/^[[:space:]]*\.\//, "", $2); print $2; exit }
+      in_block && /^$/                           { in_block=0 }
+    ' "$_t2_tmp/Packages")"
+    if [[ -z "$_t2fanrd_filename" ]]; then
+      echo "WARNING: [FINALIZE] no t2fanrd entry in $_t2_repo/Packages; skipping install" >&2
+    elif ! curl -fsSL "$_t2_repo/$_t2fanrd_filename" -o "$_t2_tmp/t2fanrd.deb"; then
+      echo "WARNING: [FINALIZE] failed to download $_t2_repo/$_t2fanrd_filename; t2fanrd will not be installed" >&2
+    else
+      if dpkg-deb -x "$_t2_tmp/t2fanrd.deb" "$ROOT"; then
+        chmod 0755 "$ROOT/usr/bin/t2fanrd" 2>/dev/null || true
+        install -d -m 0755 "$ROOT/etc/systemd/system/multi-user.target.wants"
+        ln -snf /etc/systemd/system/t2fanrd.service \
+          "$ROOT/etc/systemd/system/multi-user.target.wants/t2fanrd.service"
+        echo "==> [FINALIZE] t2fanrd ($(basename "$_t2fanrd_filename")) installed; enabled via multi-user.target.wants"
+      else
+        echo "WARNING: [FINALIZE] dpkg-deb -x failed for t2fanrd.deb; T2 fan control will be missing" >&2
+      fi
+    fi
+  fi
+  rm -rf "$_t2_tmp"
+fi
+unset _t2_module_dirs _t2_repo _t2_tmp _t2fanrd_filename
+
 if [[ -n "${AB_IMAGE_ID:-}" ]]; then
   echo "==> [FINALIZE] setting IMAGE_ID=$AB_IMAGE_ID in /usr/lib/os-release"
   append_or_replace_os_release_key IMAGE_ID "$AB_IMAGE_ID"
