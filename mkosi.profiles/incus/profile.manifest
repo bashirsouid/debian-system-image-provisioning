@@ -1,0 +1,2 @@
+description="Incus system-container / VM manager (Debian trixie packages it natively)."
+uses_secrets=""

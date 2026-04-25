@@ -1,0 +1,2 @@
+description="NetworkManager + iwd for Wi-Fi. Ships common non-free wifi firmware (Intel iwlwifi, Realtek, Mediatek)."
+uses_secrets=""

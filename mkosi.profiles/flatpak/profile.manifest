@@ -1,0 +1,2 @@
+description="Flatpak package manager + a first-boot oneshot that adds the Flathub remote idempotently."
+uses_secrets=""

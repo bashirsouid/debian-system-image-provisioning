@@ -22,11 +22,6 @@ set -euo pipefail
 STRICT="no"
 PROFILE=""
 HOST=""
-# PROFILE is accepted for future per-profile validation but is currently
-# unused. The existence of the flag matches the interface expected by
-# build.sh so we swallow it silently.
-# shellcheck disable=SC2034
-: "${PROFILE}"
 
 while (($#)); do
     case "$1" in
@@ -42,12 +37,45 @@ done
 REPO_ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 SECRETS_DIR="${REPO_ROOT}/.mkosi-secrets"
 
+# Load the profile/role resolver so we can read each profile's
+# profile.manifest and discover which secrets it declares via
+# uses_secrets=. When build.sh passes --profile "<expanded list>"
+# we use that set to scope the "is this secret relevant to this
+# build?" decision; otherwise we fall back to checking every known
+# secret (pre-profile-manifest behavior).
+export AB_PROJECT_ROOT="${REPO_ROOT}"
+# shellcheck source=lib/profile-resolver.sh
+source "${REPO_ROOT}/scripts/lib/profile-resolver.sh"
+
+# Every known secret category. Order matters for the summary table.
+# ssh is special: always required (no bootable image is useful without
+# it). The rest are optional unless a selected profile declares them.
+ALL_FEATURES=(ssh tailscale cloudflared sendgrid pagerduty healthchecks)
+
 declare -A STATUS
 declare -A DETAIL
-for k in ssh tailscale cloudflared sendgrid pagerduty healthchecks; do
+for k in "${ALL_FEATURES[@]}"; do
     STATUS[$k]="missing"
     DETAIL[$k]=""
 done
+
+# Features this build actually needs, based on the selected profiles'
+# manifests. ssh is always included. If --profile is empty (e.g.
+# --all or an older caller that doesn't pass --profile), we degrade
+# gracefully to "check every known feature" so nothing goes unchecked
+# by accident.
+declare -A NEEDED
+NEEDED[ssh]=1
+if [[ -n "${PROFILE}" ]]; then
+    required_secrets="$(ab_collect_required_secrets "${PROFILE}")"
+    for s in ${required_secrets}; do
+        NEEDED[$s]=1
+    done
+else
+    for k in "${ALL_FEATURES[@]}"; do
+        NEEDED[$k]=1
+    done
+fi
 
 c_red()    { printf '\033[31m%s\033[0m' "$*"; }
 c_green()  { printf '\033[32m%s\033[0m' "$*"; }
@@ -159,37 +187,46 @@ fi
 
 # --- OPTIONAL: tailscale-authkey ----------------------------------------
 
-if ts_path="$(resolve_secret tailscale-authkey)" && check_file_perms "${ts_path}"; then
-    ts="$(<"${ts_path}")"; ts="${ts%$'\n'}"
-    if [[ "${ts}" != tskey-auth-* && "${ts}" != tskey-* ]]; then
-        fail_soft tailscale "content does not start with tskey-auth-"
-    elif [[ "${#ts}" -lt 40 ]]; then
-        fail_soft tailscale "key looks truncated (${#ts} chars)"
+if [[ -n "${NEEDED[tailscale]+x}" ]]; then
+    if ts_path="$(resolve_secret tailscale-authkey)" && check_file_perms "${ts_path}"; then
+        ts="$(<"${ts_path}")"; ts="${ts%$'\n'}"
+        if [[ "${ts}" != tskey-auth-* && "${ts}" != tskey-* ]]; then
+            fail_soft tailscale "content does not start with tskey-auth-"
+        elif [[ "${#ts}" -lt 40 ]]; then
+            fail_soft tailscale "key looks truncated (${#ts} chars)"
+        else
+            ok tailscale "${#ts}-char key"
+        fi
+        unset ts
     else
-        ok tailscale "${#ts}-char key"
+        warn "tailscale-authkey absent — tailscale profile selected but image will build WITHOUT auto-auth"
     fi
-    unset ts
-else
-    warn "tailscale-authkey absent — image will be built WITHOUT Tailscale auto-auth"
 fi
 
 # --- OPTIONAL: cloudflared-token ----------------------------------------
 
-if cf_path="$(resolve_secret cloudflared-token)" && check_file_perms "${cf_path}"; then
-    cf="$(<"${cf_path}")"; cf="${cf%$'\n'}"
-    if [[ "${#cf}" -lt 80 ]]; then
-        fail_soft cloudflared "token looks truncated (${#cf} chars)"
-    elif [[ ! "${cf}" =~ ^[A-Za-z0-9+/=_-]+$ ]]; then
-        fail_soft cloudflared "token contains non-base64 characters"
+if [[ -n "${NEEDED[cloudflared]+x}" ]]; then
+    if cf_path="$(resolve_secret cloudflared-token)" && check_file_perms "${cf_path}"; then
+        cf="$(<"${cf_path}")"; cf="${cf%$'\n'}"
+        if [[ "${#cf}" -lt 80 ]]; then
+            fail_soft cloudflared "token looks truncated (${#cf} chars)"
+        elif [[ ! "${cf}" =~ ^[A-Za-z0-9+/=_-]+$ ]]; then
+            fail_soft cloudflared "token contains non-base64 characters"
+        else
+            ok cloudflared "${#cf}-char token"
+        fi
+        unset cf
     else
-        ok cloudflared "${#cf}-char token"
+        warn "cloudflared-token absent — cloudflare-tunnel profile selected but image will build WITHOUT backup SSH"
     fi
-    unset cf
-else
-    warn "cloudflared-token absent — image will be built WITHOUT Cloudflare Tunnel backup SSH"
 fi
 
 # --- OPTIONAL: sendgrid-api-key -----------------------------------------
+# sendgrid/pagerduty are consumed by the always-on ab-monitor-alert@
+# template regardless of profile, so they are checked whenever a
+# secret file is present. "Missing" only warns when NEEDED[sendgrid]
+# is set (no profile declares it today; passed-through on --no-profile
+# invocations that fall back to "check everything").
 
 if sg_path="$(resolve_secret sendgrid-api-key)" && check_file_perms "${sg_path}"; then
     sg="$(<"${sg_path}")"; sg="${sg%$'\n'}"
@@ -201,7 +238,7 @@ if sg_path="$(resolve_secret sendgrid-api-key)" && check_file_perms "${sg_path}"
         ok sendgrid "${#sg}-char key"
     fi
     unset sg
-else
+elif [[ -n "${NEEDED[sendgrid]+x}" ]]; then
     warn "sendgrid-api-key absent — alerts will NOT send email"
 fi
 
@@ -215,21 +252,23 @@ if pd_path="$(resolve_secret pagerduty-routing-key)" && check_file_perms "${pd_p
         ok pagerduty "32-char routing key"
     fi
     unset pd
-else
+elif [[ -n "${NEEDED[pagerduty]+x}" ]]; then
     warn "pagerduty-routing-key absent — alerts will NOT page PagerDuty"
 fi
 
 # --- OPTIONAL: healthchecks-ping-url ------------------------------------
 
-if hc_path="$(resolve_secret healthchecks-ping-url)" && check_file_perms "${hc_path}"; then
-    hc="$(<"${hc_path}")"; hc="${hc%$'\n'}"
-    case "${hc}" in
-        https://hc-ping.com/*|https://*/ping/*) ok healthchecks "configured" ;;
-        *) fail_soft healthchecks "URL should look like https://hc-ping.com/<uuid>" ;;
-    esac
-    unset hc
-else
-    warn "healthchecks-ping-url absent — NO dead-man's-switch (box going dark will not alert you)"
+if [[ -n "${NEEDED[healthchecks]+x}" ]]; then
+    if hc_path="$(resolve_secret healthchecks-ping-url)" && check_file_perms "${hc_path}"; then
+        hc="$(<"${hc_path}")"; hc="${hc%$'\n'}"
+        case "${hc}" in
+            https://hc-ping.com/*|https://*/ping/*) ok healthchecks "configured" ;;
+            *) fail_soft healthchecks "URL should look like https://hc-ping.com/<uuid>" ;;
+        esac
+        unset hc
+    else
+        warn "healthchecks-ping-url absent — healthchecksio profile selected but dead-man's-switch disabled"
+    fi
 fi
 
 # --- summary -------------------------------------------------------------
@@ -237,7 +276,14 @@ fi
 section "build-time secret summary"
 printf '  %-16s  %-14s  %s\n' FEATURE STATUS DETAIL >&2
 printf '  %-16s  %-14s  %s\n' '----------------' '--------------' '----------------------------' >&2
-for k in ssh tailscale cloudflared sendgrid pagerduty healthchecks; do
+for k in "${ALL_FEATURES[@]}"; do
+    # Hide rows the selected profiles don't need AND that have no file
+    # on disk — they are genuinely not relevant to this build. Keep the
+    # row if a file is present (so the user notices orphaned secrets)
+    # or if a profile declared it (so it gets a visible ok/miss line).
+    if [[ -z "${NEEDED[$k]+x}" && "${STATUS[$k]}" == "missing" ]]; then
+        continue
+    fi
     case "${STATUS[$k]}" in
         present)   c="$(c_green '[configured]  ')" ;;
         missing)   c="$(c_yellow '[skipped]     ')" ;;

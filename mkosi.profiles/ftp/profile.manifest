@@ -1,0 +1,2 @@
+description="vsftpd FTP server. Consider SFTP (openssh-server) as an alternative if you just need file transfer."
+uses_secrets=""

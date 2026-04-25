@@ -1,0 +1,2 @@
+enable tailscale-up.service
+enable tailscale-watchdog.timer

@@ -1,0 +1,2 @@
+description="Apple T2 hardware: linux-t2 kernel, Apple firmware + T2 audio config, initramfs modules, t2fanrd, BCM wifi/BT firmware."
+uses_secrets=""

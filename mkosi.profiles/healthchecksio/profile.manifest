@@ -1,0 +1,2 @@
+description="Dead-man's-switch heartbeat to healthchecks.io. If the ping stops arriving, Healthchecks alerts you."
+uses_secrets="healthchecks"

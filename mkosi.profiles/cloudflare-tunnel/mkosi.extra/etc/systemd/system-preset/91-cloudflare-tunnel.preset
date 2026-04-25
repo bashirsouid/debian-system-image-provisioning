@@ -1,0 +1,2 @@
+enable cloudflared.service
+enable cloudflared-watchdog.timer

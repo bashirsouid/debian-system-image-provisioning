@@ -1,26 +1,35 @@
-# /etc/apt/keyrings inside the image
+# /etc/apt/keyrings — owned by profiles, not the base image
 
-Holds the PUBLIC signing keys for third-party apt repos used by the
-mkosi build.
+This directory used to hold every fetched third-party signing key
+(`tailscale-archive-keyring.gpg`, `cloudflare-main.gpg`). After the
+profile-composition refactor, each profile owns its own keys at:
 
-Keys are NOT committed because they rotate. They are fetched and
-placed here by `scripts/fetch-third-party-keys.sh`, which should be
-called from `update-3rd-party-deps.sh`.
+    mkosi.profiles/<profile>/mkosi.extra/etc/apt/keyrings/<key>.gpg
 
-Expected files after fetching:
+That way a key only ends up in the image when its profile is selected.
+The key fetching itself is driven by per-profile manifests:
 
-    cloudflare-main.gpg
-    tailscale-archive-keyring.gpg
+    mkosi.profiles/<profile>/apt-keys.conf
+
+`scripts/fetch-third-party-keys.sh` reads each manifest, downloads the
+key, verifies the pinned fingerprint, and writes the dearmored key to
+the profile's `mkosi.extra/etc/apt/keyrings/` tree.
+
+Keys are NOT committed because they rotate. To add a new third-party
+apt repo:
+
+1. Drop a `<repo>.sources` file under
+   `mkosi.profiles/<profile>/mkosi.extra/etc/apt/sources.list.d/`
+   with `Signed-By: /etc/apt/keyrings/<key>.gpg`.
+2. Add a `KEY_n_*` block to `mkosi.profiles/<profile>/apt-keys.conf`
+   with a freshly verified fingerprint (see `mkosi.profiles/tailscale/
+   apt-keys.conf` for the format).
+3. Run `scripts/fetch-third-party-keys.sh` (or
+   `update-3rd-party-deps.sh --fresh`).
 
 The signing key files must be dearmored (binary GPG format, not ASCII
-armored) and mode 0644. apt refuses to use armored keys referenced via
-`Signed-By=` on modern Debian.
+armored) and mode 0644 — apt refuses armored keys referenced via
+`Signed-By=` on modern Debian. The fetch script handles that.
 
-Corresponding sources files:
-
-    /etc/apt/sources.list.d/cloudflared.sources
-    /etc/apt/sources.list.d/tailscale.sources
-
-If you need to add a new third-party repo, follow the same pattern:
-one Deb822 .sources file here, one fetched+verified keyring, one entry
-in scripts/fetch-third-party-keys.sh with a pinned fingerprint.
+Anything left in THIS base directory is documentation; image keys
+live under their owning profile.

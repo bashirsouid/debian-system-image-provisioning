@@ -1,2 +1,9 @@
 enable NetworkManager.service
-enable NetworkManager-wait-online.service
+# NetworkManager-wait-online is intentionally NOT enabled. On a laptop
+# that regularly boots outside any known wifi network, that unit holds
+# network-online.target for up to 90s before failing, which delays
+# anything ordered After=network-online.target (user sessions, a bunch
+# of services). If a specific host truly needs boot to wait for wifi —
+# e.g. a pinned-to-a-known-AP mini-server — enable it in that host's
+# mkosi.extra/ preset drop-in instead of globally here.
+disable NetworkManager-wait-online.service

@@ -1,0 +1,2 @@
+description="Microsoft VSCode. TODO(phase-3): add packages.microsoft.com apt source + key, then add 'code' package."
+uses_secrets=""

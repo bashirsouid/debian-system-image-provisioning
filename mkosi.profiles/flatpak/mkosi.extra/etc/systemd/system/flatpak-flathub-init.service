@@ -1,0 +1,24 @@
+[Unit]
+Description=Add Flathub remote (first-boot, idempotent)
+Documentation=https://flatpak.org/setup/Debian
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/flatpak/.ab-flathub-added
+# Flatpak's apt package creates /var/lib/flatpak/ as part of its
+# postinst, so the path must already exist for ExecStartPost's touch
+# to succeed.
+ConditionPathIsDirectory=/var/lib/flatpak
+
+[Service]
+Type=oneshot
+# --if-not-exists makes this safe to run repeatedly even if our
+# ConditionPathExists marker gets deleted.
+ExecStart=/usr/bin/flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+ExecStartPost=/bin/sh -c 'install -m 0644 /dev/null /var/lib/flatpak/.ab-flathub-added'
+# We are not load-bearing for boot. Don't restart-storm if Flathub is
+# unreachable on first boot; the next boot tries again.
+Restart=no
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,2 @@
+description="Tailscale mesh VPN. Reads an encrypted tailscale-authkey credential at first boot and auto-auths via tailscale-up.service."
+uses_secrets="tailscale"

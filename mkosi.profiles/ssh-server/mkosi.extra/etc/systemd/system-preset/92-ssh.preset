@@ -1,0 +1,6 @@
+enable ssh.service
+# Disable ssh.socket explicitly. Debian's openssh-server ships both
+# ssh.service AND ssh.socket enabled by default; they fight over port 22
+# and one of them crash-loops. We pick service-mode (one persistent sshd
+# we can override cleanly via /etc/ssh/sshd_config.d/).
+disable ssh.socket

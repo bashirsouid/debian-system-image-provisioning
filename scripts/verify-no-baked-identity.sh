@@ -61,6 +61,11 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             'mkosi.extra/etc/hostid' \
             'mkosi.extra/var/lib/dbus/machine-id' \
             'mkosi.extra/var/lib/systemd/random-seed' \
+            'mkosi.profiles/*/mkosi.extra/etc/ssh/ssh_host_*' \
+            'mkosi.profiles/*/mkosi.extra/etc/machine-id' \
+            'mkosi.profiles/*/mkosi.extra/etc/hostid' \
+            'mkosi.profiles/*/mkosi.extra/var/lib/dbus/machine-id' \
+            'mkosi.profiles/*/mkosi.extra/var/lib/systemd/random-seed' \
             'hosts/*/mkosi.extra/etc/ssh/ssh_host_*' \
             'hosts/*/mkosi.extra/etc/machine-id' \
             'hosts/*/mkosi.extra/etc/hostid' \
@@ -75,7 +80,9 @@ else
         add_if_bad "${path#./}"
     done < <(
         find . \
-            \( -path './mkosi.extra/*' -o -path './hosts/*/mkosi.extra/*' \) \
+            \( -path './mkosi.extra/*' \
+               -o -path './mkosi.profiles/*/mkosi.extra/*' \
+               -o -path './hosts/*/mkosi.extra/*' \) \
             \( \
                 -name 'ssh_host_*' \
                 -o -path '*/etc/machine-id' \

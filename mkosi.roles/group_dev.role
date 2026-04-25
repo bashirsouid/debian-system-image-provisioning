@@ -1,0 +1,14 @@
+# group_dev role — general-purpose developer workstation role.
+#
+# Expanded by build.sh into the profile list below. One-level-only: a
+# role file can only list atomic profiles (each must have
+# mkosi.profiles/<name>/), never another role.
+#
+# Edit freely. Keep one profile per line (# for comments) or put them
+# space-separated on one line — build.sh strips comments and collapses
+# whitespace.
+dev-tools
+vscode
+antigravity
+incus
+k3s

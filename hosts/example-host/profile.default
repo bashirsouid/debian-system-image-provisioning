@@ -1,5 +1,12 @@
-# Default profile when ./build.sh --host example-host is run without
-# --profile. Must match one of the [Match] Profiles= values in any of
-# this host's mkosi.conf.d/ drop-ins, otherwise those drop-ins will
-# silently skip and the host overlay will have no effect.
+# Default profile list when ./build.sh --host example-host is run
+# without --profile. Space-separated. Each token is either:
+#   * an atomic profile    — must exist as mkosi.profiles/<name>/
+#   * a role (group_*)     — must exist as mkosi.roles/<name>.role
+#                            and expands to the profile list in that
+#                            file. One level of nesting only: a role
+#                            cannot reference another role.
+#
+# Host-level mkosi.conf.d/ drop-ins with [Match] Profiles=X only apply
+# when X is present in the resolved profile list, so keep this list in
+# sync with any drop-ins you add here.
 devbox

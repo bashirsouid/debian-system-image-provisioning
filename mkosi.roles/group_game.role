@@ -1,0 +1,4 @@
+# group_game role — gaming. flatpak is first so Steam via Flathub is
+# an option even if the OS-package steam isn't wired up yet.
+flatpak
+steam

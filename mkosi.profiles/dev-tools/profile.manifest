@@ -1,0 +1,2 @@
+description="Baseline CLI developer toolkit: git, curl, vim, htop, tmux, rsync, less, ca-certificates, jq."
+uses_secrets=""

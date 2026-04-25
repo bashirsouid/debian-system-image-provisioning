@@ -1,0 +1,2 @@
+description="Steam client. TODO(phase-3): wire up i386 multilib + non-free, then add steam-installer + i386 GL libs."
+uses_secrets=""

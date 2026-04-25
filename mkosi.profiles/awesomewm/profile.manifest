@@ -1,0 +1,2 @@
+description="awesome window manager + X.org with xserver-xorg-legacy so non-root users can run startx."
+uses_secrets=""

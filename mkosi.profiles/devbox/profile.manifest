@@ -1,0 +1,2 @@
+description="Liquorix kernel + spice-vdagent for running as a QEMU/virt guest. Pair with awesomewm + dev-tools for a full desktop VM."
+uses_secrets=""

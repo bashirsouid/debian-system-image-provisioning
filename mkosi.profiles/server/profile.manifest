@@ -1,0 +1,2 @@
+description="Headless server baseline. Composes with ssh-server + tailscale + cloudflare-tunnel + healthchecksio for a production box."
+uses_secrets=""

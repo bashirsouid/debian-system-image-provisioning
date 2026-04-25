@@ -1,0 +1,2 @@
+description="Opt-in boot diagnostics: streams the current-boot journal to /root/last-boot.log (wiped each boot)."
+uses_secrets=""

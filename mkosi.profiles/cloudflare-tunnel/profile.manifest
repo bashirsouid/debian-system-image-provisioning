@@ -1,0 +1,2 @@
+description="Cloudflare Tunnel outbound-only connector; gives backup SSH reachability when Tailscale is unavailable."
+uses_secrets="cloudflared"

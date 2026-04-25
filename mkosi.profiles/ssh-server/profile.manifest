@@ -1,0 +1,17 @@
+# profile.manifest for ssh-server
+#
+# Format: shell-sourceable key=value. Loaded by build.sh and
+# scripts/verify-build-secrets.sh to decide what secrets this profile
+# needs at build time.
+#
+# Keys:
+#   description   - one-line human summary.
+#   uses_secrets  - space-separated. Valid names match the feature keys
+#                   in scripts/verify-build-secrets.sh:
+#                     ssh tailscale cloudflared sendgrid pagerduty healthchecks
+#                   Only listed secrets are required for this profile;
+#                   anything absent from .mkosi-secrets/ that is NOT in
+#                   any selected profile's list is skipped silently.
+
+description="Persistent sshd on :22. Enables ssh.service; masks the conflicting ssh.socket."
+uses_secrets="ssh"

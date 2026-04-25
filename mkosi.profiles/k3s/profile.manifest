@@ -1,0 +1,2 @@
+description="k3s single-node Kubernetes. TODO(phase-3): pick bundled-binary vs first-boot-install approach."
+uses_secrets=""

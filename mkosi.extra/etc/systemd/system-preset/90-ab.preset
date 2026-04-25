@@ -1,28 +1,16 @@
-enable tailscale-up.service
-enable tailscale-watchdog.timer
-enable cloudflared.service
-enable cloudflared-watchdog.timer
+# Base A/B preset. Profile-specific units (ssh, tailscale, cloudflared,
+# healthchecks heartbeat, boot-log capture) are enabled by their
+# respective profile presets under mkosi.profiles/<name>/mkosi.extra/
+# etc/systemd/system-preset/. When a profile isn't selected for the
+# current build its drop-in isn't applied and those units don't ship
+# at all — so nothing here needs to enable them.
 enable ab-user-provision.service
 enable ab-monitor.timer
-enable ab-heartbeat.timer
-enable ssh.service
-# Disable ssh.socket explicitly. Debian's openssh-server ships both
-# ssh.service AND ssh.socket enabled by default, but they fight over
-# port 22: the socket grabs the listen FD first, and when ssh.service
-# tries to bind it sees EADDRINUSE and crash-loops. The journal then
-# fills with "ssh.service: Failed with result 'exit-code'" entries
-# every few seconds. We pick service-mode (one persistent sshd that
-# we can override cleanly via /etc/ssh/sshd_config.d/) and disable
-# socket-activation.
-disable ssh.socket
 enable nftables.service
 enable systemd-resolved.service
 enable systemd-timesyncd.service
 enable systemd-oomd.service
 enable ab-runtime-validate-firstboot.service
-# Streams the current-boot journal to /root/last-boot.log for offline
-# diagnosis. Wiped on each boot so it always shows the current boot only.
-enable ab-boot-log-capture.service
 # Disable systemd-boot-update on the test/sysupdate path. It runs
 # `bootctl update` against /boot, which on a USB ESP can take 60-90
 # seconds (FAT32 + slow USB writes), and the live-test USB doesn't

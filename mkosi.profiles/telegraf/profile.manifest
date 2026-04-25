@@ -1,0 +1,2 @@
+description="Telegraf metrics agent. TODO(phase-3): add repos.influxdata.com apt source + key, then add 'telegraf'."
+uses_secrets=""

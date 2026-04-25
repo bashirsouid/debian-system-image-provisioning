@@ -3,6 +3,9 @@ set -euo pipefail
 
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Export so scripts/lib/profile-resolver.sh can find mkosi.profiles/ and
+# mkosi.roles/ without every caller repeating the wiring.
+export AB_PROJECT_ROOT="$PROJECT_ROOT"
 SECRETS_DIR="$PROJECT_ROOT/.mkosi-secrets"
 THIRD_PARTY_DIR="$PROJECT_ROOT/.mkosi-thirdparty"
 USERS_FILE="$PROJECT_ROOT/.users.json"
@@ -11,6 +14,8 @@ USERS_SAMPLE="$PROJECT_ROOT/.users.json.sample"
 source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
 # shellcheck source=scripts/lib/build-meta.sh
 source "$PROJECT_ROOT/scripts/lib/build-meta.sh"
+# shellcheck source=scripts/lib/profile-resolver.sh
+source "$PROJECT_ROOT/scripts/lib/profile-resolver.sh"
 
 PROFILE="devbox"
 HOST=""
@@ -48,17 +53,22 @@ usage() {
 Usage: ./build.sh [options]
 
 Options:
-  --profile NAME           build profile (default: devbox)
-  --host NAME              include host-specific overlay from hosts/NAME/
+  --profile LIST           space-separated profile and/or role names (default: devbox).
+                           Each token must exist as mkosi.profiles/<name>/ or
+                           mkosi.roles/<name>.role; roles expand to their member
+                           profiles before mkosi is invoked.
+                           Example: --profile "macbook awesomewm group_dev wifi ssh-server"
+  --host NAME              include host-specific overlay from hosts/NAME/.
+                           When --host is given without --profile, the profile
+                           list is read from hosts/NAME/profile.default.
   --force                  pass mkosi -f
   --clean                  pass mkosi -f -f
   --force-rebuild          clean all generated state, refresh managed third-party
                            checkouts from clean clones, then rebuild
-  --all                    build the standard target matrix in one invocation:
-                             devbox
-                             devbox --host evox2
-                             server --host cloudbox
-                             macbook --host macbookpro13-2019-t2
+  --all                    build the standard target matrix in one invocation.
+                           Includes one no-host QEMU smoke build (profile=devbox)
+                           plus one build per hosts/*/ directory (excluding
+                           example-host), each using that host's profile.default.
   --sync-host-ids=yes|no   when username matches the invoking host user,
                            copy that user's uid/gid/group into the image
   --non-interactive        disable all interactive prompts (default to No)
@@ -497,6 +507,10 @@ render_sysupdate_transfers() {
 }
 
 profile_has_one_of() {
+  # Takes a SPACE-SEPARATED profile list as $1 and one-or-more profile
+  # names to match against as $@ positional args. Returns 0 if any
+  # named match appears in the list. Input must already be expanded
+  # via ab_resolve_profiles — roles are not re-expanded here.
   local profiles="$1"
   shift
   local p match
@@ -511,10 +525,16 @@ profile_has_one_of() {
 }
 
 profile_needs_awesome() {
-  profile_has_one_of "$1" devbox macbook
+  # Awesome WM + its build toolchain was carved out into the awesomewm
+  # profile; that's now the single source of truth for "does this
+  # build want awesome compiled from third-party/awesome/".
+  profile_has_one_of "$1" awesomewm
 }
 
 profile_needs_macbook_audio() {
+  # CS8409 DKMS audio driver (third-party/snd_hda_macbookpro) is a
+  # MacBook-T2-hardware concern; only rebuild it when the macbook
+  # hardware profile is selected.
   profile_has_one_of "$1" macbook
 }
 
@@ -656,10 +676,47 @@ ensure_profile_hostdeps() {
   fi
 }
 
+# Walk every selected profile's apt-keys.conf and report 0 if every
+# declared key (KEY_n_OUT) already exists on disk under the profile's
+# mkosi.extra/etc/apt/keyrings/. Used to skip a fetch round-trip when
+# the keys are already in place from a prior build.
+_apt_keys_present_for_profiles() {
+  local profile_list="$1"
+  local p conf out_path full
+  for p in $profile_list; do
+    conf="$PROJECT_ROOT/mkosi.profiles/$p/apt-keys.conf"
+    [[ -f "$conf" ]] || continue
+    # Source in a subshell so KEY_n_* never leaks into our env.
+    if ! (
+      set -e
+      # shellcheck disable=SC1090
+      source "$conf"
+      i=1
+      while :; do
+        out_var="KEY_${i}_OUT"
+        if [[ -z "${!out_var:-}" ]]; then
+          break
+        fi
+        full="$PROJECT_ROOT/mkosi.profiles/$p/mkosi.extra/${!out_var}"
+        [[ -f "$full" ]] || exit 1
+        i=$((i+1))
+      done
+    ); then
+      return 1
+    fi
+  done
+  return 0
+}
+
 ensure_managed_sources_once() {
   local mode="$1"
   local needs_any=false
   local target profile host missing_deps=false missing_keys=false
+  # AB_BUILD_RESOLVED_PROFILES is set by the caller (the union of all
+  # targets' resolved profiles for this invocation). Used both to
+  # filter fetch-third-party-keys.sh and to decide whether any third-
+  # party-repo profiles even need their keys bootstrapped.
+  local resolved="${AB_BUILD_RESOLVED_PROFILES:-}"
 
   for target in "${BUILD_TARGETS[@]}"; do
     profile="${target%%|*}"
@@ -671,8 +728,13 @@ ensure_managed_sources_once() {
   done
 
   if [[ "$mode" == "fresh" ]]; then
-    echo "==> Refreshing third-party GPG keys..."
-    "$PROJECT_ROOT/scripts/fetch-third-party-keys.sh"
+    if [[ -n "$resolved" ]]; then
+      echo "==> Refreshing third-party GPG keys (profiles: $resolved)..."
+      "$PROJECT_ROOT/scripts/fetch-third-party-keys.sh" --profile "$resolved"
+    else
+      echo "==> Refreshing third-party GPG keys (all profiles)..."
+      "$PROJECT_ROOT/scripts/fetch-third-party-keys.sh"
+    fi
 
     if [[ "$needs_any" == true ]]; then
       echo "==> Refreshing managed third-party sources from clean clones..."
@@ -681,7 +743,7 @@ ensure_managed_sources_once() {
     return 0
   fi
 
-  if [[ ! -f "$PROJECT_ROOT/mkosi.extra/etc/apt/keyrings/cloudflare-main.gpg" || ! -f "$PROJECT_ROOT/mkosi.extra/etc/apt/keyrings/tailscale-archive-keyring.gpg" ]]; then
+  if ! _apt_keys_present_for_profiles "$resolved"; then
     missing_keys=true
   fi
 
@@ -699,8 +761,12 @@ ensure_managed_sources_once() {
   fi
 
   if [[ "$missing_keys" == true ]]; then
-    echo "==> Bootstrapping third-party GPG keys..."
-    "$PROJECT_ROOT/scripts/fetch-third-party-keys.sh"
+    echo "==> Bootstrapping third-party GPG keys (profiles: ${resolved:-all})..."
+    if [[ -n "$resolved" ]]; then
+      "$PROJECT_ROOT/scripts/fetch-third-party-keys.sh" --profile "$resolved"
+    else
+      "$PROJECT_ROOT/scripts/fetch-third-party-keys.sh"
+    fi
   fi
 
   if [[ "$missing_deps" == true ]]; then
@@ -752,6 +818,14 @@ build_target() {
   TARGET_ARCH=""
   HOST_KERNEL_ARGS=""
   target_force="$MKOSI_FORCE"
+
+  # Expand any roles in the raw profile list to atomic mkosi profiles,
+  # validate each token, and dedupe. Everything downstream (mkosi
+  # invocation, per-profile hostdeps, image-id suffix) operates on the
+  # resolved list — callers never see a role name once build_target
+  # returns from this point.
+  PROFILE="$(ab_resolve_profiles "$PROFILE")" || exit 1
+
   target_image_id="$(image_id_for_target "$BASE_IMAGE_ID" "$PROFILE" "$HOST")"
   warn_if_image_label_too_long "$target_image_id" "$IMAGE_VERSION" "$HOST"
 
@@ -864,6 +938,9 @@ EOF
           echo "==> Packaging remote-access credentials for profile=$PROFILE${HOST:+ host=$HOST}..."
           pkg_args=()
           [[ -n "$HOST" ]] && pkg_args+=(--host "$HOST")
+          # Pass the per-target resolved profile list so the packager
+          # only encrypts secrets the selected profiles actually consume.
+          pkg_args+=(--profile "$PROFILE")
           [[ "$NON_INTERACTIVE" == true ]] && pkg_args+=("--non-interactive")
           [[ "$NON_INTERACTIVE" == true ]] && export AB_NON_INTERACTIVE=1
           pkg_args+=(--out "$METADATA_DIR")
@@ -874,6 +951,7 @@ EOF
           echo "==> Packaging alert credentials for profile=$PROFILE${HOST:+ host=$HOST}..."
           pkg_args=()
           [[ -n "$HOST" ]] && pkg_args+=(--host "$HOST")
+          pkg_args+=(--profile "$PROFILE")
           [[ "$NON_INTERACTIVE" == true ]] && pkg_args+=("--non-interactive")
           pkg_args+=(--out "$METADATA_DIR")
           "$PROJECT_ROOT/scripts/package-alert-credentials.sh" "${pkg_args[@]}"
@@ -1186,6 +1264,46 @@ fi
 
 ensure_base_hostdeps
 
+# Decide WHAT we're building first, so the secret-verifier below can
+# scope its checks to the union of profiles this invocation actually
+# needs.
+if [[ "$BUILD_ALL" == true ]]; then
+  # Auto-discover hosts by iterating hosts/*/ and reading each host's
+  # profile.default. example-host is skipped — it's a template, not a
+  # real target. The leading "devbox|" is the no-host QEMU smoke-test
+  # build that has always been part of --all so CI can exercise the
+  # image format without needing any of the real hosts' toolchains.
+  BUILD_TARGETS=("devbox|")
+  for _host_dir in "$PROJECT_ROOT"/hosts/*/; do
+    _host_name="$(basename "$_host_dir")"
+    [[ "$_host_name" == "example-host" ]] && continue
+    _host_profile="$(ab_buildmeta_host_default_profile "$PROJECT_ROOT" "$_host_name")"
+    [[ -n "$_host_profile" ]] || continue
+    BUILD_TARGETS+=("$_host_profile|$_host_name")
+  done
+  unset _host_dir _host_name _host_profile
+else
+  BUILD_TARGETS=("$PROFILE|$HOST")
+fi
+
+# Compute the union of resolved profiles across every target in this
+# invocation. Passed to verify-build-secrets.sh so it can tell which
+# secrets this build actually needs (vs. which ones are unrelated).
+_all_resolved=""
+declare -A _all_seen=()
+for _t in "${BUILD_TARGETS[@]}"; do
+  _tp="${_t%%|*}"
+  _resolved="$(ab_resolve_profiles "$_tp")" || exit 1
+  for _p in $_resolved; do
+    if [[ -z "${_all_seen[$_p]+x}" ]]; then
+      _all_seen[$_p]=1
+      _all_resolved="${_all_resolved}${_all_resolved:+ }${_p}"
+    fi
+  done
+done
+unset _t _tp _resolved _p _all_seen
+export AB_BUILD_RESOLVED_PROFILES="$_all_resolved"
+
 # Overlay integration: lint, validate secrets, package encrypted creds.
 # These run once per invocation. Skip with AB_SKIP_OVERLAY_GATES=yes.
 if [[ "${AB_SKIP_OVERLAY_GATES:-no}" != "yes" ]]; then
@@ -1211,24 +1329,14 @@ if [[ "${AB_SKIP_OVERLAY_GATES:-no}" != "yes" ]]; then
         echo "==> Verifying .mkosi-secrets/ ..."
         verify_args=()
         [[ "${STRICT_SECRETS:-no}" == "yes" ]] && verify_args+=(--strict)
-        [[ "$PROFILE_SET" == true ]] && verify_args+=(--profile "$PROFILE")
+        # Pass the RESOLVED profile union so the verifier can skip
+        # secrets that no selected profile declares in its manifest.
+        [[ -n "$AB_BUILD_RESOLVED_PROFILES" ]] && verify_args+=(--profile "$AB_BUILD_RESOLVED_PROFILES")
         [[ "$HOST_SET"    == true ]] && verify_args+=(--host "$HOST")
         [[ "$NON_INTERACTIVE" == true ]] && verify_args+=("--non-interactive")
         "$PROJECT_ROOT/scripts/verify-build-secrets.sh" "${verify_args[@]}"
     fi
 
-fi
-
-
-if [[ "$BUILD_ALL" == true ]]; then
-  BUILD_TARGETS=(
-    "devbox|"
-    "devbox|evox2"
-    "server|cloudbox"
-    "macbook|macbookpro13-2019-t2"
-  )
-else
-  BUILD_TARGETS=("$PROFILE|$HOST")
 fi
 
 if [[ "$FORCE_REBUILD" == true ]]; then

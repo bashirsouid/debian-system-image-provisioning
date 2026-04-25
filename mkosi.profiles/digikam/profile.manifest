@@ -1,0 +1,2 @@
+description="digiKam photo manager (Debian ships digikam natively)."
+uses_secrets=""

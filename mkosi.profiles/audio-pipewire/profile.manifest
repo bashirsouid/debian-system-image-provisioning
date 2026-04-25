@@ -1,0 +1,2 @@
+description="PipeWire audio stack with bluez for Bluetooth audio; includes alsa-utils + pavucontrol."
+uses_secrets=""

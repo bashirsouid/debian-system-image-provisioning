@@ -1,0 +1,2 @@
+description="Signal Desktop. TODO(phase-3): add updates.signal.org/desktop/apt source + key, then add 'signal-desktop'."
+uses_secrets=""

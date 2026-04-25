@@ -3,16 +3,23 @@
 #
 # Takes plaintext secrets in .mkosi-secrets/ and produces build assets:
 #
-#   mkosi.extra/etc/credstore.encrypted/tailscale-authkey    (if provided)
-#   mkosi.extra/etc/credstore.encrypted/cloudflared-token    (if provided)
-#   mkosi.extra/etc/ssh/authorized_keys.d/<user>             (always, required)
-#   mkosi.extra/etc/ssh/sshd_config.d/50-hardening.conf      (username substituted)
-#   mkosi.extra/var/lib/systemd/credential.secret            (per-image key)
+#   <out>/etc/credstore.encrypted/tailscale-authkey      (if tailscale profile selected + secret provided)
+#   <out>/etc/credstore.encrypted/cloudflared-token      (if cloudflare-tunnel profile selected + secret provided)
+#   <out>/etc/ssh/authorized_keys.d/<user>               (always, required)
+#   <out>/etc/ssh/sshd_config.d/50-hardening.conf        (if ssh-server profile selected; username substituted)
+#   <out>/var/lib/systemd/credential.secret              (per-image key)
 #
-# Only ssh-authorized-keys is required. tailscale-authkey and
-# cloudflared-token are optional: when absent, the corresponding
-# systemd unit on the booted image will skip itself (ConditionPathExists=
-# on /etc/credstore.encrypted/<name>).
+# When a profile that uses an optional secret is NOT selected, the
+# secret is skipped silently even if the file exists in
+# .mkosi-secrets/ — packaging it would just be bloat with no consumer.
+# When the profile IS selected and the secret file is absent, we WARN
+# but do not fail (the corresponding systemd unit on the image
+# silently no-ops via ConditionPathExists=).
+#
+# The 50-hardening.conf template is read from the ssh-server profile
+# at build time, has __INITIAL_USERNAME__ substituted with the actual
+# login user, and dropped under the metadata --extra-tree so it
+# overlays the unsubstituted version in the profile's mkosi.extra/.
 
 set -euo pipefail
 
@@ -27,19 +34,37 @@ EXTRA_DIR="${REPO_ROOT}/mkosi.extra"
 NON_INTERACTIVE="${AB_NON_INTERACTIVE:-false}"
 HOST=""
 USER_NAME=""
+# Space-separated resolved profile list. When empty we behave as if
+# "every known profile is selected" — the legacy behavior. build.sh
+# always passes the resolved union so the profile-gating logic below
+# is exact in normal use.
+PROFILES=""
 
 while (($#)); do
     case "$1" in
         --host) HOST="$2"; shift 2 ;;
         --user) USER_NAME="$2"; shift 2 ;;
+        --profile) PROFILES="$2"; shift 2 ;;
         --non-interactive) NON_INTERACTIVE=true; shift ;;
         --out) EXTRA_DIR="$2"; shift 2 ;;
-        -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
         *) fail "unknown arg: $1" ;;
     esac
 done
 
 [[ -d "${SECRETS_DIR}" ]] || fail "${SECRETS_DIR} missing. Run scripts/verify-build-secrets.sh first."
+
+# Profile membership check: returns 0 if $1 is in $PROFILES (or
+# $PROFILES is empty, falling back to "yes, behave as legacy mode").
+profile_selected() {
+    local target="$1"
+    [[ -z "${PROFILES}" ]] && return 0
+    local p
+    for p in ${PROFILES}; do
+        [[ "${p}" == "${target}" ]] && return 0
+    done
+    return 1
+}
 
 # Resolve login username.
 if [[ -z "${USER_NAME}" ]]; then
@@ -163,31 +188,50 @@ else
 fi
 
 # --- OPTIONAL: tailscale-authkey ----------------------------------------
-if ts_path="$(resolve_secret tailscale-authkey)"; then
-    encrypt_credential tailscale-authkey "${ts_path}" "${CREDSTORE}/tailscale-authkey"
+if profile_selected tailscale; then
+    if ts_path="$(resolve_secret tailscale-authkey)"; then
+        encrypt_credential tailscale-authkey "${ts_path}" "${CREDSTORE}/tailscale-authkey"
+    else
+        warn "tailscale-authkey absent; skipping. tailscale-up.service will no-op via ConditionPathExists="
+    fi
 else
-    warn "tailscale-authkey absent; skipping. tailscale-up.service will no-op via ConditionPathExists="
+    log "tailscale profile not selected; skipping tailscale-authkey packaging"
 fi
 
 # --- OPTIONAL: cloudflared-token ----------------------------------------
-if cf_path="$(resolve_secret cloudflared-token)"; then
-    encrypt_credential cloudflared-token "${cf_path}" "${CREDSTORE}/cloudflared-token"
+if profile_selected cloudflare-tunnel; then
+    if cf_path="$(resolve_secret cloudflared-token)"; then
+        encrypt_credential cloudflared-token "${cf_path}" "${CREDSTORE}/cloudflared-token"
+    else
+        warn "cloudflared-token absent; skipping. cloudflared.service will no-op via ConditionPathExists="
+    fi
 else
-    warn "cloudflared-token absent; skipping. cloudflared.service will no-op via ConditionPathExists="
+    log "cloudflare-tunnel profile not selected; skipping cloudflared-token packaging"
 fi
 
 # --- Template sshd_config hardening file --------------------------------
-TEMPLATE="${SSHD_D}/50-hardening.conf"
-if [[ -f "${TEMPLATE}" ]]; then
-    if grep -q '__INITIAL_USERNAME__' "${TEMPLATE}"; then
-        log "substituting __INITIAL_USERNAME__ -> ${USER_NAME}"
-        tmp="$(mktemp)"
-        sed "s/__INITIAL_USERNAME__/${USER_NAME}/g" "${TEMPLATE}" >"${tmp}"
-        mv "${tmp}" "${TEMPLATE}"
-        chmod 0644 "${TEMPLATE}"
+# Only relevant when ssh-server is selected. The template lives in the
+# profile and gets copied into the image with __INITIAL_USERNAME__
+# literal as part of the profile's mkosi.extra/. We read that template
+# here, substitute the username, and drop the result under
+# ${EXTRA_DIR} (METADATA_DIR) so the metadata --extra-tree overlays
+# the substituted version on top of the unsubstituted template.
+if profile_selected ssh-server; then
+    SRC_TEMPLATE="${REPO_ROOT}/mkosi.profiles/ssh-server/mkosi.extra/etc/ssh/sshd_config.d/50-hardening.conf"
+    DEST_TEMPLATE="${SSHD_D}/50-hardening.conf"
+    if [[ -f "${SRC_TEMPLATE}" ]]; then
+        if grep -q '__INITIAL_USERNAME__' "${SRC_TEMPLATE}"; then
+            log "substituting __INITIAL_USERNAME__ -> ${USER_NAME} into ${DEST_TEMPLATE}"
+            install -d -m 0755 "${SSHD_D}"
+            sed "s/__INITIAL_USERNAME__/${USER_NAME}/g" "${SRC_TEMPLATE}" >"${DEST_TEMPLATE}"
+            chmod 0644 "${DEST_TEMPLATE}"
+        else
+            log "ssh-server 50-hardening.conf has no __INITIAL_USERNAME__; copying as-is"
+            install -m 0644 "${SRC_TEMPLATE}" "${DEST_TEMPLATE}"
+        fi
+    else
+        warn "ssh-server profile is selected but ${SRC_TEMPLATE} is missing"
     fi
-else
-    warn "${TEMPLATE} not found; skipping username substitution."
 fi
 
-log "done. Credentials under ${CREDSTORE} (only for present secrets)."
+log "done. Credentials under ${CREDSTORE} (only for present + relevant secrets)."

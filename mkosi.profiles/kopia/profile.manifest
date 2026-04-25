@@ -1,0 +1,2 @@
+description="Kopia backup. TODO(phase-3): add kopia.io apt source + signing key, then add 'kopia' package."
+uses_secrets=""

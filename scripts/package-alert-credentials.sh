@@ -28,13 +28,29 @@ SECRETS_DIR="${REPO_ROOT}/.mkosi-secrets"
 EXTRA_DIR="${REPO_ROOT}/mkosi.extra"
 HOST="${1:-}"
 [[ "${HOST}" == "--host" ]] && { HOST="$2"; shift 2; } || HOST=""
+# Resolved profile list. healthchecks-ping-url is gated on the
+# healthchecksio profile; sendgrid + pagerduty stay always-optional
+# because the always-on ab-monitor-alert@.service template loads them
+# regardless of which profiles are selected.
+PROFILES=""
 while (($#)); do
     case "$1" in
         --host) HOST="$2"; shift 2 ;;
+        --profile) PROFILES="$2"; shift 2 ;;
         --out) EXTRA_DIR="$2"; shift 2 ;;
         *) shift ;;
     esac
 done
+
+profile_selected() {
+    local target="$1"
+    [[ -z "${PROFILES}" ]] && return 0
+    local p
+    for p in ${PROFILES}; do
+        [[ "${p}" == "${target}" ]] && return 0
+    done
+    return 1
+}
 
 CREDSTORE="${EXTRA_DIR}/etc/credstore.encrypted"
 CRED_SECRET="${EXTRA_DIR}/var/lib/systemd/credential.secret"
@@ -139,6 +155,10 @@ validate_healthchecks() {
 
 encrypt_one sendgrid-api-key       AB_REQUIRE_SENDGRID     validate_sendgrid
 encrypt_one pagerduty-routing-key  AB_REQUIRE_PAGERDUTY    validate_pagerduty
-encrypt_one healthchecks-ping-url  AB_REQUIRE_HEALTHCHECKS validate_healthchecks
+if profile_selected healthchecksio; then
+    encrypt_one healthchecks-ping-url  AB_REQUIRE_HEALTHCHECKS validate_healthchecks
+else
+    log "healthchecksio profile not selected; skipping healthchecks-ping-url packaging"
+fi
 
 log "alert credentials packaged."
