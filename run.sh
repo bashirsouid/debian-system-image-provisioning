@@ -26,6 +26,12 @@ SERIAL=false
 BOOT_NSPAWN=false
 EXTRA_KERNEL_ARGS=()
 EXTRA_MKOSI_ARGS=()
+# Build picker: when no --build-dir/--host/--profile is given AND the
+# session is interactive, show a numbered list of every build under
+# mkosi.output/builds/ so the user can pick which image to boot. Set
+# AB_RUN_PICK=auto (default), always, or never to override.
+PICK_MODE="auto"
+LIST_BUILDS=false
 
 usage() {
   cat <<'USAGE'
@@ -51,6 +57,11 @@ Diagnostic options (use these when the image won't boot):
   --debug                 mkosi --debug + verbose systemd logs + serial console
   --serial                force serial/interactive console instead of GUI so
                           boot output scrolls into this terminal
+  --list                  list every build under mkosi.output/builds/ and exit
+  --latest                bypass the interactive picker and use the newest
+                          build (the behavior before the picker was added)
+  --pick                  force the interactive picker even when --host /
+                          --profile would otherwise resolve a single build
   --boot-nspawn           boot with 'mkosi boot' (systemd-nspawn) instead of a
                           real VM. Bypasses firmware + bootloader + kernel +
                           initrd entirely and is the fastest way to tell
@@ -150,6 +161,18 @@ while [[ $# -gt 0 ]]; do
       EXTRA_MKOSI_ARGS+=("${2:?missing mkosi arg}")
       shift 2
       ;;
+    --list)
+      LIST_BUILDS=true
+      shift
+      ;;
+    --latest)
+      PICK_MODE="never"
+      shift
+      ;;
+    --pick)
+      PICK_MODE="always"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -180,7 +203,28 @@ fi
 if ! ab_hostdeps_have_all_commands "${REQUIRED_CMDS[@]}"; then
   ab_hostdeps_ensure_packages "vm run prerequisites" "${REQUIRED_PKGS[@]}" || exit 1
 fi
-ab_hostdeps_ensure_commands "vm run prerequisites" "${REQUIRED_CMDS[@]}" || exit 1
+ab_hostdeps_ensure_commands "vm run prerequisites" "${REQUIRED_CMDS[@]}" || {
+  # On Debian, virtiofsd installs at /usr/libexec/virtiofsd, which is not
+  # on $PATH for non-root sessions. host-deps.sh now adds /usr/libexec to
+  # PATH and to its candidate list, but if a user was bitten before that
+  # fix landed, suggest the workaround.
+  echo "==> If virtiofsd is reported missing but 'apt install virtiofsd' succeeded," >&2
+  echo "    Debian ships the binary at /usr/libexec/virtiofsd. Re-run with" >&2
+  echo "    PATH=\"\$PATH:/usr/libexec\" ./run.sh ..." >&2
+  exit 1
+}
+
+# --list: dump the build inventory and exit. Useful when the user just
+# wants to know what's available without booting anything.
+if [[ "$LIST_BUILDS" == true ]]; then
+  if ! ab_buildmeta_enumerate_builds "$PROJECT_ROOT" | grep -q .; then
+    echo "No builds found under $PROJECT_ROOT/mkosi.output/builds/" >&2
+    echo "Run ./build.sh first." >&2
+    exit 1
+  fi
+  ab_buildmeta_format_builds_table "$PROJECT_ROOT"
+  exit 0
+fi
 
 # Per-host default profile resolution. If --host was passed without
 # --profile, read hosts/<host>/profile.default and use that before the
@@ -201,6 +245,41 @@ fi
 # mkosi vm reuses the last built image-version instead of minting a new
 # one and invalidating the cache.
 METADATA_LOADED=false
+
+# Decide whether to run the build picker:
+#   - --pick (PICK_MODE=always): always run the picker, ignore --host/--profile
+#   - --latest (PICK_MODE=never): never run the picker, use latest symlink
+#   - default (PICK_MODE=auto): run only when no --host/--profile/--build-dir
+#     was given, the session is interactive, and ≥2 builds exist.
+PICK_BUILD=false
+case "$PICK_MODE" in
+  always)
+    PICK_BUILD=true
+    ;;
+  never)
+    PICK_BUILD=false
+    ;;
+  auto)
+    if [[ -z "$BUILD_DIR" && "$EXPLICIT_HOST" == false && "$EXPLICIT_PROFILE" == false ]]; then
+      _build_count="$(ab_buildmeta_enumerate_builds "$PROJECT_ROOT" | grep -c . || true)"
+      if (( _build_count > 1 )) && [[ -t 0 && -t 2 ]]; then
+        PICK_BUILD=true
+      fi
+      unset _build_count
+    fi
+    ;;
+esac
+
+if [[ "$PICK_BUILD" == true && -z "$BUILD_DIR" ]]; then
+  BUILD_DIR="$(ab_buildmeta_pick_build_interactive "$PROJECT_ROOT" || true)"
+  if [[ -z "$BUILD_DIR" ]]; then
+    # Picker bailed (q, EOF, no TTY, no builds). Fall back to latest so
+    # ./run.sh still does *something* sensible — same behavior as before
+    # the picker was added.
+    BUILD_DIR="$(ab_buildmeta_resolve_build_dir "$PROJECT_ROOT" "" "" || true)"
+  fi
+fi
+
 if [[ -z "$BUILD_DIR" ]]; then
   if [[ "$EXPLICIT_PROFILE" == true || "$EXPLICIT_HOST" == true ]]; then
     BUILD_DIR="$(ab_buildmeta_resolve_build_dir "$PROJECT_ROOT" "$PROFILE" "$HOST" || true)"
@@ -224,6 +303,18 @@ if [[ "$METADATA_LOADED" == true ]]; then
 fi
 
 args=("--profile=$PROFILE")
+
+# Point mkosi at the resolved build folder. mkosi.conf sets
+# OutputDirectory=mkosi.output, but build.sh moves finished artifacts
+# out of mkosi.output/ and into mkosi.output/builds/<ts>__<profile>__<host>/
+# once a build completes. Without overriding --output-dir here, `mkosi vm`
+# looks in the now-empty mkosi.output/ and reports
+#   "Image 'deb-ab-mbp13t2' has not been built yet"
+# even though the .raw is sitting under builds/ — which is the failure
+# mode you hit after picking a build from the picker.
+if [[ -n "$BUILD_DIR" ]]; then
+  args+=("--output-dir=$BUILD_DIR")
+fi
 
 if [[ -n "$IMAGE_ID" ]]; then
   args+=("--image-id=$IMAGE_ID")

@@ -101,12 +101,21 @@ ALLOW_FIXED_DISK=no
 INCLUDE_USB_STORAGE=true
 USB_STORAGE_LABEL="USBDATA"
 DIAGNOSTIC_MODE=false
-# When true, do NOT repartition the target. Reuse the existing GPT
-# layout (ESP + root-a + root-b + USBDATA), pick the *inactive* root
-# slot, write the new image into it, and leave USBDATA + the active
-# slot completely untouched. This is the "iterate on the build by
-# rewriting the same USB" path; the destructive default is for fresh
-# bootstraps where the target has no usable A/B layout yet.
+# Mode tristate, chosen at arg-parse time and resolved into REFLASH below:
+#   auto        - detect_existing_ab_layout() decides: reflash if an A/B
+#                 layout is already on the target (non-destructive),
+#                 repartition otherwise. This is the right default for
+#                 day-to-day "I plugged in my old test USB and want the
+#                 latest build on it" because it preserves USBDATA and
+#                 the active root slot whenever it can.
+#   reflash     - force --reflash; error out if the disk doesn't already
+#                 have a valid A/B layout.
+#   repartition - force a destructive systemd-repart bootstrap, even if
+#                 the disk is already laid out correctly.
+MODE="auto"
+# REFLASH is the resolved boolean used by all the existing flow code.
+# Computed from MODE after arg-parsing + load_build_metadata so user
+# echo lines can name the resolved disk path.
 REFLASH=false
 
 usage() {
@@ -144,12 +153,24 @@ Options:
                         "I flashed my laptop's SSD by accident" case
   --yes                 skip destructive confirmation prompts
   --diagnostic-mode     append initrd debug params to the boot entry
-  --reflash             do NOT repartition. Detect the existing A/B layout,
-                        write the new image into the *inactive* root slot,
-                        and leave the active slot + USBDATA untouched. Use
-                        this for iterating on the build by rewriting the
-                        same USB without losing what's on USBDATA or the
-                        currently-booting slot.
+  --reflash             FORCE reflash mode: do NOT repartition. Detect the
+                        existing A/B layout, write the new image into the
+                        *inactive* root slot, and leave the active slot +
+                        USBDATA untouched. Errors out if the target has no
+                        valid A/B layout. This is the same as the auto
+                        default when a layout is already present; pass it
+                        explicitly to fail fast on a fresh disk.
+  --repartition         FORCE destructive bootstrap: wipe everything on the
+                        target and re-create the GPT layout (ESP + 2 root
+                        slots + USBDATA). Use this when you want a fully
+                        fresh USB even though an A/B layout already exists,
+                        e.g. to switch image-id schemes or recover from a
+                        broken layout.
+
+By default (no --reflash, no --repartition), the tool detects whether the
+target already has a valid A/B layout and picks the right mode automatically:
+present-layout → reflash, fresh-disk → repartition. The chosen mode is
+printed before the destructive-confirmation prompt.
 USAGE
 }
 
@@ -490,6 +511,53 @@ select_root_slot_for_seed() {
 }
 
 # --reflash helpers ---------------------------------------------------------
+
+# Non-destructive "is there already an A/B layout here?" probe. Used by
+# the auto-mode dispatcher to decide between reflash and repartition.
+# Returns 0 if the target has ≥1 ESP partition and ≥2 root-shaped slots
+# (ext4 or unformatted, PARTLABEL not in {ESP,USBDATA,DATA,HOME});
+# returns 1 in every other case. Never dies — even on a fresh disk
+# with no partition table, lsblk is a clean no-op and we just return 1.
+#
+# Operates on a read-only loop attach for file targets so detection
+# doesn't disturb the bootstrap path that re-attaches its own loop
+# device. Block-device targets are inspected with lsblk directly.
+detect_existing_ab_layout() {
+  local target_real device tmp_loop=""
+  target_real="$(readlink -f "$TARGET")"
+
+  if [[ -b "$target_real" ]]; then
+    device="$target_real"
+  elif [[ -f "$target_real" ]]; then
+    tmp_loop="$(losetup --find --show --partscan --read-only "$target_real" 2>/dev/null || true)"
+    [[ -n "$tmp_loop" ]] || return 1
+    device="$tmp_loop"
+  else
+    return 1
+  fi
+
+  local part label fstype esp_count=0 root_count=0
+  while read -r part label fstype; do
+    [[ -n "$part" ]] || continue
+    case "$label" in
+      ESP)
+        esp_count=$((esp_count + 1))
+        ;;
+      USBDATA|DATA|HOME)
+        ;;
+      *)
+        if [[ "$fstype" == "ext4" || -z "$fstype" ]]; then
+          root_count=$((root_count + 1))
+        fi
+        ;;
+    esac
+  done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$device" 2>/dev/null)
+
+  [[ -n "$tmp_loop" ]] && losetup -d "$tmp_loop" >/dev/null 2>&1 || true
+
+  (( esp_count >= 1 && root_count >= 2 ))
+}
+
 # Validate that $DISK_DEVICE already has the GPT layout we expect:
 # at least one ESP partition and two root-shaped partitions (ext4 or
 # unformatted, PARTLABEL not in {ESP,USBDATA,DATA,HOME}). Errors out
@@ -1225,7 +1293,11 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --reflash)
-      REFLASH=true
+      MODE="reflash"
+      shift
+      ;;
+    --repartition)
+      MODE="repartition"
       shift
       ;;
     -h|--help)
@@ -1281,6 +1353,37 @@ need_cmd sfdisk
 need_cmd blkid
 
 [[ -f "$SOURCE_DIR/$IMAGE_BASENAME" ]] || die "built disk image not found: $SOURCE_DIR/$IMAGE_BASENAME"
+
+# Resolve MODE → REFLASH. In auto mode this is where we peek at the
+# target so the destructive-confirmation banner downstream knows
+# whether the run is going to wipe everything or just rewrite the
+# inactive slot. The peek is read-only and detaches its scratch loop
+# device immediately so it does not interfere with bootstrap-ab-disk's
+# own loop attachment.
+case "$MODE" in
+  reflash)
+    REFLASH=true
+    echo "==> Mode: --reflash (forced); will reuse existing A/B layout"
+    ;;
+  repartition)
+    REFLASH=false
+    echo "==> Mode: --repartition (forced); will WIPE and re-bootstrap the target"
+    ;;
+  auto)
+    if detect_existing_ab_layout; then
+      REFLASH=true
+      echo "==> Mode: auto-detected existing A/B layout on $TARGET → using --reflash (non-destructive)"
+      echo "    (pass --repartition to force a destructive re-bootstrap instead)"
+    else
+      REFLASH=false
+      echo "==> Mode: no existing A/B layout on $TARGET → using --repartition (destructive bootstrap)"
+      echo "    (pass --reflash to fail fast instead of bootstrapping)"
+    fi
+    ;;
+  *)
+    die "internal error: unknown MODE='$MODE'"
+    ;;
+esac
 
 if [[ "$REFLASH" == true ]]; then
     # --reflash: validate the existing layout, skip systemd-repart and

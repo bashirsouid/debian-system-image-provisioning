@@ -176,3 +176,101 @@ ab_buildmeta_resolve_build_dir() {
   [[ -n "$target" && -d "$target" ]] || return 1
   printf '%s\n' "$target"
 }
+
+# Print the absolute paths of every build folder under builds/, newest
+# first. Symlinks (latest, latest-*) are skipped because they're not
+# builds in their own right. Empty output (and exit 0) when no builds
+# exist; callers fall back to "run ./build.sh first" themselves.
+ab_buildmeta_enumerate_builds() {
+  local project_root="$1"
+  local builds_dir entry
+  builds_dir="$(ab_buildmeta_builds_dir "$project_root")"
+  [[ -d "$builds_dir" ]] || return 0
+
+  # The folder name starts with a UTC timestamp (YYYYMMDDTHHMMSSZ) so
+  # lex-sorting newest-first === sorting by build time newest-first,
+  # without having to stat() each entry. Using a glob keeps this
+  # bash-3.2-portable (no `mapfile`, no `find -printf`).
+  local matches=()
+  shopt -s nullglob
+  matches=("$builds_dir"/*/)
+  shopt -u nullglob
+
+  # Sort folder names descending. `printf '%s\n'` + `sort -r` is portable;
+  # bash's `sort` doesn't have a portable in-place mode.
+  local sorted
+  sorted="$(printf '%s\n' "${matches[@]}" | sed 's:/$::' | sort -r)"
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    # Skip the latest* convenience symlinks; they point at a real build
+    # folder which already appears in the list.
+    [[ -L "$entry" ]] && continue
+    [[ -f "$entry/build.env" ]] || continue
+    printf '%s\n' "$entry"
+  done <<<"$sorted"
+}
+
+# Print one human-readable line per build (index + metadata), suitable
+# for showing in a picker. Reads build.env in a subshell so caller env
+# is not polluted by AB_LAST_BUILD_* values from arbitrary builds.
+ab_buildmeta_format_builds_table() {
+  local project_root="$1"
+  local idx=0 build label
+  while IFS= read -r build; do
+    idx=$((idx + 1))
+    label="$(
+      AB_LAST_BUILD_PROFILE=""
+      AB_LAST_BUILD_HOST=""
+      AB_LAST_BUILD_IMAGE_VERSION=""
+      # shellcheck disable=SC1091
+      . "$build/build.env" 2>/dev/null || true
+      printf '%-20s  host=%-22s  ver=%s' \
+        "${AB_LAST_BUILD_PROFILE:-?}" \
+        "${AB_LAST_BUILD_HOST:-none}" \
+        "${AB_LAST_BUILD_IMAGE_VERSION:-?}"
+    )"
+    printf '  [%d] %s\n      %s\n' "$idx" "$label" "$(basename "$build")"
+  done < <(ab_buildmeta_enumerate_builds "$project_root")
+}
+
+# Interactive picker. Lists every build, prompts on stderr, prints the
+# selected absolute folder path on stdout. Default on bare-Enter is the
+# newest build (matches existing `latest` symlink behavior). Returns
+# non-zero when stdin is not a TTY, when there are no builds, or when
+# the user types something un-parseable.
+#
+# Caller is expected to short-circuit this when the user already passed
+# --build-dir / --host / --profile; the picker is *only* the no-flag
+# path.
+ab_buildmeta_pick_build_interactive() {
+  local project_root="$1"
+  local builds=() build choice idx
+  while IFS= read -r build; do
+    [[ -n "$build" ]] && builds+=("$build")
+  done < <(ab_buildmeta_enumerate_builds "$project_root")
+
+  (( ${#builds[@]} > 0 )) || return 1
+  [[ -t 0 && -t 2 ]] || return 1
+
+  echo "Available builds (newest first):" >&2
+  ab_buildmeta_format_builds_table "$project_root" >&2
+  echo >&2
+  printf 'Pick a build [1-%d, Enter = 1 (latest), q = abort]: ' "${#builds[@]}" >&2
+  if ! IFS= read -r choice; then
+    return 1
+  fi
+
+  case "$choice" in
+    ""|"1") printf '%s\n' "${builds[0]}"; return 0 ;;
+    q|Q) return 1 ;;
+  esac
+  if [[ "$choice" =~ ^[0-9]+$ ]]; then
+    idx=$((choice - 1))
+    if (( idx >= 0 && idx < ${#builds[@]} )); then
+      printf '%s\n' "${builds[$idx]}"
+      return 0
+    fi
+  fi
+  echo "ERROR: invalid choice: $choice" >&2
+  return 1
+}

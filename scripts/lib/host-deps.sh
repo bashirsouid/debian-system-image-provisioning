@@ -2,7 +2,11 @@
 
 ab_hostdeps_normalize_path() {
   local dir
-  for dir in /usr/local/sbin /usr/sbin /sbin /usr/lib/systemd /lib/systemd; do
+  # /usr/libexec is where Debian ships virtiofsd (the package installs the
+  # binary at /usr/libexec/virtiofsd, not on $PATH). Without this, run.sh
+  # rejects perfectly good hosts with "missing required commands: virtiofsd"
+  # even after `sudo apt install virtiofsd` succeeds.
+  for dir in /usr/local/sbin /usr/sbin /sbin /usr/lib/systemd /lib/systemd /usr/libexec /usr/local/libexec; do
     case ":$PATH:" in
       *":$dir:"*) ;;
       *) PATH="$PATH:$dir" ;;
@@ -50,7 +54,9 @@ ab_hostdeps_resolve_command() {
     "/usr/bin/$cmd" \
     "/usr/sbin/$cmd" \
     "/usr/lib/systemd/$cmd" \
-    "/lib/systemd/$cmd"
+    "/lib/systemd/$cmd" \
+    "/usr/libexec/$cmd" \
+    "/usr/local/libexec/$cmd"
   do
     if [[ -x "$candidate" ]]; then
       printf '%s\n' "$candidate"
