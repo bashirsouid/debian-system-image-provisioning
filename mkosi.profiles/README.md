@@ -45,26 +45,29 @@ Profile directories currently in the tree:
 | `healthchecksio` | Dead-man's-switch heartbeat to healthchecks.io |
 | `incus` | System containers / VMs |
 | `k3s` | *(stub)* single-node Kubernetes |
-| `kopia` | *(apt-source wired, fingerprint not pinned)* backup |
+| `kopia` | *(apt-source wired)* Kopia backup — uncomment Packages= to enable |
 | `macbook` | Apple T2 hardware: kernel, firmware, t2fanrd |
 | `server` | Minimal headless CLI baseline |
-| `signal` | *(apt-source wired, fingerprint not pinned)* Signal Desktop |
+| `signal` | *(apt-source wired)* Signal Desktop — uncomment Packages= to enable |
 | `ssh-server` | openssh-server + hardening drop-ins |
 | `steam` | *(stub)* Steam client |
 | `tailscale` | Tailscale mesh VPN |
-| `telegraf` | *(apt-source wired, fingerprint not pinned)* metrics agent |
-| `vscode` | *(apt-source wired, fingerprint not pinned)* Microsoft VSCode |
+| `telegraf` | *(apt-source wired)* InfluxData Telegraf — uncomment Packages= to enable |
+| `vscode` | *(apt-source wired)* Microsoft VSCode — uncomment Packages= to enable |
 | `wifi` | NetworkManager + iwd + wifi firmware |
 
 Stubs come in two flavors:
 
-* **fingerprint not pinned** — the apt source + key fetcher are wired
-  up but the signing-key fingerprint in `apt-keys.conf` is a
-  `REPLACE_*` placeholder. Verify and pin the fingerprint, then
-  uncomment `Packages=` in `mkosi.conf` to enable.
+* **apt-source wired** — the apt source + signing-key fingerprint are
+  already pinned in `apt-keys.conf`. Uncomment `Packages=` in
+  `mkosi.conf` to enable. `update-3rd-party-deps.sh` (or the build
+  itself) will fetch + verify the key on next run.
 * **stub** — the install path itself isn't decided yet (AppImage vs
   Flatpak vs vendor installer); see the profile's `mkosi.conf`
-  header comment for what to figure out first.
+  header comment for what to figure out first. Their `apt-keys.conf`
+  (if present) carries a `REPLACE_*` placeholder fingerprint that
+  `fetch-third-party-keys.sh` logs and skips, so the un-decided
+  state never breaks `update-3rd-party-deps.sh`.
 
 Either way, `profile.manifest` is the permanent handle; the package
 list is the work-in-progress piece.

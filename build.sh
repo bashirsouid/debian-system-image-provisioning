@@ -961,6 +961,23 @@ EOF
   extra_args+=("--extra-tree=$METADATA_DIR:/")
   extra_args+=("--sandbox-tree=$PROJECT_ROOT/mkosi.extra:/")
 
+  # Profile-level mkosi.extra/ is natively applied by mkosi as an
+  # ExtraTree, which means it lands in the image AFTER package install.
+  # That is the wrong stage for apt sources + keyrings: the apt-get
+  # inside the build sandbox must see them so the packages they enable
+  # can be located in the first place. Mirror each selected profile's
+  # mkosi.extra/ as a sandbox-tree so files like
+  #   mkosi.profiles/tailscale/mkosi.extra/etc/apt/sources.list.d/tailscale.sources
+  # show up in the sandbox's /etc/apt/ during dpkg/apt operations and
+  # the corresponding tailscale package becomes available to install.
+  for _p in $PROFILE; do
+    _prof_extra="$PROJECT_ROOT/mkosi.profiles/$_p/mkosi.extra"
+    if [[ -d "$_prof_extra" ]]; then
+      extra_args+=("--sandbox-tree=$_prof_extra:/")
+    fi
+  done
+  unset _p _prof_extra
+
   if profile_has_one_of "$PROFILE" devbox; then
     echo "==> Preparing Liquorix repository metadata for devbox..."
     prepare_liquorix_trees
