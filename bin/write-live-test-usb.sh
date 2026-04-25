@@ -570,81 +570,113 @@ seed_first_root_slot() {
             printf "default %s.conf\ntimeout 5\nconsole-mode keep\n" "${prefix}" > "$esp_mount/loader/loader.conf"
         fi
         
+        # ── Extract kernel + initrd from the UKI for Type 1 BLS booting ──────────
+        # Why not boot the UKI as Type 2: systemd-stub bakes its cmdline into the
+        # .cmdline PE section at UKI build time. For Type 2 entries the .conf's
+        # `options` line is treated inconsistently across systemd-boot versions
+        # (sometimes appended, sometimes ignored), and the previous fix that
+        # patched the UKI's .cmdline section in-place via `objcopy --update-section`
+        # is fragile: PE section sizes are fixed at build, and growing the cmdline
+        # past the existing pad shifts later sections, corrupting the UKI and
+        # producing exactly the "boot failure with no useful message" symptom.
+        #
+        # Type 1 BLS sidesteps the whole problem: kernel and initrd are loaded
+        # directly from named files on the ESP, and `options` in the .conf is
+        # the authoritative cmdline. No post-build rewriting required.
+        #
+        # `objcopy -O binary --only-section=` is a *read* operation that emits a
+        # fresh file — it does not mutate the UKI, so the PE-vs-ELF target
+        # ambiguity that broke `--update-section` does not apply here.
+        local _uki_src=""
         if [[ -f "$SOURCE_DIR/${prefix}.efi" ]]; then
-            echo "==> Copying UKI to ESP: ${prefix}.efi"
-            cp "$SOURCE_DIR/${prefix}.efi" "$esp_mount/EFI/Linux/"
+            _uki_src="$SOURCE_DIR/${prefix}.efi"
         fi
-        
-        if [[ -f "$SOURCE_DIR/${prefix}.conf" ]]; then
-            echo "==> Copying boot entry to ESP: ${prefix}.conf"
-            local conf_dest="$esp_mount/loader/entries/${prefix}.conf"
-            cp "$SOURCE_DIR/${prefix}.conf" "$conf_dest"
 
-            # Patch root= in the copied entry to use the seeded PARTUUID
-            if [[ -n "$root_partuuid" ]]; then
-                echo "==> Patching boot entry with root=PARTUUID=$root_partuuid"
-                if grep -q 'root=' "$conf_dest"; then
-                    # Replace any existing root=... with PARTUUID
-                    sed -i -E "s#root=[^ ]*#root=PARTUUID=$root_partuuid#g" "$conf_dest"
+        if [[ -n "$_uki_src" ]]; then
+            if ! command -v objcopy >/dev/null 2>&1; then
+                die "objcopy is required to extract kernel/initrd from the UKI; install binutils on the build host"
+            fi
+
+            local _kernel_dst="$esp_mount/EFI/Linux/${prefix}.linux"
+            local _initrd_dst="$esp_mount/EFI/Linux/${prefix}.initrd"
+
+            echo "==> Extracting .linux from UKI -> $(basename "$_kernel_dst")"
+            objcopy -O binary --only-section=.linux "$_uki_src" "$_kernel_dst"
+            echo "==> Extracting .initrd from UKI -> $(basename "$_initrd_dst")"
+            objcopy -O binary --only-section=.initrd "$_uki_src" "$_initrd_dst"
+
+            [[ -s "$_kernel_dst" ]] || die "extracted kernel from UKI is empty (.linux section missing or unreadable)"
+            [[ -s "$_initrd_dst" ]] || die "extracted initrd from UKI is empty (.initrd section missing or unreadable)"
+
+            chmod 0644 "$_kernel_dst" "$_initrd_dst"
+
+            # Diagnostic: confirm the T2 keyboard/touchbar modules actually made
+            # it into the initrd. Without these the built-in keyboard is dead
+            # before the real root is up, so Ctrl+Alt+F<n> can't switch tty.
+            if command -v lsinitramfs >/dev/null 2>&1; then
+                if lsinitramfs "$_initrd_dst" 2>/dev/null | grep -qE 'apple_bce|apple-bce|apple_ib|apple-ib|appletb'; then
+                    echo "==> Initrd contains Apple T2 keyboard/touchbar modules"
                 else
-                    # No root= present; append one
-                    sed -i -E "s#^options(.*)#options\1 root=PARTUUID=$root_partuuid rootfstype=ext4 rw#g" "$conf_dest"
+                    echo "WARNING: initrd does NOT appear to contain apple_bce / apple_ib_* / appletb modules." >&2
+                    echo "         Built-in MacBook keyboard will not work in early boot," >&2
+                    echo "         and Ctrl+Alt+F<n> will not switch tty before /sysroot mounts." >&2
+                    echo "         Use an external USB keyboard, or rebuild with mkosi.finalize" >&2
+                    echo "         forcing update-initramfs after ExtraTrees are applied." >&2
                 fi
-                # USB drives enumerate slowly — ensure rootfstype and rootwait are always
-                # present so the initrd does not race /dev/disk/by-partuuid/<uuid>.
-                grep -q 'rootfstype=' "$conf_dest" || \
-                    sed -i -E "s#^options(.*)#options\\1 rootfstype=ext4#g" "$conf_dest"
-                grep -qw 'rootwait' "$conf_dest" || \
-                    sed -i -E "s#^options(.*)#options\\1 rootwait#g" "$conf_dest"
+            fi
+        else
+            die "no UKI found at $SOURCE_DIR/${prefix}.efi; cannot construct Type 1 BLS entry"
+        fi
+
+        if [[ -f "$SOURCE_DIR/${prefix}.conf" ]]; then
+            local conf_dest="$esp_mount/loader/entries/${prefix}.conf"
+
+            # Read source options (everything after the leading "options ").
+            local _src_options
+            _src_options="$(grep '^options ' "$SOURCE_DIR/${prefix}.conf" | sed 's/^options //')"
+
+            # Replace any baked-in root= (the build-time value uses PARTLABEL,
+            # but PARTUUID is what we just learned from the actual seeded slot).
+            if [[ -n "$root_partuuid" ]]; then
+                _src_options="$(echo "$_src_options" | sed -E 's#root=[^ ]*##g')"
+                _src_options="root=PARTUUID=$root_partuuid rootfstype=ext4 rootwait $_src_options"
+                echo "==> Setting root=PARTUUID=$root_partuuid in boot entry"
             else
                 echo "WARNING: root PARTUUID unknown; leaving boot entry root= unchanged." >&2
             fi
 
-            # Patch diagnostic boot params if requested
             if [[ "$DIAGNOSTIC_MODE" == true ]]; then
-                echo "==> Diagnostic mode: patching boot entry with initrd debug params"
-                # Remove 'quiet' to see boot progress
-                sed -i -E "s#quiet##g" "$conf_dest"
-                # These params operate in the INITRD, where switch-root failures occur.
-                local diag_params=(
-                    "rd.break=pre-switch-root"
-                    "break=mount"
-                    "break=bottom"
-                    "systemd.log_level=debug"
-                    "systemd.log_target=console"
-                    "systemd.journald.forward_to_console=1"
-                    "console=tty0"
-                    "systemd.show_status=1"
-                    "systemd.setenv=SYSTEMD_SULOGIN_FORCE=1"
-                    "systemd.debug-shell=1"
-                )
-                for p in "${diag_params[@]}"; do
-                    if ! grep -q "$p" "$conf_dest"; then
-                        echo "==> Patching boot entry with ${p}"
-                        sed -i -E "s#^options(.*)#options\1 ${p}#g" "$conf_dest"
+                echo "==> Diagnostic mode: appending initrd debug params to boot entry"
+                _src_options="${_src_options//quiet/}"
+                # initramfs-tools-only flags (no rd.break, no
+                # systemd.unit=debug-shell.service — both have caused boot
+                # regressions before and neither helps here).
+                local _diag_extras="break=mount break=bottom panic=0 loglevel=7 earlyprintk=vga systemd.log_level=debug systemd.log_target=console systemd.journald.forward_to_console=1 console=tty0 systemd.show_status=1 systemd.setenv=SYSTEMD_SULOGIN_FORCE=1 systemd.debug-shell=1"
+                for p in $_diag_extras; do
+                    if ! grep -qw "$p" <<<"$_src_options"; then
+                        _src_options="$_src_options $p"
                     fi
                 done
             fi
 
-            # ── Patch the UKI's embedded .cmdline PE section ────────────────────────
-            # Extract the final options from the .conf file and bake them into the UKI
-            if [[ -f "$SOURCE_DIR/${prefix}.efi" ]] && command -v objcopy >/dev/null 2>&1; then
-                local _uki_path="$esp_mount/EFI/Linux/${prefix}.efi"
-                local _final_options
-                _final_options="$(grep '^options ' "$conf_dest" | sed 's/^options //')"
-                
-                if [[ -n "$_final_options" ]]; then
-                    local _cmdline_tmp
-                    _cmdline_tmp="$(mktemp /tmp/ab-uki-cmdline.XXXXXX)"
-                    printf '%s' "$_final_options" > "$_cmdline_tmp"
-                    if objcopy --update-section ".cmdline=$_cmdline_tmp" "$_uki_path" 2>/dev/null; then
-                        echo "==> Patched UKI .cmdline with full options from boot entry"
-                    else
-                        echo "WARNING: objcopy could not update UKI .cmdline" >&2
-                    fi
-                    rm -f "$_cmdline_tmp"
-                fi
-            fi
+            # Collapse whitespace so the final cmdline is tidy in logs.
+            _src_options="$(echo "$_src_options" | tr -s ' ' | sed -E 's#^ +##; s# +$##')"
+
+            # Write a Type 1 BLS entry. Crucially: NO `uki` line, so systemd-boot
+            # uses linux=/initrd=/options= directly and does not look for an
+            # embedded cmdline.
+            {
+                echo "# Generated by bin/write-live-test-usb.sh (Type 1 BLS for live-test USB)"
+                echo "title Debian TEST BOOT (${IMAGE_ID}) ${IMAGE_VERSION}"
+                echo "sort-key ${IMAGE_ID}"
+                echo "version ${IMAGE_VERSION}"
+                echo "linux /EFI/Linux/${prefix}.linux"
+                echo "initrd /EFI/Linux/${prefix}.initrd"
+                echo "options ${_src_options}"
+            } > "$conf_dest"
+
+            echo "==> Wrote Type 1 BLS boot entry: $conf_dest"
+            echo "    cmdline: ${_src_options}"
         fi
         
         umount "$esp_mount"
@@ -973,10 +1005,13 @@ done
 [[ -d "$DEFINITIONS_DIR" ]] || die "definitions directory not found: $DEFINITIONS_DIR"
 [[ -d "$REPART_DIR" ]] || die "repart directory not found: $REPART_DIR"
 
-if ! ab_hostdeps_have_all_commands systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df blkid; then
-  ab_hostdeps_ensure_packages "hardware test USB prerequisites" systemd-container systemd-repart systemd-boot-tools systemd-boot-efi dosfstools fdisk util-linux || exit 1
+if ! ab_hostdeps_have_all_commands systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df blkid objcopy; then
+  # binutils provides objcopy, which we now use to extract the kernel and
+  # initrd PE sections out of the UKI for Type 1 BLS booting (see comments
+  # near the .linux/.initrd extraction below for why Type 1 BLS).
+  ab_hostdeps_ensure_packages "hardware test USB prerequisites" systemd-container systemd-repart systemd-boot-tools systemd-boot-efi dosfstools fdisk util-linux binutils || exit 1
 fi
-ab_hostdeps_ensure_commands "hardware test USB prerequisites" systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df blkid || {
+ab_hostdeps_ensure_commands "hardware test USB prerequisites" systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df blkid objcopy || {
   echo "==> If this host still cannot provide systemd-sysupdate, use a newer Debian/systemd host for the native USB workflow." >&2
   echo "==> Fast fallback for a hardware smoke test: write the built .raw image directly to the USB instead of using the native installer USB flow." >&2
   exit 1

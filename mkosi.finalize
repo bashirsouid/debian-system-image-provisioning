@@ -70,18 +70,71 @@ enable_target_unit boot-complete.target ab-health-gate.service
 load_build_info
 if [[ -n "${AB_ROOT_PASSWORD_HASH:-}" ]]; then
   echo "==> [FINALIZE] applying temporary root password for emergency mode"
-  # Ensure root has a real shell for emergency mode
+  # Set the shell to /bin/bash so the password actually gets the user a working
+  # session; the base mkosi.conf sets RootShell=/bin/false to harden production
+  # builds, and that needs to be reverted whenever --allow-root is requested.
   chroot "$ROOT" usermod -s /bin/bash root
-  # Use chpasswd with the hash directly. We assume AB_ROOT_PASSWORD_HASH is a valid crypt hash.
-  # If it is just a plain password, we would need -e. build.sh generates a hash.
+  # chpasswd -e takes a crypt-format hash on stdin (build.sh generates one with
+  # `openssl passwd -6`). Using `usermod -p "$hash"` here would silently fail
+  # for hashes containing `$` because of shell-expansion and historic /etc/shadow
+  # quoting weirdness — that was the bug behind the previous "root login
+  # doesn't work" symptom.
   echo "root:$AB_ROOT_PASSWORD_HASH" | chroot "$ROOT" chpasswd -e
   chroot "$ROOT" usermod -U root
 
-  # Diagnostics: verify the account is actually unlocked
+  # Diagnostics: verify the account is actually unlocked.
   if chroot "$ROOT" passwd -S root | grep -q ' L '; then
     echo "WARNING: [FINALIZE] root account is STILL LOCKED after usermod -U" >&2
   else
     echo "==> [FINALIZE] root account is unlocked and ready"
+  fi
+
+  # Allow root login on every text VT, not just /dev/console. Debian ships
+  # /etc/securetty with tty1..tty63 by default, but some hardened base images
+  # (and some mkosi presets) trim it. pam_securetty.so consults this file from
+  # /etc/pam.d/login, so a missing tty entry blocks console root login even
+  # when the password is correct — masking the real failure as "wrong password".
+  if [[ ! -f "$ROOT/etc/securetty" ]] || ! grep -q '^tty1$' "$ROOT/etc/securetty"; then
+    echo "==> [FINALIZE] writing permissive /etc/securetty for emergency mode"
+    {
+      echo "console"
+      for i in $(seq 1 12); do echo "tty$i"; done
+    } > "$ROOT/etc/securetty"
+    chmod 0600 "$ROOT/etc/securetty"
+  fi
+fi
+
+# Re-run update-initramfs so files supplied via ExtraTrees= (notably
+# /etc/initramfs-tools/modules with the apple_bce / apple_ib_* / appletb modules
+# the MacBook T2 keyboard needs in early boot) are actually baked into the
+# initrd before mkosi seals the UKI. ExtraTrees are applied AFTER the kernel
+# package's postinst has already built the initrd, so without this step
+# /etc/initramfs-tools/modules has no effect on the shipped image.
+if chroot "$ROOT" command -v update-initramfs >/dev/null 2>&1; then
+  echo "==> [FINALIZE] regenerating initramfs to pick up ExtraTrees modules"
+  if ! chroot "$ROOT" update-initramfs -u -k all; then
+    echo "WARNING: [FINALIZE] update-initramfs failed; T2 keyboard may not work in early boot" >&2
+  fi
+
+  # Diagnostic: list whether the critical Apple T2 modules made it into the
+  # initrd. We look at every initrd in /boot rather than guessing the kernel
+  # version because linux-t2 can leave multiple installed during upgrades.
+  if chroot "$ROOT" command -v lsinitramfs >/dev/null 2>&1; then
+    shopt -s nullglob
+    for _initrd in "$ROOT"/boot/initrd.img-*; do
+      _kver="${_initrd##*initrd.img-}"
+      _hits="$(chroot "$ROOT" lsinitramfs "/boot/initrd.img-$_kver" 2>/dev/null \
+                | grep -E 'apple_bce|apple-bce|apple_ib|apple-ib|appletb' || true)"
+      if [[ -n "$_hits" ]]; then
+        echo "==> [FINALIZE] /boot/initrd.img-$_kver contains T2 modules:"
+        echo "$_hits" | sed 's/^/        /'
+      else
+        echo "WARNING: [FINALIZE] /boot/initrd.img-$_kver does NOT contain Apple T2 modules" >&2
+        echo "         /etc/initramfs-tools/modules may have been ignored. Confirm the file" >&2
+        echo "         is present in the chroot and lists apple_bce / apple_ib_drv / appletb." >&2
+      fi
+    done
+    shopt -u nullglob
   fi
 fi
 if [[ -n "${AB_IMAGE_ID:-}" ]]; then
@@ -94,3 +147,49 @@ if [[ -n "${AB_IMAGE_VERSION:-}" ]]; then
 fi
 
 systemctl --root="${BUILDROOT}" preset-all
+
+# Belt-and-suspenders: the preset disables systemd-boot-update.service, but
+# `preset-all` will only honor that for units the preset *names*. If a unit
+# was enabled in a previous image build via a leftover symlink (e.g. older
+# image stages applied to the same BUILDROOT), preset-all may not remove it.
+# Disable explicitly so the live-test USB doesn't burn 60-90s in
+# `bootctl update` on every boot just to rewrite an already-correct
+# /boot/EFI/systemd/systemd-bootx64.efi.
+if [[ -f "$ROOT/usr/lib/systemd/system/systemd-boot-update.service" ]]; then
+  echo "==> [FINALIZE] masking systemd-boot-update.service (slow on USB ESP, redundant for sysupdate path)"
+  ln -snf /dev/null "$ROOT/etc/systemd/system/systemd-boot-update.service"
+fi
+
+# Same for ssh.socket — Debian ships both ssh.service and ssh.socket enabled
+# by default and they fight over :22. The preset disables ssh.socket for new
+# enables, but if the package's postinst already wrote the wants-symlink,
+# preset-all leaves it. Removing the symlink directly is what actually
+# stops it from racing ssh.service into the failed state we saw in the
+# journal.
+if [[ -L "$ROOT/etc/systemd/system/sockets.target.wants/ssh.socket" ]]; then
+  echo "==> [FINALIZE] removing leftover sockets.target.wants/ssh.socket symlink"
+  rm -f "$ROOT/etc/systemd/system/sockets.target.wants/ssh.socket"
+fi
+
+# /etc/default/locale: pam_env(8) reads this on every login. On Debian +
+# systemd, package install can leave /etc/default/locale as a *dangling*
+# symlink (typically -> /etc/locale.conf, which is never populated unless
+# `localectl set-locale` ran). Without a real file, every login generates
+#   pam_env(login:session): Unable to open env file: /etc/default/locale
+# in the journal.
+#
+# We can't drop /etc/default/locale via mkosi.extra because cp(1) refuses
+# to write through a dangling symlink at the destination ("cp: not writing
+# through dangling symlink"). Handle it here in shell instead, where we can
+# detect the dangling symlink and replace it with a real file.
+LOCALE_FILE="$ROOT/etc/default/locale"
+install -d -m 0755 "$ROOT/etc/default"
+if [[ -L "$LOCALE_FILE" && ! -e "$LOCALE_FILE" ]]; then
+  echo "==> [FINALIZE] /etc/default/locale is a dangling symlink; replacing with real file"
+  rm -f "$LOCALE_FILE"
+fi
+if [[ ! -e "$LOCALE_FILE" ]]; then
+  echo "==> [FINALIZE] writing /etc/default/locale (LANG=C.UTF-8) for pam_env"
+  printf 'LANG=C.UTF-8\n' > "$LOCALE_FILE"
+  chmod 0644 "$LOCALE_FILE"
+fi

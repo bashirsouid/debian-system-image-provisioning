@@ -166,11 +166,32 @@ if [[ "$ALLOW_EMERGENCY_ROOT" == "true" ]]; then
   entry_options="$entry_options systemd.debug-shell=1"
 fi
 if [[ "$FORCE_EMERGENCY_SHELL" == "true" ]]; then
-  # Remove 'quiet' if it exists to see boot logs
+  # Strip 'quiet' so kernel + boot progress is visible on the console.
   entry_options="${entry_options//quiet/}"
-  # rd.break is for dracut; break=mount is for Debian initramfs-tools.
-  # systemd.setenv=SYSTEMD_SULOGIN_FORCE=1 bypasses the emergency password.
-  entry_options="$entry_options rd.break=pre-switch-root break=mount break=bottom systemd.log_level=debug systemd.log_target=console systemd.journald.forward_to_console=1 console=tty0 systemd.show_status=1 systemd.setenv=SYSTEMD_SULOGIN_FORCE=1"
+  # The minimum useful set for "I don't know why this won't boot":
+  #   - break=mount / break=bottom: drop to a shell in the Debian initramfs-tools
+  #     initrd at the named hook point. (dracut's rd.break is intentionally
+  #     not added: it does nothing on initramfs-tools.)
+  #   - panic=0: don't auto-reboot on kernel panic so the operator can read the
+  #     final messages.
+  #   - systemd.show_status=1: print each unit's start/stop status so you can
+  #     see *which* unit blocked boot.
+  #   - systemd.setenv=SYSTEMD_SULOGIN_FORCE=1: skip the "give root password
+  #     for maintenance" prompt at emergency.target so --allow-root actually
+  #     gets you a shell.
+  #
+  # We intentionally do NOT add: loglevel=7, systemd.log_level=debug,
+  # systemd.log_target=console, systemd.journald.forward_to_console=1,
+  # earlyprintk=vga, console=tty0. These collectively force every kernel +
+  # systemd + journald log line to be redrawn on the screen during boot, at
+  # which point you can't read anything because thousands of lines fly past
+  # in seconds. Anything you'd want to see post-boot is already in `journalctl
+  # -b`. If you actually need the firehose for a specific investigation, set
+  # AB_DIAGNOSTIC_SPAM=1 in the environment when running build.sh.
+  entry_options="$entry_options break=mount break=bottom panic=0 systemd.show_status=1 systemd.setenv=SYSTEMD_SULOGIN_FORCE=1"
+  if [[ "${AB_DIAGNOSTIC_SPAM:-0}" == "1" ]]; then
+    entry_options="$entry_options loglevel=7 earlyprintk=vga systemd.log_level=debug systemd.log_target=console systemd.journald.forward_to_console=1 console=tty0"
+  fi
 fi
 
 cat > "$entry_artifact" <<EOF2
