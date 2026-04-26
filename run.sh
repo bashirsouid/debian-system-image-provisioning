@@ -305,15 +305,40 @@ fi
 args=("--profile=$PROFILE")
 
 # Point mkosi at the resolved build folder. mkosi.conf sets
-# OutputDirectory=mkosi.output, but build.sh moves finished artifacts
-# out of mkosi.output/ and into mkosi.output/builds/<ts>__<profile>__<host>/
-# once a build completes. Without overriding --output-dir here, `mkosi vm`
-# looks in the now-empty mkosi.output/ and reports
-#   "Image 'deb-ab-mbp13t2' has not been built yet"
-# even though the .raw is sitting under builds/ — which is the failure
-# mode you hit after picking a build from the picker.
-if [[ -n "$BUILD_DIR" ]]; then
-  args+=("--output-dir=$BUILD_DIR")
+# OutputDirectory=mkosi.output/ but build.sh moves finished artifacts out
+# of mkosi.output/ and into mkosi.output/builds/<ts>__<profile>__<host>/
+# once a build completes. The CLI flag --output-dir does NOT help here:
+# mkosi vm intentionally ignores config-rewriting flags on cached builds
+# and prints "Ignoring --output-directory from the CLI. Run with -f to
+# rebuild...". So instead we stage symlinks of the build artifacts back
+# into mkosi.output/ for the duration of this run, and trap-clean them
+# afterwards. mkosi.output/ is documented as kept empty between builds,
+# so the symlinks are safe; the trap is what guarantees we leave it that
+# way even on Ctrl-C.
+STAGED_ARTIFACTS=()
+cleanup_staged_artifacts() {
+  if (( ${#STAGED_ARTIFACTS[@]} > 0 )); then
+    rm -f "${STAGED_ARTIFACTS[@]}" 2>/dev/null || true
+  fi
+}
+trap cleanup_staged_artifacts EXIT
+if [[ -n "$BUILD_DIR" && -n "$IMAGE_ID" && -n "$IMAGE_VERSION" ]]; then
+  _mkosi_output_dir="$PROJECT_ROOT/mkosi.output"
+  install -d -m 0755 "$_mkosi_output_dir"
+  shopt -s nullglob
+  for _src in "$BUILD_DIR/${IMAGE_ID}_${IMAGE_VERSION}"*; do
+    [[ -f "$_src" ]] || continue
+    _dest="$_mkosi_output_dir/$(basename "$_src")"
+    # Don't clobber a real file or a foreign symlink someone else placed
+    # there — only stage if the slot is unoccupied. Without this we'd
+    # silently overwrite a half-built image left behind by an aborted
+    # run, which `rm -f` in the trap would then permanently delete.
+    [[ -e "$_dest" || -L "$_dest" ]] && continue
+    ln -s "$_src" "$_dest"
+    STAGED_ARTIFACTS+=("$_dest")
+  done
+  shopt -u nullglob
+  unset _mkosi_output_dir _src _dest
 fi
 
 if [[ -n "$IMAGE_ID" ]]; then
