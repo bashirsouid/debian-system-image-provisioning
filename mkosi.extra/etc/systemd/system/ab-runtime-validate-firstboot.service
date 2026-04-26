@@ -32,7 +32,14 @@ ExecStart=/usr/local/sbin/ab-runtime-validate --first-boot
 # so we do not need LoadCredentialEncrypted= here).
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/ab-runtime-validate
+# StateDirectory= creates and chowns /var/lib/ab-runtime-validate BEFORE
+# the namespace is set up; without this, the unit fails at step
+# NAMESPACE with "Failed to set up mount namespacing:
+# /var/lib/ab-runtime-validate: No such file or directory" on the very
+# first boot of a fresh image. ReadWritePaths= alone does NOT create the
+# path — it only opens it for write inside the namespace.
+StateDirectory=ab-runtime-validate
+StateDirectoryMode=0700
 PrivateTmp=yes
 
 [Install]

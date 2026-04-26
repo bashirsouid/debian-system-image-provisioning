@@ -7,7 +7,14 @@ StartLimitBurst=20
 
 [Service]
 Type=oneshot
-LoadCredentialEncrypted=healthchecks-ping-url:/etc/credstore.encrypted/healthchecks-ping-url
+# Match ab-monitor.service: tolerate the credstore blob being absent
+# on a clean image. heartbeat.sh treats a missing
+# $CREDENTIALS_DIRECTORY/healthchecks-ping-url as "no heartbeat
+# configured" rather than an error.
+RuntimeDirectory=ab-monitor
+RuntimeDirectoryMode=0700
+Environment=CREDENTIALS_DIRECTORY=%t/ab-monitor
+ExecStartPre=/usr/local/libexec/ab-monitor/load-creds-if-present
 EnvironmentFile=-/etc/default/ab-monitor
 ExecStart=/usr/local/libexec/ab-monitor/heartbeat.sh
 

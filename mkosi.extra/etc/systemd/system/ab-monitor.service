@@ -13,13 +13,23 @@ StartLimitBurst=20
 [Service]
 Type=oneshot
 
-# All outbound-notification secrets are loaded here and exposed to
-# notify.sh -> notifiers/*.sh via $CREDENTIALS_DIRECTORY.
-# ConditionPathExists on each individual credential is NOT possible;
-# we just tolerate missing ones in the notifiers themselves.
-LoadCredentialEncrypted=sendgrid-api-key:/etc/credstore.encrypted/sendgrid-api-key
-LoadCredentialEncrypted=pagerduty-routing-key:/etc/credstore.encrypted/pagerduty-routing-key
-LoadCredentialEncrypted=healthchecks-ping-url:/etc/credstore.encrypted/healthchecks-ping-url
+# Decrypt whichever outbound-notification credentials are actually
+# present in /etc/credstore.encrypted/ into a private runtime
+# directory and expose it to check.sh / notify.sh / notifiers/*.sh
+# via $CREDENTIALS_DIRECTORY (the same env var systemd's native
+# LoadCredentialEncrypted= would set). This matters because:
+#   * `LoadCredentialEncrypted=ID:/path` HARD-FAILS the unit if the
+#     source path is missing — there is no per-entry "optional" syntax.
+#     A clean image (after clean.sh, or before package-alert-credentials
+#     has been run) has zero credstore blobs, so the unit would fail
+#     to start on every fresh install.
+#   * The notifiers under /usr/local/libexec/ab-monitor/notifiers/
+#     already tolerate a missing file inside $CREDENTIALS_DIRECTORY,
+#     so populating only what exists is exactly what they expect.
+RuntimeDirectory=ab-monitor
+RuntimeDirectoryMode=0700
+Environment=CREDENTIALS_DIRECTORY=%t/ab-monitor
+ExecStartPre=/usr/local/libexec/ab-monitor/load-creds-if-present
 
 EnvironmentFile=-/etc/default/ab-monitor
 ExecStart=/usr/local/libexec/ab-monitor/check.sh
@@ -33,7 +43,13 @@ TimeoutStartSec=120s
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/ab-monitor /run/log
+# StateDirectory= creates /var/lib/ab-monitor before the namespace is
+# set up. Without it the unit fails at step NAMESPACE on a fresh image
+# (the path simply does not exist yet). RuntimeDirectory=ab-monitor
+# above already covers /run/ab-monitor.
+StateDirectory=ab-monitor
+StateDirectoryMode=0700
+ReadWritePaths=/run/log
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes

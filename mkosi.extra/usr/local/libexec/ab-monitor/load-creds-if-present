@@ -1,0 +1,42 @@
+#!/bin/bash
+# /usr/local/libexec/ab-monitor/load-creds-if-present
+#
+# ExecStartPre helper for ab-monitor.service / ab-heartbeat.service.
+# Decrypts any of the well-known outbound-notification credentials that
+# happen to be present in /etc/credstore.encrypted/ into the unit's
+# RuntimeDirectory ($CREDENTIALS_DIRECTORY), and silently skips the
+# rest. Intentionally never returns non-zero on a missing or
+# undecryptable blob — this is "best effort": if a notifier can't find
+# its credential at $CREDENTIALS_DIRECTORY/<name>, the notifier will
+# log and skip that channel rather than the whole monitor failing.
+
+set -u
+
+DEST="${CREDENTIALS_DIRECTORY:-}"
+if [[ -z "$DEST" ]]; then
+    echo "[load-creds] CREDENTIALS_DIRECTORY not set; refusing to run" >&2
+    exit 0
+fi
+
+SRC=/etc/credstore.encrypted
+
+# Names this monitor / heartbeat stack knows about. Add new ones here
+# the same day they are added as LoadCredentialEncrypted= in any unit.
+CREDS=(
+    sendgrid-api-key
+    pagerduty-routing-key
+    healthchecks-ping-url
+)
+
+for cred in "${CREDS[@]}"; do
+    src="$SRC/$cred"
+    [[ -r "$src" ]] || continue
+    if ! systemd-creds decrypt --name="$cred" "$src" "$DEST/$cred" 2>/dev/null; then
+        rm -f "$DEST/$cred"
+        echo "[load-creds] failed to decrypt $cred (key mismatch?); skipping" >&2
+        continue
+    fi
+    chmod 0400 "$DEST/$cred" 2>/dev/null || true
+done
+
+exit 0
