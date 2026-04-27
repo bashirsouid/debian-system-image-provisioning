@@ -145,7 +145,7 @@ test_ssh() {
 
 test_tailscale() {
     say "testing tailscale..."
-    if [[ ! -f /etc/credstore.encrypted/tailscale-authkey ]]; then
+    if [[ ! -f /etc/credstore/tailscale-authkey ]]; then
         skip tailscale "tailscale-authkey not configured at build time"
         return
     fi
@@ -184,7 +184,7 @@ test_tailscale() {
 
 test_cloudflared() {
     say "testing cloudflared..."
-    if [[ ! -f /etc/credstore.encrypted/cloudflared-token ]]; then
+    if [[ ! -f /etc/credstore/cloudflared-token ]]; then
         skip cloudflared "cloudflared-token not configured at build time"
         return
     fi
@@ -213,7 +213,7 @@ test_cloudflared() {
 
 test_sendgrid() {
     say "testing sendgrid..."
-    if [[ ! -f /etc/credstore.encrypted/sendgrid-api-key ]]; then
+    if [[ ! -f /etc/credstore/sendgrid-api-key ]]; then
         skip sendgrid "sendgrid-api-key not configured at build time"
         return
     fi
@@ -224,7 +224,7 @@ test_sendgrid() {
     # Run via systemd-run with credential so we can actually read the API key.
     local http_code
     http_code="$(systemd-run --pipe --wait --collect \
-        --property=LoadCredentialEncrypted=sendgrid-api-key:/etc/credstore.encrypted/sendgrid-api-key \
+        --property=LoadCredential=sendgrid-api-key:/etc/credstore/sendgrid-api-key \
         --property=EnvironmentFile=-/etc/default/ab-monitor \
         /bin/bash -c '
             key="$(cat "$CREDENTIALS_DIRECTORY/sendgrid-api-key")"
@@ -254,7 +254,7 @@ test_sendgrid() {
 
 test_pagerduty() {
     say "testing pagerduty..."
-    if [[ ! -f /etc/credstore.encrypted/pagerduty-routing-key ]]; then
+    if [[ ! -f /etc/credstore/pagerduty-routing-key ]]; then
         skip pagerduty "pagerduty-routing-key not configured at build time"
         return
     fi
@@ -264,7 +264,7 @@ test_pagerduty() {
     fi
     local trigger_code resolve_code
     trigger_code="$(systemd-run --pipe --wait --collect \
-        --property=LoadCredentialEncrypted=pagerduty-routing-key:/etc/credstore.encrypted/pagerduty-routing-key \
+        --property=LoadCredential=pagerduty-routing-key:/etc/credstore/pagerduty-routing-key \
         /bin/bash -c '
             key="$(cat "$CREDENTIALS_DIRECTORY/pagerduty-routing-key")"
             payload=$(jq -n \
@@ -285,7 +285,7 @@ test_pagerduty() {
     fi
     sleep 3
     resolve_code="$(systemd-run --pipe --wait --collect \
-        --property=LoadCredentialEncrypted=pagerduty-routing-key:/etc/credstore.encrypted/pagerduty-routing-key \
+        --property=LoadCredential=pagerduty-routing-key:/etc/credstore/pagerduty-routing-key \
         /bin/bash -c '
             key="$(cat "$CREDENTIALS_DIRECTORY/pagerduty-routing-key")"
             payload=$(jq -n --arg rk "$key" --arg dk "'"${HOST}"'-runtime-validate-probe" \
@@ -304,13 +304,13 @@ test_pagerduty() {
 
 test_healthchecks() {
     say "testing healthchecks.io..."
-    if [[ ! -f /etc/credstore.encrypted/healthchecks-ping-url ]]; then
+    if [[ ! -f /etc/credstore/healthchecks-ping-url ]]; then
         skip healthchecks "healthchecks-ping-url not configured at build time"
         return
     fi
     local http_code
     http_code="$(systemd-run --pipe --wait --collect \
-        --property=LoadCredentialEncrypted=healthchecks-ping-url:/etc/credstore.encrypted/healthchecks-ping-url \
+        --property=LoadCredential=healthchecks-ping-url:/etc/credstore/healthchecks-ping-url \
         /bin/bash -c '
             url="$(cat "$CREDENTIALS_DIRECTORY/healthchecks-ping-url")"
             url="${url%$'"'"'\n'"'"'}"
@@ -394,14 +394,14 @@ done
 # ===========================================================================
 # Optional: send a summary email if SendGrid is configured
 # ===========================================================================
-if [[ -f /etc/credstore.encrypted/sendgrid-api-key ]] && [[ "${SEND_SUMMARY_EMAIL}" == "yes" ]]; then
+if [[ -f /etc/credstore/sendgrid-api-key ]] && [[ "${SEND_SUMMARY_EMAIL}" == "yes" ]]; then
     say ""
     say "sending summary email via SendGrid..."
     subject_prefix="RUNTIME-VALIDATE OK"
     (( fails > 0 )) && subject_prefix="RUNTIME-VALIDATE FAIL (${fails})"
     body="$(cat "${TXT_OUT}")"
     systemd-run --pipe --wait --collect \
-        --property=LoadCredentialEncrypted=sendgrid-api-key:/etc/credstore.encrypted/sendgrid-api-key \
+        --property=LoadCredential=sendgrid-api-key:/etc/credstore/sendgrid-api-key \
         --property=EnvironmentFile=-/etc/default/ab-monitor \
         /bin/bash -c '
             key="$(cat "$CREDENTIALS_DIRECTORY/sendgrid-api-key")"

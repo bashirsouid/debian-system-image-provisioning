@@ -1155,6 +1155,9 @@ EOF
   fi
 
   mkosi_args=("--image-id=$target_image_id" "--image-version=$IMAGE_VERSION")
+  if [[ -n "${AB_LUKS_PASSPHRASE_FILE:-}" ]]; then
+    mkosi_args+=("--passphrase=$AB_LUKS_PASSPHRASE_FILE")
+  fi
   for p in $PROFILE; do
     mkosi_args+=("--profile=$p")
   done
@@ -1559,6 +1562,34 @@ elif [[ "${AB_FORCE_NEW_VERSION:-no}" != "yes" \
 else
   IMAGE_VERSION="$("$PROJECT_ROOT/mkosi.version")"
 fi
+
+if [[ -z "${LUKS_PASSPHRASE:-}" ]]; then
+  if [[ "$NON_INTERACTIVE" == true ]]; then
+    echo "ERROR: LUKS encryption requires a passphrase but --non-interactive was set." >&2
+    echo "       Set the LUKS_PASSPHRASE environment variable before running." >&2
+    exit 1
+  fi
+  echo "==> LUKS Encryption enabled."
+  read -r -s -p "Enter LUKS passphrase for the new image(s): " LUKS_PASSPHRASE
+  echo
+  read -r -s -p "Confirm LUKS passphrase: " LUKS_PASSPHRASE_CONFIRM
+  echo
+  if [[ "$LUKS_PASSPHRASE" != "$LUKS_PASSPHRASE_CONFIRM" ]]; then
+    echo "ERROR: Passphrases do not match." >&2
+    exit 1
+  fi
+  if [[ -z "$LUKS_PASSPHRASE" ]]; then
+    echo "ERROR: Passphrase cannot be empty." >&2
+    exit 1
+  fi
+fi
+
+# Securely pass the passphrase to mkosi using a tmpfs file
+PASSPHRASE_FILE="/dev/shm/mkosi-luks-passphrase-$$"
+trap 'rm -f "$PASSPHRASE_FILE"' EXIT
+echo -n "$LUKS_PASSPHRASE" > "$PASSPHRASE_FILE"
+chmod 600 "$PASSPHRASE_FILE"
+AB_LUKS_PASSPHRASE_FILE="$PASSPHRASE_FILE"
 
 for target in "${BUILD_TARGETS[@]}"; do
   build_target "${target%%|*}" "${target#*|}"

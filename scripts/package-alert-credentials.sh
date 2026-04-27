@@ -52,27 +52,11 @@ profile_selected() {
     return 1
 }
 
-CREDSTORE="${EXTRA_DIR}/etc/credstore.encrypted"
-CRED_SECRET="${EXTRA_DIR}/var/lib/systemd/credential.secret"
+CREDSTORE="${EXTRA_DIR}/etc/credstore"
 
 [[ -d "${SECRETS_DIR}" ]] || fail "${SECRETS_DIR} missing"
-[[ -f "${CRED_SECRET}" ]] || fail "${CRED_SECRET} missing. Run scripts/package-credentials.sh FIRST so the per-image key exists."
 
 mkdir -p "${CREDSTORE}"
-
-SDC_ARGS=(--with-key=host)
-FALLBACK_TO_HOST_KEY=0
-if systemd-creds --help 2>&1 | grep -q -- --host-key-path; then
-    SDC_ARGS+=(--host-key-path "${CRED_SECRET}")
-else
-    # We assume package-credentials.sh already prompted and generated it
-    # if it reached this script.
-    FALLBACK_TO_HOST_KEY=1
-    HOST_SECRET="/var/lib/systemd/credential.secret"
-    if [[ ! -f "${HOST_SECRET}" ]]; then
-        fail "Host secret missing but needed for fallback. This shouldn't happen if package-credentials.sh ran first."
-    fi
-fi
 
 resolve_secret() {
     local name="$1"
@@ -110,14 +94,8 @@ encrypt_one() {
         fail "${path} failed format validation for ${name}"
     fi
 
-    log "encrypting ${name} -> ${CREDSTORE}/${name}"
-    if (( FALLBACK_TO_HOST_KEY )); then
-        sudo systemd-creds encrypt "${SDC_ARGS[@]}" --name="${name}" "${path}" "${CREDSTORE}/${name}"
-        sudo chown "$(id -u):$(id -g)" "${CREDSTORE}/${name}"
-    else
-        systemd-creds encrypt "${SDC_ARGS[@]}" --name="${name}" "${path}" "${CREDSTORE}/${name}"
-    fi
-    chmod 0600 "${CREDSTORE}/${name}"
+    log "packaging plaintext credential ${name} -> ${CREDSTORE}/${name}"
+    install -m 0600 "${path}" "${CREDSTORE}/${name}"
 }
 
 # Validators: read from stdin, exit 0 on OK, non-zero otherwise.

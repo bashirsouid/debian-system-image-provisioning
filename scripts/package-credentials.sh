@@ -7,7 +7,7 @@
 #   <out>/etc/credstore.encrypted/cloudflared-token      (if cloudflare-tunnel profile selected + secret provided)
 #   <out>/etc/ssh/authorized_keys.d/<user>               (always, required)
 #   <out>/etc/ssh/sshd_config.d/50-hardening.conf        (if ssh-server profile selected; username substituted)
-#   <out>/var/lib/systemd/credential.secret              (per-image key)
+#   <out>/etc/systemd/credential.secret                  (per-image key)
 #
 # When a profile that uses an optional secret is NOT selected, the
 # secret is skipped silently even if the file exists in
@@ -31,7 +31,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 SECRETS_DIR="${REPO_ROOT}/.mkosi-secrets"
 EXTRA_DIR="${REPO_ROOT}/mkosi.extra"
 
-NON_INTERACTIVE="${AB_NON_INTERACTIVE:-false}"
+
 HOST=""
 USER_NAME=""
 # Space-separated resolved profile list. When empty we behave as if
@@ -45,7 +45,7 @@ while (($#)); do
         --host) HOST="$2"; shift 2 ;;
         --user) USER_NAME="$2"; shift 2 ;;
         --profile) PROFILES="$2"; shift 2 ;;
-        --non-interactive) NON_INTERACTIVE=true; shift ;;
+        --non-interactive) shift ;;
         --out) EXTRA_DIR="$2"; shift 2 ;;
         -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
         *) fail "unknown arg: $1" ;;
@@ -89,94 +89,19 @@ resolve_secret() {
     return 1
 }
 
-CREDSTORE="${EXTRA_DIR}/etc/credstore.encrypted"
+CREDSTORE="${EXTRA_DIR}/etc/credstore"
 AUTHKEYS_D="${EXTRA_DIR}/etc/ssh/authorized_keys.d"
 SSHD_D="${EXTRA_DIR}/etc/ssh/sshd_config.d"
-CRED_SECRET_DIR="${EXTRA_DIR}/var/lib/systemd"
 
-mkdir -p "${CREDSTORE}" "${AUTHKEYS_D}" "${SSHD_D}" "${CRED_SECRET_DIR}"
-
-# Per-image credential.secret
-CRED_SECRET="${CRED_SECRET_DIR}/credential.secret"
-if [[ ! -f "${CRED_SECRET}" ]]; then
-    log "generating per-image credential.secret"
-    umask 077
-    head -c 32 /dev/urandom >"${CRED_SECRET}"
-fi
-chmod 0400 "${CRED_SECRET}"
-
-SDC_ARGS=(--with-key=host)
-FALLBACK_TO_HOST_KEY=0
-if systemd-creds --help 2>&1 | grep -q -- --host-key-path; then
-    SDC_ARGS+=(--host-key-path "${CRED_SECRET}")
-else
-    warn "This host's systemd-creds is too old for --host-key-path (per-image keys)."
-    warn "We can fallback to using this host's master secret key instead, but the finished"
-    warn "image will share a master key with this machine. This is a security risk."
-    echo "" >&2
-
-    # Check for sudo availability if we need to copy the host secret.
-    SUDO_AVAILABLE=0
-    if command -v sudo >/dev/null 2>&1; then
-        SUDO_AVAILABLE=1
-    fi
-
-    if [[ "${NON_INTERACTIVE}" == "true" ]]; then
-        if [[ "${FORCE_HOST_KEY:-}" == "1" ]]; then
-            log "FORCE_HOST_KEY=1 detected; proceeding with host secret fallback in non-interactive mode."
-            FALLBACK_TO_HOST_KEY=1
-        else
-            warn "Non-interactive mode: skipping host-key fallback. Image may be broken."
-            fail "Upgrade systemd (trixie 254+) or build interactively to accept the risk."
-        fi
-    elif [[ "${FORCE_HOST_KEY:-}" == "1" ]]; then
-        log "FORCE_HOST_KEY=1 detected; proceeding with host secret fallback."
-        FALLBACK_TO_HOST_KEY=1
-    elif [[ -t 0 ]]; then
-        if [[ "${SUDO_AVAILABLE}" == "0" ]]; then
-            warn "sudo is NOT available; cannot copy host secret even if accepted. Skipping prompt."
-            fail "Upgrade systemd (trixie 254+) or install sudo."
-        fi
-
-        REPLY="n"
-        if read -t 30 -p "[package-credentials] Continue using host secret? [y/N] " -n 1 -r >&2; then
-            echo "" >&2
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                FALLBACK_TO_HOST_KEY=1
-            else
-                fail "User rejected fallback. Upgrade systemd (trixie 254+) or build in a container."
-            fi
-        else
-            echo "" >&2
-            fail "Interactive prompt timed out (30s). Defaulting to No. Upgrade systemd."
-        fi
-    else
-        fail "Terminal not interactive and --host-key-path missing. Upgrade systemd (trixie 254+) or build in an interactive terminal."
-    fi
-fi
-
-if (( FALLBACK_TO_HOST_KEY )); then
-    HOST_SECRET="/var/lib/systemd/credential.secret"
-    if [[ ! -f "${HOST_SECRET}" ]]; then
-        log "Host secret missing. Generating automatically via 'sudo systemd-creds setup'..."
-        sudo systemd-creds setup || fail "Failed to generate host secret. Run 'sudo systemd-creds setup' manually."
-    fi
-    log "copying host secret to image (requires sudo)..."
-    sudo cp "${HOST_SECRET}" "${CRED_SECRET}"
-    sudo chown "$(id -u):$(id -g)" "${CRED_SECRET}"
-    chmod 0400 "${CRED_SECRET}"
-fi
+# Create the target directory structure in the extra-tree with correct perms
+install -d -m 0755 "${CREDSTORE}"
+install -d -m 0755 "${AUTHKEYS_D}"
+install -d -m 0755 "${SSHD_D}"
 
 encrypt_credential() {
     local name="$1" src="$2" dest="$3"
-    log "encrypting ${name} -> ${dest}"
-    if (( FALLBACK_TO_HOST_KEY )); then
-        sudo systemd-creds encrypt "${SDC_ARGS[@]}" --name="${name}" "${src}" "${dest}"
-        sudo chown "$(id -u):$(id -g)" "${dest}"
-    else
-        systemd-creds encrypt "${SDC_ARGS[@]}" --name="${name}" "${src}" "${dest}"
-    fi
-    chmod 0600 "${dest}"
+    log "packaging plaintext credential ${name} -> ${dest}"
+    install -m 0600 "${src}" "${dest}"
 }
 
 # --- REQUIRED: ssh authorized_keys --------------------------------------

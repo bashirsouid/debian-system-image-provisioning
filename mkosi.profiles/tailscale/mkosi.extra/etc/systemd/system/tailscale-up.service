@@ -4,11 +4,13 @@ Documentation=man:tailscale(8)
 After=tailscaled.service network-online.target
 Requires=tailscaled.service
 Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 # Only act if we have a credential to work with. If the credential is
 # missing, log a warning via the watchdog timer instead of failing
 # every boot.
-ConditionPathExists=/etc/credstore.encrypted/tailscale-authkey
+ConditionPathExists=/etc/credstore/tailscale-authkey
 
 [Service]
 Type=oneshot
@@ -17,7 +19,7 @@ RemainAfterExit=yes
 # Decrypt on the fly into $CREDENTIALS_DIRECTORY. The plaintext lives
 # only for the lifetime of this process, in a tmpfs that only this unit
 # can see.
-LoadCredentialEncrypted=tailscale-authkey:/etc/credstore.encrypted/tailscale-authkey
+LoadCredential=tailscale-authkey:/etc/credstore/tailscale-authkey
 
 # Allow customization of hostname / flags per host without editing the
 # unit. The file is optional.
@@ -30,8 +32,6 @@ ExecStart=/usr/local/libexec/ab-remote-access/ensure-tailscale.sh
 # timer takes over.
 Restart=on-failure
 RestartSec=60s
-StartLimitIntervalSec=600
-StartLimitBurst=5
 
 # Sandboxing. tailscale CLI needs NET_ADMIN to bring the tun up but
 # does not need much else.
