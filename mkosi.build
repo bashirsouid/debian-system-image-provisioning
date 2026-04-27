@@ -101,6 +101,37 @@ build_awesome_from_source() {
     echo "==> [BUILD] AwesomeWM source overlay installed successfully"
 }
 
+install_vicious_lib() {
+    # vicious is a Lua widget library every nontrivial awesome rc.lua
+    # tends to `require("vicious")` for system-stat widgets. Debian
+    # Trixie dropped the package, so we vendor the upstream source
+    # tree at /usr/share/awesome/lib/vicious — that path is on
+    # awesome's default Lua package.path under the `?/init.lua`
+    # pattern, so `require("vicious")` resolves to init.lua there
+    # without any per-user package.path tricks.
+    if ! command -v awesome >/dev/null 2>&1; then
+        echo "==> [BUILD] AwesomeWM not present; skipping vicious overlay"
+        return 0
+    fi
+
+    local vicious_src="$SRCDIR/third-party/vicious"
+    if [[ ! -f "$vicious_src/init.lua" ]]; then
+        echo "==> [BUILD] vicious source not found at $vicious_src; skipping"
+        echo "       Run ./update-3rd-party-deps.sh on the build host to fetch it." >&2
+        return 0
+    fi
+
+    local vicious_dst="$DESTDIR/usr/share/awesome/lib/vicious"
+    echo "==> [BUILD] installing vicious widget library to /usr/share/awesome/lib/vicious"
+    install -d -m 0755 "$vicious_dst"
+    # Copy the working tree but not the .git history — the image only
+    # needs the .lua source, not version metadata.
+    (cd "$vicious_src" && tar --exclude='.git' --exclude='.gitignore' -cf - .) \
+        | tar -xf - -C "$vicious_dst"
+    chmod -R u=rwX,go=rX "$vicious_dst"
+    echo "==> [BUILD] vicious installed; $(find "$vicious_dst" -name '*.lua' | wc -l) Lua files"
+}
+
 find_cs8409_override_module() {
     local kernel="$1"
     local path=""
@@ -229,4 +260,5 @@ build_macbook_cs8409_driver() {
 }
 
 build_awesome_from_source
+install_vicious_lib
 build_macbook_cs8409_driver

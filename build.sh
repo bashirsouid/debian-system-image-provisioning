@@ -884,6 +884,11 @@ ensure_managed_sources_once() {
       if profile_needs_awesome "$profile" && [[ ! -f "$PROJECT_ROOT/third-party/awesome/CMakeLists.txt" ]]; then
         missing_deps=true
       fi
+      # vicious is gated on awesome — wherever awesome ships, the
+      # in-image vicious overlay ships alongside it.
+      if profile_needs_awesome "$profile" && [[ ! -f "$PROJECT_ROOT/third-party/vicious/init.lua" ]]; then
+        missing_deps=true
+      fi
       if profile_needs_macbook_audio "$profile" && [[ ! -f "$PROJECT_ROOT/third-party/snd_hda_macbookpro/install.cirrus.driver.sh" ]]; then
         missing_deps=true
       fi
@@ -1022,6 +1027,12 @@ EOF
 
   if profile_needs_awesome "$PROFILE" && [[ ! -f "$PROJECT_ROOT/third-party/awesome/CMakeLists.txt" ]]; then
     echo "ERROR: desktop profiles require third-party/awesome" >&2
+    echo "Run ./update-3rd-party-deps.sh or ./build.sh --force-rebuild ..." >&2
+    exit 1
+  fi
+
+  if profile_needs_awesome "$PROFILE" && [[ ! -f "$PROJECT_ROOT/third-party/vicious/init.lua" ]]; then
+    echo "ERROR: desktop profiles require third-party/vicious (system-wide widget overlay)" >&2
     echo "Run ./update-3rd-party-deps.sh or ./build.sh --force-rebuild ..." >&2
     exit 1
   fi

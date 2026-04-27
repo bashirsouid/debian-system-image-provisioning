@@ -76,6 +76,12 @@ mkdir -p third-party
 cd third-party
 
 update_git_repo awesome https://github.com/awesomewm/awesome.git
+# vicious widget library: dropped from Debian Trixie's archive, but
+# upstream is still maintained. mkosi.build's install_vicious_lib step
+# copies the *.lua files under /usr/share/awesome/lib/vicious so any
+# user's rc.lua can `require("vicious")` system-wide without per-user
+# vendoring.
+update_git_repo vicious https://github.com/vicious-widgets/vicious.git
 update_git_repo snd_hda_macbookpro https://github.com/davidjo/snd_hda_macbookpro.git
 
 echo "==> Fetching third-party GPG keys..."
