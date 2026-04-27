@@ -68,6 +68,8 @@ Any top-level object without a `username` field is silently skipped
 | `password` | no | — | Plaintext. `build.sh` hashes it at build time via `hash_password()`. |
 | `password_hash` | no | — | Pre-hashed crypt string. Wins over `password` when both are set. |
 | `ssh_authorized_keys_file` | no | — | Path (relative to repo root) whose contents go into `~/.ssh/authorized_keys` on first boot. |
+| `dotfiles_repo` | no | — | Git URL or path (relative to repo root, or absolute) of a dotfiles repo. Cloned with submodules at build time and copied into `~/.dotfiles` on first boot. See **Dotfiles bootstrap** below. |
+| `dotfiles_install` | no | `./install` | Shell command run from inside `~/.dotfiles` on first boot. Override when your repo's bootstrap script is named differently or needs flags. |
 | `force_password_change_on_first_login` | no | `false` | Currently informational; enforcement is not yet wired into the first-boot script. |
 
 A `password_hash` of `"!"` or `"*"` is a lock marker in `/etc/shadow`,
@@ -155,6 +157,76 @@ before `multi-user.target`. The script:
 
 If the service fails, the A/B health gate flags the slot bad and the
 system rolls back on the next boot.
+
+## Dotfiles bootstrap
+
+Setting `dotfiles_repo` on a user causes `build.sh` to bake a working
+clone of that repo into the image at
+`/usr/local/share/dotfiles-seed/<username>/`. On first boot,
+`provision-local-users` copies that seed into `~/.dotfiles`, `chown`s
+it to the user, and runs `dotfiles_install` (default `./install`) via
+`runuser`.
+
+### Why bake the seed instead of cloning at first boot
+
+First boot frequently happens on a fresh laptop that's still on
+captive-portal Wi-Fi or has no network at all. Cloning during
+provisioning would either fail or hang the boot. The image ships a
+sealed working tree with submodules already initialized so the
+bootstrap script has everything it needs locally.
+
+### Build-host cache
+
+`build.sh` keeps a long-lived clone per dotfiles repo at
+`$MKOSI_DOTFILES_CACHE/<sanitized-key>` (default
+`~/.cache/mkosi-dotfiles`). On the warm path, every build does:
+
+```
+git fetch --recurse-submodules origin
+git reset --hard origin/HEAD
+git submodule update --init --recursive
+cp -a <cache> <metadata>/usr/local/share/dotfiles-seed/<username>/
+```
+
+That's typically a fraction of a second on top of an existing clone.
+The cache survives across `--force-rebuild`; if you want to nuke it,
+delete `~/.cache/mkosi-dotfiles` by hand.
+
+To use a snapshot of the cache as-is (no `git fetch` — handy when
+working offline or when the dotfiles remote is unreachable), set
+`MKOSI_DOTFILES_OFFLINE=1`. That errors out if the cache is empty
+rather than silently shipping an image without dotfiles.
+
+To skip the whole step, pass `--skip-dotfiles` to `build.sh`. The
+seed dir won't exist, so first-boot provisioning leaves `~/.dotfiles`
+alone for any user whose entry has `dotfiles_repo` set.
+
+### When the install command runs vs. when it's skipped
+
+`apply_dotfiles_for_user` skips the entire step if `~/.dotfiles`
+already exists in the user's home. That keeps the bootstrap
+idempotent across A/B image updates: retained homes already have
+whatever the user did last time, and re-running dotbot on top of a
+live home would overwrite hand edits.
+
+If you want to re-run the bootstrap on an existing user, delete
+`~/.dotfiles` (and any symlinks dotbot created) before the next
+boot.
+
+### Picking the right `dotfiles_install`
+
+- **Vanilla dotbot:** the default `./install` works — that's the
+  shell wrapper dotbot's `init-dotfiles` template ships.
+- **Custom bootstrap script:** set `dotfiles_install` to the script
+  name plus any flags. If your script normally fetches the dotbot
+  submodule from the network, pass whatever flag tells it to skip
+  that — first boot is offline. The build-host clone already
+  initialized submodules, so the dotbot binary is present locally.
+- **No bootstrap, just files:** leave `dotfiles_install` unset and
+  don't ship an `install` script. The seed still lands at
+  `~/.dotfiles`, but nothing runs against it. Useful for users who
+  manage symlinks via some other tool, or who only want a working
+  tree they can `cd` into.
 
 ## Why not `systemd-sysusers`
 

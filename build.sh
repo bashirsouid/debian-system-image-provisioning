@@ -41,6 +41,7 @@ NON_INTERACTIVE=false
 ALLOW_ROOT_LOGIN=false
 ALLOW_EMERGENCY_ROOT=false
 FORCE_EMERGENCY_SHELL=false
+SKIP_DOTFILES=false
 ROOT_PASSWORD_HASH=""
 
 HOST_USER_NAME="$(id -un)"
@@ -75,6 +76,18 @@ Options:
   --allow-root             TEMPORARY: allow root login with password (interactive)
   --allow-emergency-shell  TEMPORARY: enable passwordless root shell on tty9
   --force-emergency-shell  TEMPORARY: force debug shell to tty1 (implies --allow-emergency-shell)
+  --skip-dotfiles          do not clone or stage per-user dotfiles repos.
+                           First-boot provisioning will leave ~/.dotfiles alone
+                           for any user that has dotfiles_repo set in their
+                           .users.json entry. Useful when iterating on image
+                           changes off-network or when a dotfiles remote is
+                           temporarily unreachable.
+
+Environment variables:
+  MKOSI_DOTFILES_CACHE     directory for cached dotfiles clones
+                           (default: ~/.cache/mkosi-dotfiles)
+  MKOSI_DOTFILES_OFFLINE=1 reuse the cached clone as-is instead of fetching
+                           from the remote (errors out if no cache exists)
 USAGE
 }
 
@@ -390,6 +403,123 @@ render_users_conf() {
   if [[ "$ALLOW_ROOT_LOGIN" == "true" && "$root_seen" == "false" ]]; then
     printf 'root:true:/bin/bash::%s:0:0:root:/root\n' \
       "$ROOT_PASSWORD_HASH" >> "$output"
+  fi
+}
+
+# Sanitize a dotfiles repo URL or path into a filesystem-safe cache key.
+# The result is deterministic so subsequent builds reuse the same cache
+# directory, which is what makes the warm path a single `git fetch`.
+sanitize_dotfiles_cache_key() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_' | tr -s '_' | cut -c1-128
+}
+
+# Resolve a dotfiles_repo spec to something `git clone` accepts:
+#   - URLs (containing :// or matching user@host:path) pass through
+#   - Absolute paths pass through
+#   - Anything else is treated as relative to PROJECT_ROOT, so a build
+#     host can point at a sibling checkout (e.g. "../dotfiles") without
+#     committing absolute paths into .users.json
+resolve_dotfiles_repo_spec() {
+  local spec="$1"
+  if [[ "$spec" == *"://"* ]] || [[ "$spec" =~ ^[^/]+@[^/]+: ]]; then
+    printf '%s\n' "$spec"
+  elif [[ "$spec" == /* ]]; then
+    printf '%s\n' "$spec"
+  else
+    printf '%s\n' "$PROJECT_ROOT/$spec"
+  fi
+}
+
+# For each user with `dotfiles_repo` set, maintain a cached working
+# clone on the build host and copy it into METADATA_DIR so first-boot
+# provisioning can populate ~/.dotfiles without network access. The
+# cache lives at $MKOSI_DOTFILES_CACHE (default ~/.cache/mkosi-dotfiles)
+# and survives across builds; only `git fetch` runs on the warm path.
+#
+# Why bake the seed instead of cloning at first boot:
+#   First boot frequently happens on a fresh laptop that's still on
+#   captive-portal Wi-Fi or has no network at all. Cloning during
+#   provisioning would either fail or hang the boot. The image is
+#   sealed with a usable working tree (including initialized
+#   submodules) so dotbot has everything it needs locally.
+#
+# Why a per-user cache key instead of one cache per username:
+#   Two users can share the same dotfiles_repo URL, and the same user
+#   can change which repo they point at over time. Hashing the resolved
+#   spec dedupes the former and avoids stale cross-pollination on the
+#   latter.
+stage_dotfiles_seeds() {
+  local metadata_root="$1"
+  local cache_root="${MKOSI_DOTFILES_CACHE:-$HOME/.cache/mkosi-dotfiles}"
+  local offline="${MKOSI_DOTFILES_OFFLINE:-0}"
+  local seed_root="$metadata_root/usr/local/share/dotfiles-seed"
+  local install_root="$metadata_root/usr/local/etc/dotfiles-install"
+  local staged=0
+
+  install -d -m 0755 "$cache_root"
+
+  while IFS= read -r entry; do
+    local username dotfiles_repo dotfiles_install
+    username="$(jq -r '.username // empty' <<<"$entry")"
+    dotfiles_repo="$(jq -r '.dotfiles_repo // empty' <<<"$entry")"
+    dotfiles_install="$(jq -r '.dotfiles_install // empty' <<<"$entry")"
+
+    [[ -n "$username" ]] || continue
+    [[ -n "$dotfiles_repo" ]] || continue
+
+    local resolved_spec cache_key cache_dir seed_dir default_ref
+    resolved_spec="$(resolve_dotfiles_repo_spec "$dotfiles_repo")"
+    cache_key="$(sanitize_dotfiles_cache_key "$resolved_spec")"
+    cache_dir="$cache_root/$cache_key"
+
+    if [[ -d "$cache_dir/.git" ]]; then
+      if [[ "$offline" == "1" ]]; then
+        echo "==> [DOTFILES] $username: MKOSI_DOTFILES_OFFLINE=1, reusing cache at $cache_dir as-is"
+      else
+        echo "==> [DOTFILES] $username: refreshing cached clone at $cache_dir"
+        if ! git -C "$cache_dir" fetch --recurse-submodules --quiet origin; then
+          echo "WARNING: [DOTFILES] git fetch failed for $resolved_spec; falling back to cached snapshot" >&2
+        else
+          default_ref="$(git -C "$cache_dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+          [[ -n "$default_ref" ]] || default_ref="origin/HEAD"
+          # reset --hard so we ship the remote's tip even if the cache's
+          # working tree got dirtied (rare, but happens if someone pokes
+          # at the cache dir manually). submodule update --init covers
+          # newly added submodules between builds.
+          git -C "$cache_dir" reset --hard --quiet "$default_ref" || true
+          git -C "$cache_dir" submodule update --init --recursive --quiet || true
+        fi
+      fi
+    else
+      if [[ "$offline" == "1" ]]; then
+        echo "ERROR: [DOTFILES] MKOSI_DOTFILES_OFFLINE=1 but no cache exists at $cache_dir for $resolved_spec" >&2
+        exit 1
+      fi
+      echo "==> [DOTFILES] $username: cloning $resolved_spec into $cache_dir"
+      rm -rf "$cache_dir"
+      if ! git clone --recurse-submodules --quiet "$resolved_spec" "$cache_dir"; then
+        echo "ERROR: [DOTFILES] failed to clone $resolved_spec for user $username" >&2
+        exit 1
+      fi
+    fi
+
+    seed_dir="$seed_root/$username"
+    install -d -m 0755 "$seed_root"
+    rm -rf "$seed_dir"
+    cp -a "$cache_dir" "$seed_dir"
+
+    if [[ -n "$dotfiles_install" ]]; then
+      install -d -m 0755 "$install_root"
+      printf '%s\n' "$dotfiles_install" > "$install_root/$username"
+      chmod 0644 "$install_root/$username"
+    fi
+
+    staged=$((staged + 1))
+    echo "==> [DOTFILES] $username: staged seed at /usr/local/share/dotfiles-seed/$username"
+  done < <(jq -c '.[]' "$USERS_FILE")
+
+  if (( staged == 0 )); then
+    echo "==> [DOTFILES] no users specify dotfiles_repo; nothing staged"
   fi
 }
 
@@ -926,8 +1056,13 @@ EOF
     echo "==> Using per-host users file: hosts/$HOST/users.json"
   fi
   render_users_conf "$METADATA_DIR/usr/local/etc/users.conf"
-  USERS_FILE="$_original_users_file"
   chmod 0600 "$METADATA_DIR/usr/local/etc/users.conf"
+  if [[ "$SKIP_DOTFILES" == true ]]; then
+    echo "==> [DOTFILES] --skip-dotfiles set; skipping dotfiles staging"
+  else
+    stage_dotfiles_seeds "$METADATA_DIR"
+  fi
+  USERS_FILE="$_original_users_file"
   render_build_info "$METADATA_DIR/usr/local/share/ab-image-meta/build-info.env" \
     "$target_image_id" "$IMAGE_VERSION" "$TARGET_ARCH" "$HOST_KERNEL_ARGS" \
     "$ROOT_PASSWORD_HASH" "$ALLOW_EMERGENCY_ROOT" "$FORCE_EMERGENCY_SHELL"
@@ -1170,6 +1305,10 @@ while [[ $# -gt 0 ]]; do
     --force-emergency-shell)
       ALLOW_EMERGENCY_ROOT=true
       FORCE_EMERGENCY_SHELL=true
+      shift
+      ;;
+    --skip-dotfiles)
+      SKIP_DOTFILES=true
       shift
       ;;
     -h|--help)

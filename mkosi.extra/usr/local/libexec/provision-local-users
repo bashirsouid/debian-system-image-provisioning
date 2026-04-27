@@ -4,6 +4,9 @@ set -euo pipefail
 USERS_FILE="${USERS_FILE:-/usr/local/etc/users.conf}"
 SKEL_DIR="${SKEL_DIR:-/etc/skel}"
 QEMU_HOME_SEED_DIR="${QEMU_HOME_SEED_DIR:-/run/qemu-home-seed}"
+DOTFILES_SEED_ROOT="${DOTFILES_SEED_ROOT:-/usr/local/share/dotfiles-seed}"
+DOTFILES_INSTALL_ROOT="${DOTFILES_INSTALL_ROOT:-/usr/local/etc/dotfiles-install}"
+DOTFILES_DEFAULT_INSTALL_CMD="./install"
 
 pick_nologin_shell() {
     local candidate
@@ -155,6 +158,55 @@ seed_user_tree_if_missing() {
     chown -R "$username:$primary_group" "$target"
 }
 
+# Bootstrap a user's dotfiles on first boot by copying the seed clone
+# baked into the image at build time, then running the per-user install
+# command (or ./install by default). Skipped if ~/.dotfiles already
+# exists — retained homes survive A/B updates and we don't want to
+# clobber whatever the user has been doing in there.
+#
+# Why runuser instead of su -l: runuser doesn't go through PAM, so it
+# works the same in this oneshot service context as it would on a real
+# console login, and it cannot prompt. dotbot output passes through to
+# the journal, which is where build-bring-up failures are diagnosed.
+apply_dotfiles_for_user() {
+    local username="$1"
+    local primary_group="$2"
+    local home="$3"
+
+    local seed="$DOTFILES_SEED_ROOT/$username"
+    [[ -d "$seed" ]] || return 0
+    [[ -d "$home" ]] || return 0
+
+    if [[ -e "$home/.dotfiles" ]]; then
+        echo "==> [FIRSTBOOT] $username already has ~/.dotfiles; leaving it alone"
+        return 0
+    fi
+
+    echo "==> [FIRSTBOOT] copying dotfiles seed into $home/.dotfiles for $username"
+    cp -a "$seed" "$home/.dotfiles"
+    chown -R "$username:$primary_group" "$home/.dotfiles"
+
+    local install_cmd=""
+    if [[ -f "$DOTFILES_INSTALL_ROOT/$username" ]]; then
+        install_cmd="$(head -n1 "$DOTFILES_INSTALL_ROOT/$username")"
+    fi
+    if [[ -z "$install_cmd" ]]; then
+        if [[ -x "$home/.dotfiles/install" ]]; then
+            install_cmd="$DOTFILES_DEFAULT_INSTALL_CMD"
+        else
+            echo "==> [FIRSTBOOT] $username: no dotfiles_install set and no executable ./install; leaving ~/.dotfiles seeded but not run"
+            return 0
+        fi
+    fi
+
+    echo "==> [FIRSTBOOT] running dotfiles install for $username: $install_cmd"
+    if runuser -u "$username" -- bash -lc "cd \"\$HOME/.dotfiles\" && $install_cmd"; then
+        echo "==> [FIRSTBOOT] dotfiles install succeeded for $username"
+    else
+        echo "WARNING: [FIRSTBOOT] dotfiles install for $username exited non-zero; continuing first-boot provisioning" >&2
+    fi
+}
+
 create_or_update_login_user() {
     local username="$1"
     local shell="$2"
@@ -261,6 +313,10 @@ while IFS=':' read -r username can_login requested_shell groups_csv password_has
     ensure_groups "$groups_csv"
     set_supplementary_groups "$username" "$groups_csv"
     apply_password_state "$username" "$can_login" "$password_hash"
+
+    if [[ "$can_login" == "true" ]]; then
+        apply_dotfiles_for_user "$username" "$primary_group" "$effective_home"
+    fi
 done < "$USERS_FILE"
 
 rm -f "$USERS_FILE"

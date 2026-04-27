@@ -36,6 +36,22 @@
       "  password_hash         pre-hashed crypt string (wins over 'password')",
       "  ssh_authorized_keys_file  path relative to repo root to install into",
       "                            ~/.ssh/authorized_keys on first boot",
+      "  dotfiles_repo         git URL or path (relative to repo root, or",
+      "                            absolute) of a dotfiles repo to bake into",
+      "                            the image. Cloned with submodules at build",
+      "                            time on the build host; ~/.dotfiles is",
+      "                            populated on first boot before login. The",
+      "                            clone is cached at ~/.cache/mkosi-dotfiles",
+      "                            so repeat builds only do `git fetch`.",
+      "  dotfiles_install      shell command run from inside ~/.dotfiles on",
+      "                            first boot to apply the dotfiles. Defaults",
+      "                            to './install' (the dotbot convention).",
+      "                            Override when your repo names its bootstrap",
+      "                            script differently or needs flags, e.g.",
+      "                            './install_packages.sh --skip-submodule-update'",
+      "                            (use --skip-submodule-update if your script",
+      "                            would otherwise try to fetch submodules over",
+      "                            the network — first boot is often offline).",
       "",
       "Any field beginning with '_' (like this one) is ignored by the build."
     ]
@@ -59,7 +75,16 @@
     "shell": "/bin/bash",
     "password": "change-me-now",
     "force_password_change_on_first_login": false,
-    "ssh_authorized_keys_file": ".mkosi-secrets/ssh-authorized-keys"
+    "ssh_authorized_keys_file": ".mkosi-secrets/ssh-authorized-keys",
+    "_dotfiles_example": [
+      "Drop the leading underscore on the two fields below to bake a dotfiles",
+      "repo into the image and apply it on first boot. The repo is cloned with",
+      "submodules at build time, so first boot needs no network access. Use",
+      "your fork's https or ssh URL, or a local path like '../dotfiles' that's",
+      "resolved relative to this repo's root."
+    ],
+    "_dotfiles_repo": "https://github.com/yourname/dotfiles.git",
+    "_dotfiles_install": "./install"
   }
   /*
   ,

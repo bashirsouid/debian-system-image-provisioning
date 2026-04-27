@@ -266,3 +266,46 @@ if [[ ! -e "$LOCALE_FILE" ]]; then
   printf 'LANG=C.UTF-8\n' > "$LOCALE_FILE"
   chmod 0644 "$LOCALE_FILE"
 fi
+
+# Pre-create the XDG layout in /etc/skel with restrictive perms.
+#
+# Why: dotbot's `link` action does NOT auto-create parent directories,
+# so a fresh home that lacks ~/.config will silently fail to materialize
+# every dotfiles symlink under it. Pre-seeding here means any user
+# created via useradd (whether through provision-local-users or by
+# hand later) starts with a working XDG tree, regardless of what their
+# dotfiles repo remembered to declare.
+#
+# Mode 0700 on the parents matters too: home itself is locked to 0700
+# already (see provision-local-users + HOME_MODE below), but we want
+# the same posture preserved if someone later relaxes the top-level
+# perm — config and cache dirs should not become world-readable just
+# because the home dir did. Defense in depth.
+#
+# Git does not track directory perms, so doing this in finalize rather
+# than via mkosi.extra/etc/skel/... is what guarantees the modes are
+# right on every build host.
+echo "==> [FINALIZE] pre-creating /etc/skel XDG dirs at mode 0700"
+install -d -m 0700 "$ROOT/etc/skel/.config"
+install -d -m 0700 "$ROOT/etc/skel/.cache"
+install -d -m 0700 "$ROOT/etc/skel/.local"
+install -d -m 0700 "$ROOT/etc/skel/.local/share"
+install -d -m 0700 "$ROOT/etc/skel/.local/bin"
+
+# Lock the default home-dir mode at the login.defs level. Debian ships
+# HOME_MODE=0755 in older releases (and an unset/commented HOME_MODE in
+# some), which means a `useradd` outside our provisioning script would
+# create a world-readable home. provision-local-users already does
+# `chmod 0700` on the top-level home, but enforcing the same policy in
+# /etc/login.defs is what makes it true for every user-creation path,
+# not just first-boot provisioning.
+LOGIN_DEFS="$ROOT/etc/login.defs"
+if [[ -f "$LOGIN_DEFS" ]]; then
+  if grep -qE '^[#[:space:]]*HOME_MODE[[:space:]]' "$LOGIN_DEFS"; then
+    echo "==> [FINALIZE] setting HOME_MODE=0700 in /etc/login.defs"
+    sed -i 's|^[#[:space:]]*HOME_MODE[[:space:]].*|HOME_MODE\t0700|' "$LOGIN_DEFS"
+  else
+    echo "==> [FINALIZE] appending HOME_MODE=0700 to /etc/login.defs"
+    printf '\n# AB image: restrict default home-dir perms to owner only\nHOME_MODE\t0700\n' >> "$LOGIN_DEFS"
+  fi
+fi
