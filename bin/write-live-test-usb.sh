@@ -119,6 +119,7 @@ MODE="auto"
 REFLASH=false
 LUKS_PASSPHRASE=""    # passphrase for LUKS-encrypted roots (--luks-passphrase)
 LUKS_MAP=""           # mapper name opened by seed_first_root_slot; closed by cleanup()
+USBDATA_BUNDLE_MOUNT="" # set by copy_bundle() when bundle overflows to USBDATA
 
 usage() {
   cat <<'USAGE'
@@ -198,6 +199,12 @@ cleanup() {
     if [[ -n "${LUKS_MAP:-}" ]]; then
         cryptsetup luksClose "$LUKS_MAP" >/dev/null 2>&1 || true
         LUKS_MAP=""
+    fi
+    if [[ -n "${USBDATA_BUNDLE_MOUNT:-}" ]]; then
+        mountpoint -q "$USBDATA_BUNDLE_MOUNT" 2>/dev/null \
+            && umount "$USBDATA_BUNDLE_MOUNT" 2>/dev/null || true
+        [[ -d "$USBDATA_BUNDLE_MOUNT" ]] \
+            && rmdir "$USBDATA_BUNDLE_MOUNT" 2>/dev/null || true
     fi
     [[ -n "${TEMP_REPART_DIR:-}" && -d "$TEMP_REPART_DIR" ]] && rm -rf "$TEMP_REPART_DIR"
     [[ -n "${TEMP_DEFINITIONS_DIR:-}" && -d "$TEMP_DEFINITIONS_DIR" ]] && rm -rf "$TEMP_DEFINITIONS_DIR"
@@ -824,12 +831,29 @@ seed_first_root_slot() {
     if [[ "$root_fstype" == "crypto_LUKS" ]]; then
         command -v cryptsetup >/dev/null 2>&1 \
             || die "cryptsetup is required to mount a LUKS-encrypted root; install cryptsetup on the build host"
-        [[ -n "${LUKS_PASSPHRASE:-}" ]] \
-            || die "$ROOT_PART is LUKS-encrypted; re-run with --luks-passphrase <passphrase>"
+        if [[ -z "${LUKS_PASSPHRASE:-}" ]]; then
+            echo "==> $ROOT_PART is LUKS-encrypted and no passphrase was supplied" >&2
+            read -rsp "    Enter LUKS passphrase (input hidden, not saved to history): " \
+                LUKS_PASSPHRASE </dev/tty
+            echo >&2
+        fi
         local luks_map="ab-live-root-luks-$$"
         echo "==> Opening LUKS container $ROOT_PART -> /dev/mapper/$luks_map"
         printf '%s' "$LUKS_PASSPHRASE" | cryptsetup luksOpen "$ROOT_PART" "$luks_map" --key-file=-
         LUKS_MAP="$luks_map"
+        # The .root.raw image is smaller than the allocated partition.
+        # Expand the LUKS container to fill the full partition, then grow
+        # the inner filesystem to match — otherwise the root has no free
+        # space for the installer bundle.
+        echo "==> Expanding LUKS container $luks_map to fill partition $ROOT_PART"
+        printf '%s' "$LUKS_PASSPHRASE" | cryptsetup resize "$luks_map" --key-file=-
+        if command -v e2fsck >/dev/null 2>&1 && command -v resize2fs >/dev/null 2>&1; then
+            echo "==> Running e2fsck + resize2fs on /dev/mapper/$luks_map"
+            e2fsck -f -y "/dev/mapper/$luks_map" || true
+            resize2fs "/dev/mapper/$luks_map" || true
+        else
+            echo "WARNING: e2fsck/resize2fs not available; inner filesystem not grown" >&2
+        fi
         mount "/dev/mapper/$luks_map" "$ROOT_MOUNT"
     else
         mount "$ROOT_PART" "$ROOT_MOUNT"
@@ -1191,11 +1215,33 @@ copy_bundle() {
   avail="$(df -B1 --output=avail "$ROOT_MOUNT" | tail -n1 | tr -d '[:space:]')"
   headroom=$((256 * 1024 * 1024))
 
+  local usbdata_fallback=false
+
   if [[ "$avail" =~ ^[0-9]+$ ]] && (( avail < required + headroom )); then
-    die "USB root filesystem does not have enough free space for the installer bundle (need about $(( (required + headroom) / 1024 / 1024 )) MiB free)"
+    # Root has insufficient free space (common when the root image nearly fills
+    # the slot, e.g. a 6 GiB LUKS image in an 8 GiB partition, leaving only
+    # ~2 GiB free but the bundle needs ~6.5 GiB). Fall back to USBDATA which
+    # typically has tens of GiB free, then plant a wrapper on the root that
+    # mounts USBDATA and launches the installer from there.
+    local usbdata_part
+    usbdata_part="$(find_usb_storage_partition || true)"
+    if [[ -z "$usbdata_part" ]]; then
+      die "USB root filesystem does not have enough free space for the installer bundle (need about $(( (required + headroom) / 1024 / 1024 )) MiB free); no USBDATA partition available"
+    fi
+    echo "==> Root has $(( avail / 1024 / 1024 )) MiB free; bundle needs $(( (required + headroom) / 1024 / 1024 )) MiB"
+    echo "==> Falling back: copying installer bundle to USBDATA ($usbdata_part)"
+    USBDATA_BUNDLE_MOUNT="$(mktemp -d /tmp/ab-usbdata.XXXXXX)"
+    mount "$usbdata_part" "$USBDATA_BUNDLE_MOUNT"
+    local usbdata_avail
+    usbdata_avail="$(df -B1 --output=avail "$USBDATA_BUNDLE_MOUNT" | tail -n1 | tr -d '[:space:]')" 
+    if ! [[ "$usbdata_avail" =~ ^[0-9]+$ ]] || (( usbdata_avail < required + headroom )); then
+      die "installer bundle needs $(( (required + headroom) / 1024 / 1024 )) MiB; root $(( avail / 1024 / 1024 )) MiB, USBDATA ${usbdata_avail:-0} bytes — not enough on either"
+    fi
+    bundle_root="$USBDATA_BUNDLE_MOUNT/ab-installer"
+    usbdata_fallback=true
   fi
 
-  echo "==> Copying installer bundle into $BUNDLE_DIR"
+  echo "==> Copying installer bundle into ${usbdata_fallback:+USBDATA }$bundle_root"
   install -d -m 0700 "$bundle_root"
   install -d -m 0755 "$bundle_root/bin" "$bundle_root/installer" "$bundle_root/scripts/lib" "$bundle_root/mkosi.output" "$bundle_root/mkosi.sysupdate" "$bundle_root/deploy.repart"
 
@@ -1206,8 +1252,8 @@ copy_bundle() {
   copy_file_preserving_layout "$PROJECT_ROOT/scripts/lib/build-meta.sh" "$bundle_root/scripts/lib/build-meta.sh"
   chmod 0755 "$bundle_root/bin/bootstrap-ab-disk.sh" "$bundle_root/installer/live-usb-install.sh" "$bundle_root/bin/sysupdate-local-update.sh"
 
-  cp -a "${GENERATED_DEFINITIONS_DIR:-$PROJECT_ROOT/mkosi.sysupdate}/." "$bundle_root/mkosi.sysupdate/"
-  cp -a "$PROJECT_ROOT/deploy.repart/." "$bundle_root/deploy.repart/"
+  cp -r --no-preserve=ownership "${GENERATED_DEFINITIONS_DIR:-$PROJECT_ROOT/mkosi.sysupdate}/." "$bundle_root/mkosi.sysupdate/"
+  cp -r --no-preserve=ownership "$PROJECT_ROOT/deploy.repart/." "$bundle_root/deploy.repart/"
 
   # The bundle's mkosi.output/ is flat (no builds/ subtree) because the
   # installer on the USB expects a single transfer-source directory. We
@@ -1223,6 +1269,27 @@ copy_bundle() {
 
   if [[ "$EMBED_FULL_IMAGE" == true ]]; then
     copy_file_preserving_layout "$SOURCE_DIR/$IMAGE_BASENAME" "$bundle_root/mkosi.output/$IMAGE_BASENAME"
+  fi
+
+  # When the bundle went to USBDATA, plant a thin launcher on the root so
+  # the operator can run the installer with the same path they'd expect
+  # (/root/INSTALL-TO-INTERNAL-DISK.sh) even though the payload lives on
+  # the USBDATA exFAT partition.
+  if [[ "$usbdata_fallback" == true ]]; then
+    install -d -m 0700 "$ROOT_MOUNT/root"
+    cat > "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh" <<'WRAPPER'
+#!/bin/bash
+# Bundle is on USBDATA. Mount it, run the installer, unmount.
+set -euo pipefail
+USBDATA_PART="$(lsblk -nrpo NAME,LABEL | awk '$2=="USBDATA"{print "/dev/"$1; exit}')"
+[[ -n "$USBDATA_PART" ]] || { echo "ERROR: USBDATA partition not found" >&2; exit 1; }
+USBDATA_MNT="$(mktemp -d /tmp/usbdata.XXXXXX)"
+mount "$USBDATA_PART" "$USBDATA_MNT"
+trap "umount '$USBDATA_MNT'; rmdir '$USBDATA_MNT'" EXIT
+exec "$USBDATA_MNT/ab-installer/installer/live-usb-install.sh" "$@"
+WRAPPER
+    chmod 0755 "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh"
+    echo "==> Planted USBDATA launcher at /root/INSTALL-TO-INTERNAL-DISK.sh on root"
   fi
 
   cat > "$bundle_root/README.txt" <<EOF2
