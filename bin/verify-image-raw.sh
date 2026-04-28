@@ -16,9 +16,8 @@
 #   5. Root partition contains a recognizable Debian rootfs (/etc/os-release).
 #   6. /etc/ssh/sshd_config.d/50-hardening.conf exists and has a real username
 #      substituted (not __INITIAL_USERNAME__).
-#   7. /etc/credstore.encrypted/ contains the expected encrypted blobs
-#      if the remote-access add-on is enabled.
-#   8. /var/lib/systemd/credential.secret exists and is mode 0400.
+#   7. /etc/credstore/ contains the expected plaintext credential blobs
+#      if the remote-access add-on is enabled (protected at rest by LUKS).
 
 set -euo pipefail
 

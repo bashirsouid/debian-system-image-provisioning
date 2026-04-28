@@ -110,6 +110,46 @@ skip() { RESULT[$1]="skip"; DETAIL[$1]="$2"; say "  [skip] $1 — $2"; }
 # Tests
 # ===========================================================================
 
+test_luks_tpm() {
+    say "testing luks/tpm..."
+
+    # Check if root is on a LUKS-encrypted device
+    local crypt_dev
+    crypt_dev="$(lsblk -rno NAME,TYPE,MOUNTPOINT 2>/dev/null \
+        | awk '$2 == "crypt" && $3 == "/" {print $1; exit}')"
+
+    if [[ -z "$crypt_dev" ]]; then
+        fail luks-tpm "root filesystem is NOT on an encrypted volume"
+        return
+    fi
+
+    # Find the underlying partition
+    local slave luks_dev=""
+    slave="$(ls /sys/class/block/"${crypt_dev}"/slaves/ 2>/dev/null | head -1)"
+    if [[ -n "$slave" ]]; then
+        luks_dev="/dev/${slave}"
+    fi
+
+    if [[ -z "$luks_dev" ]] || ! cryptsetup isLuks "$luks_dev" 2>/dev/null; then
+        # Root is encrypted but we can't identify the backing device
+        skip luks-tpm "root is encrypted (${crypt_dev}) but backing device unknown"
+        return
+    fi
+
+    # Check for TPM2 enrollment
+    if cryptsetup luksDump "$luks_dev" 2>/dev/null | grep -qi "tpm2"; then
+        pass luks-tpm "root encrypted on ${luks_dev}, TPM2 auto-unlock enrolled"
+    else
+        # Not a failure — system works with passphrase-only — but the
+        # hardening step hasn't been completed yet.
+        local msg="root encrypted on ${luks_dev}, but TPM2 NOT enrolled"
+        msg+=" (run 'sudo ab-enroll-tpm' to enable auto-unlock)"
+        RESULT[luks-tpm]="warn"; DETAIL[luks-tpm]="$msg"
+        say "  [WARN] luks-tpm — $msg"
+        log_structured WARN luks-tpm "$msg" ""
+    fi
+}
+
 test_ssh() {
     say "testing ssh..."
     local unit="ssh.service"
@@ -332,6 +372,7 @@ say "ab-runtime-validate on ${HOST} at ${NOW}"
 say "mode: ${MODE}"
 say ""
 
+test_luks_tpm
 test_ssh
 test_tailscale
 test_cloudflared

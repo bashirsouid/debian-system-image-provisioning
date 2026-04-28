@@ -91,29 +91,41 @@ an unauthenticated attack surface — is part of the signed blob.
 
 See `docs/secure-boot.md` for enrollment steps and key rotation.
 
-### Credential confidentiality — per-image key
+### Credential confidentiality — LUKS full disk encryption
+
+The root partition is encrypted with LUKS2. During the build, you are
+prompted to type a passphrase interactively — the passphrase is held
+only in `/dev/shm/` (RAM-backed tmpfs) for the duration of the build
+and is never written to persistent storage.
 
 Per-host secrets (Tailscale auth keys, cloudflared tokens, PagerDuty
-tokens, SSH authorized_keys) are encrypted at build time with
-`systemd-creds` against a random 32-byte `credential.secret` that is
-unique to each built image and stored under `/var/lib/systemd/`
-inside that image. Encrypted blobs land in `/etc/credstore.encrypted/`
-and services load them via `LoadCredentialEncrypted=`.
+tokens, SSH authorized_keys) are placed as plaintext into
+`/etc/credstore/` inside the encrypted root partition.  Services load
+them via systemd's `LoadCredential=` directive, which securely
+isolates the credential into a hidden per-service tmpfs at runtime.
 
-The security property: an encrypted blob is only useful inside the
-specific image it was built with. Extracting the blob without the
-image yields nothing; the image and the blob must travel together.
+The security model:
 
-This intentionally does not use TPM2 sealing (`systemd-creds
---with-key=tpm2`). TPM sealing binds decryption to specific PCR
-values on specific hardware, which forces building on each target
-machine or precomputing a PCR policy per host. For a cross-built
-image shipped to three different machines (Intel workstation, T2
-MacBook, ARM cloud), the per-image-key scheme gives equivalent
-protection because Secure Boot already prevents tampering with the
-image between build and first boot. Once the UKI is verified, the
-image's own `credential.secret` is as trustworthy as the signed root
-it lives in.
+* **At rest**: the entire root partition is LUKS2-encrypted.  An
+  attacker who steals the drive or USB stick gets ciphertext.
+* **At runtime**: credentials are loaded into isolated per-service
+  tmpfs mounts.  A compromised web server process cannot read another
+  service's credentials, even if it achieves arbitrary file read.
+* **On baremetal (production)**: after the first passphrase-unlocked
+  boot, run `sudo ab-enroll-tpm` to bind the LUKS volume to the
+  hardware TPM.  Subsequent boots auto-unlock without typing a
+  password, and the drive becomes unreadable if moved to a different
+  machine.
+* **In QEMU (development)**: the VM prompts for the LUKS passphrase
+  on every boot.  If `swtpm` is available, `ab-enroll-tpm` can bind
+  to the virtual TPM for auto-unlock during development too.
+
+This design intentionally avoids using `systemd-creds encrypt` at
+build time.  The build host's `systemd-creds` binds encryption to
+the host's own machine-id/TPM, making credentials unreadable inside
+the target VM or baremetal host.  LUKS encryption of the entire
+partition provides strictly superior at-rest protection without
+portability issues.
 
 ### Rollback — boot counting
 
@@ -247,22 +259,37 @@ Before flashing to a USB or publishing an image, sanity-check the
 
 That runs fast partition-level checks (size, GPT layout, presence of an
 ESP and a Linux root partition). Re-run with `sudo` for filesystem-level
-checks that mount the image read-only via `systemd-dissect` and
-verify:
+checks that mount the image read-only via `systemd-dissect`.
 
-* the ESP contains a valid bootloader (`/EFI/BOOT/BOOT*.EFI` fallback
-  or `/EFI/systemd/`)
-* the root partition has a recognizable Debian `/etc/os-release`
-* `package-credentials.sh` substituted a real username into
-  `/etc/ssh/sshd_config.d/50-hardening.conf` (not the
-  `__INITIAL_USERNAME__` placeholder)
-* optional encrypted credstore blobs
-  (`tailscale-authkey`, `cloudflared-token`) exist with mode `0600`
-* `/var/lib/systemd/credential.secret` exists with mode `0400`
+### Post-boot verification (inside the running image)
 
-The script fails loudly on any hard check; soft checks print warnings
-and continue. This is cheap to run after every build and before every
-`./bin/write-live-test-usb.sh` or remote deploy.
+After booting the image in QEMU (or on baremetal), run:
+
+    sudo ab-verify
+
+This checks:
+
+* LUKS encryption — is the root filesystem on an encrypted volume?
+* TPM2 enrollment — is the LUKS volume bound to the TPM for auto-unlock?
+* Credential store — are plaintext credentials present with correct perms?
+  Are legacy encrypted credstore files absent?
+* SSH server — is sshd running and are authorized keys installed?
+* Tailscale VPN — is it configured, connected, and what is its IP?
+* Cloudflare tunnel — is cloudflared running?
+* System health — are there any failed systemd units?
+
+The script exits 0 on success, 1 on failure. Use it as a pre-flash
+gate: if `ab-verify` passes, the image is ready for production.
+
+### TPM2 enrollment (baremetal only)
+
+After verifying the image, bind the LUKS volume to the hardware TPM
+so subsequent boots auto-unlock without a passphrase:
+
+    sudo ab-enroll-tpm              # auto-detect + enroll
+    sudo ab-enroll-tpm --status     # check enrollment status
+
+The existing passphrase remains as a manual fallback.
 
 ## Host dependency auto-install
 
@@ -521,8 +548,8 @@ actually runs them. Each of those directories also has its own short
   change.
   + `scripts/fetch-third-party-keys.sh` — fetch and pin third-party apt keys
   + `scripts/package-credentials.sh`,
-    `scripts/package-alert-credentials.sh` — encrypt per-host secrets into
-    the image's credstore
+    `scripts/package-alert-credentials.sh` — package per-host secrets
+    as plaintext into the image's `/etc/credstore/` (protected by LUKS)
   + `scripts/export-sysupdate-artifacts.sh` — export versioned
     root/UKI/BLS artifacts after a build
   + `scripts/verify-build-secrets.sh`,
@@ -545,8 +572,9 @@ Other directories worth knowing about:
 * `deploy.repart/` — one-time disk layout used during bootstrap
 * `mkosi.extra/usr/local/` — code that actually ends up running on the
   booted target machine (health gate, user provisioning, remote-access
-  helpers, etc.) — distinct from everything under `bin/`, `scripts/`, and
-  `installer/`, which all run off-target
+  helpers, `ab-verify`, `ab-enroll-tpm`, etc.) — distinct from
+  everything under `bin/`, `scripts/`, and `installer/`, which all
+  run off-target
 * `hosts/cloudbox/` — ARM64 server overlay
 * `hosts/evox2/` — Intel workstation overlay
 * `hosts/macbookpro13-2019-t2/` — Intel T2 MacBook Pro overlay
