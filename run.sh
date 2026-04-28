@@ -196,8 +196,8 @@ if [[ "$BOOT_NSPAWN" == true ]]; then
   REQUIRED_CMDS+=(systemd-nspawn)
   REQUIRED_PKGS+=(systemd-container)
 else
-  REQUIRED_CMDS+=(qemu-system-x86_64 virtiofsd swtpm)
-  REQUIRED_PKGS+=(qemu-system-x86 ovmf virtiofsd swtpm)
+  REQUIRED_CMDS+=(qemu-system-x86_64 virtiofsd swtpm swtpm_setup)
+  REQUIRED_PKGS+=(qemu-system-x86 ovmf virtiofsd swtpm swtpm-tools)
 fi
 
 if ! ab_hostdeps_have_all_commands "${REQUIRED_CMDS[@]}"; then
