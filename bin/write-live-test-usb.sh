@@ -117,6 +117,8 @@ MODE="auto"
 # Computed from MODE after arg-parsing + load_build_metadata so user
 # echo lines can name the resolved disk path.
 REFLASH=false
+LUKS_PASSPHRASE=""    # passphrase for LUKS-encrypted roots (--luks-passphrase)
+LUKS_MAP=""           # mapper name opened by seed_first_root_slot; closed by cleanup()
 
 usage() {
   cat <<'USAGE'
@@ -153,6 +155,11 @@ Options:
                         "I flashed my laptop's SSD by accident" case
   --yes                 skip destructive confirmation prompts
   --diagnostic-mode     append initrd debug params to the boot entry
+  --luks-passphrase PASSPHRASE
+                        passphrase for a LUKS-encrypted root partition. Required
+                        when *.root.raw uses LUKS (auto-detected after dd). The
+                        passphrase is fed to cryptsetup via stdin and is not
+                        stored anywhere on the USB.
   --reflash             FORCE reflash mode: do NOT repartition. Detect the
                         existing A/B layout, write the new image into the
                         *inactive* root slot, and leave the active slot +
@@ -160,7 +167,8 @@ Options:
                         valid A/B layout. This is the same as the auto
                         default when a layout is already present; pass it
                         explicitly to fail fast on a fresh disk.
-  --repartition         FORCE destructive bootstrap: wipe everything on the
+  --reimage, --repartition
+                        FORCE destructive bootstrap: wipe everything on the
                         target and re-create the GPT layout (ESP + 2 root
                         slots + USBDATA). Use this when you want a fully
                         fresh USB even though an A/B layout already exists,
@@ -187,6 +195,10 @@ cleanup() {
     set +e
     [[ -n "${ROOT_MOUNT:-}" ]] && mountpoint -q "$ROOT_MOUNT" && umount "$ROOT_MOUNT"
     [[ -n "${ROOT_MOUNT:-}" && -d "$ROOT_MOUNT" ]] && rmdir "$ROOT_MOUNT"
+    if [[ -n "${LUKS_MAP:-}" ]]; then
+        cryptsetup luksClose "$LUKS_MAP" >/dev/null 2>&1 || true
+        LUKS_MAP=""
+    fi
     [[ -n "${TEMP_REPART_DIR:-}" && -d "$TEMP_REPART_DIR" ]] && rm -rf "$TEMP_REPART_DIR"
     [[ -n "${TEMP_DEFINITIONS_DIR:-}" && -d "$TEMP_DEFINITIONS_DIR" ]] && rm -rf "$TEMP_DEFINITIONS_DIR"
     if [[ -n "${LOOPDEV:-}" ]]; then
@@ -404,32 +416,39 @@ resolve_disk_device() {
 }
 
 find_seeded_root_partition() {
-  local part label fstype
-  while read -r part label fstype; do
-    [[ -n "$part" ]] || continue
-    case "$label" in
+  local line NAME PARTLABEL FSTYPE TYPE
+  while read -r line; do
+    eval "$line"
+    [[ "$TYPE" == "part" ]] || continue
+    [[ -n "$NAME" ]] || continue
+
+    case "$PARTLABEL" in
       ESP|_empty|HOME|DATA|USBDATA)
         continue
         ;;
     esac
-    [[ -n "$fstype" ]] || continue
-    if [[ "$label" == "${IMAGE_ID}_${IMAGE_VERSION}" || "$label" == ${IMAGE_ID}_* ]]; then
-      printf '%s\n' "$part"
+
+    # fstype check is now just a hint; we mostly care about the label
+    if [[ "$PARTLABEL" == "${IMAGE_ID}_${IMAGE_VERSION}" || "$PARTLABEL" == ${IMAGE_ID}_* ]]; then
+      printf '%s\n' "$NAME"
       return 0
     fi
-  done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE")
+  done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
 
-  while read -r part label fstype; do
-    [[ -n "$part" ]] || continue
-    case "$label" in
+  # Fallback: any non-reserved partition
+  while read -r line; do
+    eval "$line"
+    [[ "$TYPE" == "part" ]] || continue
+    [[ -n "$NAME" ]] || continue
+
+    case "$PARTLABEL" in
       ESP|_empty|HOME|DATA|USBDATA)
         continue
         ;;
     esac
-    [[ -n "$fstype" ]] || continue
-    printf '%s\n' "$part"
+    printf '%s\n' "$NAME"
     return 0
-  done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE")
+  done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
 
   return 1
 }
@@ -442,27 +461,24 @@ find_seeded_root_partition() {
 #     slot (lexicographically smallest PARTLABEL) so repeated
 #     invocations are predictable.
 select_root_slot_for_seed() {
-    local candidates=() labels=() part label fstype line choice i
+    local line NAME PARTLABEL FSTYPE TYPE candidates=() labels=()
 
-    # Collect root-like partitions: exclude ESP, HOME, DATA, USBDATA
     while IFS= read -r line; do
-        part="${line%% *}"
-        label="${line#* }"
-        label="${label%% *}"   # strip fstype
-        fstype="${line##* }"
+        eval "$line"
+        [[ "$TYPE" == "part" ]] || continue
+        [[ -n "$NAME" ]] || continue
 
-        [[ -n "$part" ]] || continue
-        case "$label" in
+        case "$PARTLABEL" in
             ESP|HOME|DATA|USBDATA)
                 continue
                 ;;
         esac
-        # root slots are ext4 according to deploy.repart
-        [[ "$fstype" == "ext4" || -z "$fstype" ]] || continue
+        # root slots are usually ext4 but can be crypto_LUKS if encrypted
+        [[ "$FSTYPE" == "ext4" || "$FSTYPE" == "crypto_LUKS" || -z "$FSTYPE" ]] || continue
 
-        candidates+=("$part")
-        labels+=("$label")
-    done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE")
+        candidates+=("$NAME")
+        labels+=("$PARTLABEL")
+    done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
 
     (( ${#candidates[@]} > 0 )) || die "no candidate root partitions found on $DISK_DEVICE"
 
@@ -536,22 +552,24 @@ detect_existing_ab_layout() {
     return 1
   fi
 
-  local part label fstype esp_count=0 root_count=0
-  while read -r part label fstype; do
-    [[ -n "$part" ]] || continue
-    case "$label" in
+  local line NAME PARTLABEL FSTYPE TYPE esp_count=0 root_count=0
+  while read -r line; do
+    eval "$line"
+    [[ "$TYPE" == "part" ]] || continue
+
+    case "$PARTLABEL" in
       ESP)
         esp_count=$((esp_count + 1))
         ;;
       USBDATA|DATA|HOME)
         ;;
       *)
-        if [[ "$fstype" == "ext4" || -z "$fstype" ]]; then
+        if [[ "$FSTYPE" == "ext4" || "$FSTYPE" == "crypto_LUKS" || -z "$FSTYPE" ]]; then
           root_count=$((root_count + 1))
         fi
         ;;
     esac
-  done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$device" 2>/dev/null)
+  done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$device" 2>/dev/null)
 
   [[ -n "$tmp_loop" ]] && losetup -d "$tmp_loop" >/dev/null 2>&1 || true
 
@@ -564,11 +582,13 @@ detect_existing_ab_layout() {
 # if the layout cannot be reused — the user should either drop
 # --reflash to do a destructive bootstrap, or fix the disk manually.
 validate_existing_ab_layout() {
-    local part label fstype esp_count=0 root_count=0
+    local line NAME PARTLABEL FSTYPE TYPE esp_count=0 root_count=0
 
-    while read -r part label fstype; do
-        [[ -n "$part" ]] || continue
-        case "$label" in
+    while read -r line; do
+        eval "$line"
+        [[ "$TYPE" == "part" ]] || continue
+
+        case "$PARTLABEL" in
             ESP)
                 esp_count=$((esp_count + 1))
                 ;;
@@ -576,12 +596,12 @@ validate_existing_ab_layout() {
                 continue
                 ;;
             *)
-                if [[ "$fstype" == "ext4" || -z "$fstype" ]]; then
+                if [[ "$FSTYPE" == "ext4" || "$FSTYPE" == "crypto_LUKS" || -z "$FSTYPE" ]]; then
                     root_count=$((root_count + 1))
                 fi
                 ;;
         esac
-    done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE")
+    done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
 
     (( esp_count >= 1 )) \
         || die "--reflash: target $DISK_DEVICE has no ESP partition; do a fresh write (drop --reflash) first"
@@ -603,9 +623,15 @@ validate_existing_ab_layout() {
 # repartition, so it's the right key for identifying "the slot the
 # user is currently booting from".
 read_default_entry_root_partuuid() {
-    local esp_part esp_mount default_line default_entry options_line result=""
-    esp_part="$(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE" \
-                | awk '$2 == "ESP" || $3 == "vfat" { print $1; exit }')"
+    local esp_part esp_mount default_line default_entry options_line result="" line NAME PARTLABEL FSTYPE TYPE
+    while read -r line; do
+        eval "$line"
+        [[ "$TYPE" == "part" ]] || continue
+        if [[ "$PARTLABEL" == "ESP" || "$FSTYPE" == "vfat" ]]; then
+            esp_part="$NAME"
+            break
+        fi
+    done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
     [[ -n "$esp_part" ]] || { printf ''; return 0; }
 
     esp_mount="$(mktemp -d /tmp/ab-reflash-esp.XXXXXX)"
@@ -640,29 +666,27 @@ read_default_entry_root_partuuid() {
 # from. Falls back to "_empty preferred, otherwise lex-smallest" if
 # loader.conf can't be parsed.
 select_inactive_root_slot_for_reseed() {
-    local part label fstype line partuuid
+    local line NAME PARTLABEL FSTYPE TYPE partuuid
     local -a candidates=() labels=() partuuids=()
     local i active_partuuid active_idx=-1
 
     while IFS= read -r line; do
-        part="${line%% *}"
-        label="${line#* }"
-        label="${label%% *}"
-        fstype="${line##* }"
+        eval "$line"
+        [[ "$TYPE" == "part" ]] || continue
+        [[ -n "$NAME" ]] || continue
 
-        [[ -n "$part" ]] || continue
-        case "$label" in
+        case "$PARTLABEL" in
             ESP|USBDATA|DATA|HOME)
                 continue
                 ;;
         esac
-        [[ "$fstype" == "ext4" || -z "$fstype" ]] || continue
+        [[ "$FSTYPE" == "ext4" || "$FSTYPE" == "crypto_LUKS" || -z "$FSTYPE" ]] || continue
 
-        partuuid="$(blkid -s PARTUUID -o value "$part" 2>/dev/null || true)"
-        candidates+=("$part")
-        labels+=("$label")
+        partuuid="$(blkid -s PARTUUID -o value "$NAME" 2>/dev/null || true)"
+        candidates+=("$NAME")
+        labels+=("$PARTLABEL")
         partuuids+=("$partuuid")
-    done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE")
+    done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
 
     (( ${#candidates[@]} >= 2 )) \
         || die "--reflash: expected ≥2 root slots on $DISK_DEVICE, found ${#candidates[@]}"
@@ -750,8 +774,18 @@ seed_first_root_slot() {
     echo "==> Writing root filesystem image into $ROOT_PART from ${prefix}.root.raw"
     dd if="$SOURCE_DIR/${prefix}.root.raw" of="$ROOT_PART" bs=4M status=progress conv=fsync
     
-    # Grow the ext4 filesystem to fill the partition (best-effort)
-    if command -v e2fsck >/dev/null 2>&1 && command -v resize2fs >/dev/null 2>&1; then
+    # Detect the root filesystem type so LUKS-specific paths skip steps
+    # that only apply to plain ext4 roots.
+    local root_fstype
+    root_fstype="$(blkid -s TYPE -o value "$ROOT_PART" 2>/dev/null || true)"
+    echo "==> Detected root partition type: ${root_fstype:-unknown}"
+
+    # Grow the ext4 filesystem to fill the partition (best-effort).
+    # Skip entirely for LUKS: e2fsck misreads the LUKS header as a corrupt
+    # ext4 superblock and irrecoverably overwrites LUKS metadata.
+    if [[ "$root_fstype" == "crypto_LUKS" ]]; then
+        echo "==> Root is LUKS-encrypted; skipping e2fsck/resize2fs"
+    elif command -v e2fsck >/dev/null 2>&1 && command -v resize2fs >/dev/null 2>&1; then
         echo "==> Running e2fsck + resize2fs on $ROOT_PART"
         e2fsck -f -y "$ROOT_PART" || true
         resize2fs "$ROOT_PART" || true
@@ -787,7 +821,19 @@ seed_first_root_slot() {
     # Mount the seeded root for bundle copy
     ROOT_MOUNT="$(mktemp -d /tmp/ab-live-root.XXXXXX)"
     echo "==> Mounting seeded root $ROOT_PART on $ROOT_MOUNT"
-    mount "$ROOT_PART" "$ROOT_MOUNT"
+    if [[ "$root_fstype" == "crypto_LUKS" ]]; then
+        command -v cryptsetup >/dev/null 2>&1 \
+            || die "cryptsetup is required to mount a LUKS-encrypted root; install cryptsetup on the build host"
+        [[ -n "${LUKS_PASSPHRASE:-}" ]] \
+            || die "$ROOT_PART is LUKS-encrypted; re-run with --luks-passphrase <passphrase>"
+        local luks_map="ab-live-root-luks-$$"
+        echo "==> Opening LUKS container $ROOT_PART -> /dev/mapper/$luks_map"
+        printf '%s' "$LUKS_PASSPHRASE" | cryptsetup luksOpen "$ROOT_PART" "$luks_map" --key-file=-
+        LUKS_MAP="$luks_map"
+        mount "/dev/mapper/$luks_map" "$ROOT_MOUNT"
+    else
+        mount "$ROOT_PART" "$ROOT_MOUNT"
+    fi
 
     # Determine PARTUUID of the seeded root partition for boot entry
     local root_partuuid=""
@@ -814,8 +860,15 @@ seed_first_root_slot() {
         blockdev --rereadpt "$DISK_DEVICE" >/dev/null 2>&1 || true
     fi
     
-    local esp_part
-    esp_part="$(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE" | awk '$2 == "ESP" { print $1; exit }')"
+    local esp_part="" line NAME PARTLABEL FSTYPE TYPE
+    while read -r line; do
+        eval "$line"
+        [[ "$TYPE" == "part" ]] || continue
+        if [[ "$PARTLABEL" == "ESP" ]]; then
+            esp_part="$NAME"
+            break
+        fi
+    done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
     if [[ -n "$esp_part" ]]; then
         local esp_mount
         esp_mount="$(mktemp -d /tmp/ab-live-esp.XXXXXX)"
@@ -922,7 +975,13 @@ seed_first_root_slot() {
             # but PARTUUID is what we just learned from the actual seeded slot).
             if [[ -n "$root_partuuid" ]]; then
                 _src_options="$(echo "$_src_options" | sed -E 's#root=[^ ]*##g')"
-                _src_options="root=PARTUUID=$root_partuuid rootfstype=ext4 rootwait $_src_options"
+                if [[ "$root_fstype" == "crypto_LUKS" ]]; then
+                    # LUKS: initrd unlocks the container; rootfstype is determined
+                    # after mapping. The .conf already carries rd.luks.*/cryptdevice=.
+                    _src_options="root=PARTUUID=$root_partuuid rootwait $_src_options"
+                else
+                    _src_options="root=PARTUUID=$root_partuuid rootfstype=ext4 rootwait $_src_options"
+                fi
                 echo "==> Setting root=PARTUUID=$root_partuuid in boot entry"
             else
                 echo "WARNING: root PARTUUID unknown; leaving boot entry root= unchanged." >&2
@@ -1074,14 +1133,15 @@ EOF
 }
 
 find_usb_storage_partition() {
-  local part label _fstype
-  while read -r part label _fstype; do
-    [[ -n "$part" ]] || continue
-    if [[ "$label" == "$USB_STORAGE_LABEL" ]]; then
-      printf '%s\n' "$part"
+  local line NAME PARTLABEL FSTYPE TYPE
+  while read -r line; do
+    eval "$line"
+    [[ "$TYPE" == "part" ]] || continue
+    if [[ "$PARTLABEL" == "$USB_STORAGE_LABEL" ]]; then
+      printf '%s\n' "$NAME"
       return 0
     fi
-  done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE")
+  done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
   return 1
 }
 
@@ -1292,11 +1352,15 @@ while [[ $# -gt 0 ]]; do
       DIAGNOSTIC_MODE=true
       shift
       ;;
+    --luks-passphrase)
+      LUKS_PASSPHRASE="${2:?missing passphrase}"
+      shift 2
+      ;;
     --reflash)
       MODE="reflash"
       shift
       ;;
-    --repartition)
+    --reimage|--repartition)
       MODE="repartition"
       shift
       ;;
