@@ -860,13 +860,20 @@ seed_first_root_slot() {
     fi
 
     # Determine PARTUUID of the seeded root partition for boot entry
-    local root_partuuid=""
+    local root_partuuid="" luks_uuid=""
     if command -v blkid >/dev/null 2>&1; then
         root_partuuid="$(blkid -s PARTUUID -o value "$ROOT_PART" 2>/dev/null || true)"
         if [[ -z "$root_partuuid" ]]; then
             echo "WARNING: could not determine PARTUUID for $ROOT_PART; boot entry will not be patched" >&2
         else
             echo "==> Seeded root PARTUUID: $root_partuuid"
+        fi
+        # For LUKS roots, also capture the LUKS header UUID (different from PARTUUID).
+        # blkid -s UUID on a LUKS partition returns the UUID stored inside the LUKS
+        # header, which is what rd.luks.uuid= / cryptdevice=UUID= must reference.
+        if [[ "$root_fstype" == "crypto_LUKS" ]]; then
+            luks_uuid="$(blkid -s UUID -o value "$ROOT_PART" 2>/dev/null || true)"
+            [[ -n "$luks_uuid" ]] && echo "==> LUKS container UUID: $luks_uuid"
         fi
     else
         echo "WARNING: blkid not available; boot entry will not be patched with PARTUUID." >&2
@@ -999,14 +1006,23 @@ seed_first_root_slot() {
             # but PARTUUID is what we just learned from the actual seeded slot).
             if [[ -n "$root_partuuid" ]]; then
                 _src_options="$(echo "$_src_options" | sed -E 's#root=[^ ]*##g')"
-                if [[ "$root_fstype" == "crypto_LUKS" ]]; then
-                    # LUKS: initrd unlocks the container; rootfstype is determined
-                    # after mapping. The .conf already carries rd.luks.*/cryptdevice=.
+                if [[ "$root_fstype" == "crypto_LUKS" && -n "$luks_uuid" ]]; then
+                    # LUKS root: the initrd must unlock the LUKS container before it
+                    # can mount /sysroot. rd.luks.uuid tells systemd-cryptsetup (or
+                    # cryptsetup-initramfs) which container to unlock; the mapper
+                    # device is then available as /dev/mapper/luks-<UUID>.
+                    # Note: luks_uuid is the UUID from the LUKS header (blkid UUID),
+                    # NOT the GPT PARTUUID — they are different values.
+                    _src_options="rd.luks.uuid=$luks_uuid root=/dev/mapper/luks-$luks_uuid rootwait $_src_options"
+                    echo "==> Setting rd.luks.uuid=$luks_uuid root=/dev/mapper/luks-$luks_uuid in boot entry"
+                elif [[ "$root_fstype" == "crypto_LUKS" ]]; then
+                    echo "WARNING: could not determine LUKS UUID; boot entry may not unlock the root" >&2
                     _src_options="root=PARTUUID=$root_partuuid rootwait $_src_options"
+                    echo "==> Setting root=PARTUUID=$root_partuuid in boot entry (LUKS UUID unknown)"
                 else
                     _src_options="root=PARTUUID=$root_partuuid rootfstype=ext4 rootwait $_src_options"
+                    echo "==> Setting root=PARTUUID=$root_partuuid in boot entry"
                 fi
-                echo "==> Setting root=PARTUUID=$root_partuuid in boot entry"
             else
                 echo "WARNING: root PARTUUID unknown; leaving boot entry root= unchanged." >&2
             fi
