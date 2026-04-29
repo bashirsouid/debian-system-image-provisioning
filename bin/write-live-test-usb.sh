@@ -965,6 +965,19 @@ seed_first_root_slot() {
             local _kernel_dst="$esp_mount/EFI/Linux/${prefix}.linux"
             local _initrd_dst="$esp_mount/EFI/Linux/${prefix}.initrd"
 
+            # Clean up stale kernel/initrd files from PREVIOUS reflashes into
+            # this same slot so old versions do not accumulate on the ESP.
+            # We delete any *.linux / *.initrd file whose name starts with
+            # IMAGE_ID_IMAGE_ARCH (same image family) but is NOT the current
+            # prefix (i.e. an older version).  This keeps exactly 2 pairs on
+            # the ESP at any time — one per slot — regardless of reflash count.
+            local _img_base="${IMAGE_ID}_${IMAGE_ARCH}"
+            find "$esp_mount/EFI/Linux/" -maxdepth 1 \
+                \( -name "${_img_base}_*.linux"  -o -name "${_img_base}_*.initrd" \
+                   -o -name "${_img_base}.linux"  -o -name "${_img_base}.initrd" \) \
+                ! -name "${prefix}.linux" ! -name "${prefix}.initrd" \
+                -delete 2>/dev/null || true
+
             echo "==> Extracting .linux from UKI -> $(basename "$_kernel_dst")"
             objcopy -O binary --only-section=.linux "$_uki_src" "$_kernel_dst"
             echo "==> Extracting .initrd from UKI -> $(basename "$_initrd_dst")"
