@@ -1338,7 +1338,11 @@ copy_bundle() {
     usbdata_fallback=true
   fi
 
-  echo "==> Copying installer bundle into ${usbdata_fallback:+USBDATA }$bundle_root"
+  if [[ "$usbdata_fallback" == true ]]; then
+    echo "==> Copying installer bundle into USBDATA ($bundle_root)"
+  else
+    echo "==> Copying installer bundle into root filesystem ($bundle_root)"
+  fi
   install -d -m 0700 "$bundle_root"
   install -d -m 0755 "$bundle_root/bin" "$bundle_root/installer" "$bundle_root/scripts/lib" "$bundle_root/mkosi.output" "$bundle_root/mkosi.sysupdate" "$bundle_root/deploy.repart"
 
@@ -1350,7 +1354,13 @@ copy_bundle() {
   copy_file_preserving_layout "$PROJECT_ROOT/scripts/lib/confirm-destructive.sh" "$bundle_root/scripts/lib/confirm-destructive.sh"
   chmod 0755 "$bundle_root/bin/bootstrap-ab-disk.sh" "$bundle_root/installer/live-usb-install.sh" "$bundle_root/bin/sysupdate-local-update.sh"
 
-  cp -r --no-preserve=ownership "${GENERATED_DEFINITIONS_DIR:-$PROJECT_ROOT/mkosi.sysupdate}/." "$bundle_root/mkosi.sysupdate/"
+  if [[ -d "${GENERATED_DEFINITIONS_DIR:-}" ]]; then
+    cp -r --no-preserve=ownership "$GENERATED_DEFINITIONS_DIR/." "$bundle_root/mkosi.sysupdate/"
+  elif [[ -d "$PROJECT_ROOT/mkosi.sysupdate" ]]; then
+    cp -r --no-preserve=ownership "$PROJECT_ROOT/mkosi.sysupdate/." "$bundle_root/mkosi.sysupdate/"
+  else
+    echo "==> WARNING: no sysupdate definitions found; skipping mkosi.sysupdate/ in bundle" >&2
+  fi
   cp -r --no-preserve=ownership "$PROJECT_ROOT/deploy.repart/." "$bundle_root/deploy.repart/"
 
   # The bundle's mkosi.output/ is flat (no builds/ subtree) because the
@@ -1495,8 +1505,7 @@ preflight_collect_luks_passphrase() {
   local attempts=0 tmp_key tmp_map
   tmp_key="$(mktemp /tmp/ab-luks-preflight.XXXXXX)"
   chmod 600 "$tmp_key"
-  # Register cleanup in case we exit mid-function
-  trap 'shred -u "$tmp_key" 2>/dev/null || rm -f "$tmp_key"; '"$(trap -p EXIT | sed "s/trap -- '//;s/' EXIT//")" EXIT
+  # No global EXIT trap needed — we shred tmp_key on every return path below.
 
   while true; do
     (( attempts++ )) || true
