@@ -119,6 +119,7 @@ MODE="auto"
 REFLASH=false
 LUKS_PASSPHRASE=""    # passphrase for LUKS-encrypted roots (--luks-passphrase)
 LUKS_MAP=""           # mapper name opened by seed_first_root_slot; closed by cleanup()
+LUKS_PASS_FILE=""     # tmpfile holding passphrase; shredded by cleanup()
 USBDATA_BUNDLE_MOUNT="" # set by copy_bundle() when bundle overflows to USBDATA
 
 usage() {
@@ -196,6 +197,10 @@ cleanup() {
     set +e
     [[ -n "${ROOT_MOUNT:-}" ]] && mountpoint -q "$ROOT_MOUNT" && umount "$ROOT_MOUNT"
     [[ -n "${ROOT_MOUNT:-}" && -d "$ROOT_MOUNT" ]] && rmdir "$ROOT_MOUNT"
+    if [[ -n "${LUKS_PASS_FILE:-}" && -f "${LUKS_PASS_FILE}" ]]; then
+        shred -u "$LUKS_PASS_FILE" 2>/dev/null || rm -f "$LUKS_PASS_FILE"
+        LUKS_PASS_FILE=""
+    fi
     if [[ -n "${LUKS_MAP:-}" ]]; then
         cryptsetup luksClose "$LUKS_MAP" >/dev/null 2>&1 || true
         LUKS_MAP=""
@@ -831,22 +836,57 @@ seed_first_root_slot() {
     if [[ "$root_fstype" == "crypto_LUKS" ]]; then
         command -v cryptsetup >/dev/null 2>&1 \
             || die "cryptsetup is required to mount a LUKS-encrypted root; install cryptsetup on the build host"
-        if [[ -z "${LUKS_PASSPHRASE:-}" ]]; then
-            echo "==> $ROOT_PART is LUKS-encrypted and no passphrase was supplied" >&2
-            read -rsp "    Enter LUKS passphrase (input hidden, not saved to history): " \
-                LUKS_PASSPHRASE </dev/tty
-            echo >&2
-        fi
+        # ── Passphrase handling ───────────────────────────────────────────
+        # Write passphrase to a chmod-600 tmpfile so luksOpen and resize
+        # both use --key-file= (no pipe/stdin races). Loop on empty input
+        # or wrong passphrase so a stray Enter from a previous step does
+        # not silently abort the flash.
+        local _luks_pass_file
+        _luks_pass_file="$(mktemp /tmp/ab-luks-pass.XXXXXX)"
+        chmod 600 "$_luks_pass_file"
+        LUKS_PASS_FILE="$_luks_pass_file"   # registered for cleanup
+
         local luks_map="ab-live-root-luks-$$"
-        echo "==> Opening LUKS container $ROOT_PART -> /dev/mapper/$luks_map"
-        printf '%s' "$LUKS_PASSPHRASE" | cryptsetup luksOpen "$ROOT_PART" "$luks_map" --key-file=-
+
+        if [[ -n "${LUKS_PASSPHRASE:-}" ]]; then
+            # Passphrase already supplied externally (e.g. by a parent script).
+            printf '%s' "$LUKS_PASSPHRASE" > "$_luks_pass_file"
+            echo "==> Opening LUKS container $ROOT_PART -> /dev/mapper/$luks_map"
+            cryptsetup luksOpen "$ROOT_PART" "$luks_map" --key-file="$_luks_pass_file"
+        else
+            echo "==> $ROOT_PART is LUKS-encrypted and no passphrase was supplied"
+            local _luks_attempts=0
+            while true; do
+                (( _luks_attempts++ )) || true
+                LUKS_PASSPHRASE=""
+                read -rsp "    Enter LUKS passphrase (input hidden, not saved to history): " \
+                    LUKS_PASSPHRASE </dev/tty
+                echo >&2   # newline after hidden input
+                if [[ -z "$LUKS_PASSPHRASE" ]]; then
+                    echo "    (empty passphrase — please try again)" >&2
+                    continue
+                fi
+                printf '%s' "$LUKS_PASSPHRASE" > "$_luks_pass_file"
+                echo "==> Opening LUKS container $ROOT_PART -> /dev/mapper/$luks_map"
+                if cryptsetup luksOpen "$ROOT_PART" "$luks_map" \
+                        --key-file="$_luks_pass_file" 2>/dev/null; then
+                    break   # success
+                fi
+                # Wrong passphrase — clear file and retry
+                printf '%s' "" > "$_luks_pass_file"
+                if (( _luks_attempts >= 5 )); then
+                    die "Failed to open LUKS container $ROOT_PART after 5 attempts"
+                fi
+                echo "    Incorrect passphrase (attempt $_luks_attempts/5), try again." >&2
+            done
+        fi
         LUKS_MAP="$luks_map"
         # The .root.raw image is smaller than the allocated partition.
         # Expand the LUKS container to fill the full partition, then grow
         # the inner filesystem to match — otherwise the root has no free
         # space for the installer bundle.
         echo "==> Expanding LUKS container $luks_map to fill partition $ROOT_PART"
-        printf '%s' "$LUKS_PASSPHRASE" | cryptsetup resize "$luks_map" --key-file=-
+        cryptsetup resize "$luks_map" --key-file="$_luks_pass_file"
         if command -v e2fsck >/dev/null 2>&1 && command -v resize2fs >/dev/null 2>&1; then
             echo "==> Running e2fsck + resize2fs on /dev/mapper/$luks_map"
             e2fsck -f -y "/dev/mapper/$luks_map" || true
