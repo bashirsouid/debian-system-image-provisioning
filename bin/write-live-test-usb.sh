@@ -20,7 +20,8 @@ set -euo pipefail
 #       * ESP         (vfat, label=ESP)
 #       * root-a      (ext4, label=_empty initially)
 #       * root-b      (ext4, label=_empty initially)
-#       * USBDATA     (optional, exFAT, label=$USB_STORAGE_LABEL)
+#       * HOME        (optional, ext4, label=HOME)
+#       * DATA        (default rest-of-disk, ext4, label=DATA)
 #
 #   - systemd-boot installed into the ESP
 #   - One root slot is "seeded" with the mkosi-produced *.root.raw,
@@ -93,21 +94,29 @@ IMAGE_VERSION=""
 IMAGE_ARCH=""
 IMAGE_BASENAME=""
 ALLOW_FIXED_DISK=no
-# By default the remaining space on the USB past ESP+root-a+root-b
-# becomes a user-writable exFAT partition so the test USB is actually
-# useful as a stick (copy files off the machine, carry installers,
-# etc.) instead of having ~tens of GiB of unallocated space. Disable
-# with --no-usb-storage.
-INCLUDE_USB_STORAGE=true
-USB_STORAGE_LABEL="USBDATA"
+# Layout sizing is expressed as two independent tokens, both of which
+# accept the grammar "none | rest | <size>". The defaults are the
+# same regardless of whether the target is a removable USB or a fixed
+# disk — the unification point of this script is that USB testing
+# exercises exactly the same partition-and-seed code as an internal
+# install, so any difference at the layout level would defeat the
+# purpose.
+#
+# DATA defaults to 'rest' because /mnt/data is the persistent slot
+# shared across retained-version A/B swaps, so the natural reading of
+# "the rest of the disk" is "everything that survives an OS update."
+# /home is off by default; pass --home-size to opt in to a separate
+# partition.
+HOME_SIZE_TOKEN="none"
+DATA_SIZE_TOKEN="rest"
 DIAGNOSTIC_MODE=false
 # Mode tristate, chosen at arg-parse time and resolved into REFLASH below:
 #   auto        - detect_existing_ab_layout() decides: reflash if an A/B
 #                 layout is already on the target (non-destructive),
 #                 repartition otherwise. This is the right default for
-#                 day-to-day "I plugged in my old test USB and want the
-#                 latest build on it" because it preserves USBDATA and
-#                 the active root slot whenever it can.
+#                 day-to-day "I plugged in my old test disk and want the
+#                 latest build on it" because it preserves the DATA
+#                 partition and the active root slot whenever it can.
 #   reflash     - force --reflash; error out if the disk doesn't already
 #                 have a valid A/B layout.
 #   repartition - force a destructive systemd-repart bootstrap, even if
@@ -120,38 +129,53 @@ REFLASH=false
 LUKS_PASSPHRASE=""    # passphrase for LUKS-encrypted roots (--luks-passphrase)
 LUKS_MAP=""           # mapper name opened by seed_first_root_slot; closed by cleanup()
 LUKS_PASS_FILE=""     # tmpfile holding passphrase; shredded by cleanup()
-USBDATA_BUNDLE_MOUNT="" # set by copy_bundle() when bundle overflows to USBDATA
 
 usage() {
   cat <<'USAGE'
 Usage: sudo ./bin/write-live-test-usb.sh --target /dev/sdX [options]
 
-Bootstraps a removable USB drive with the native systemd-repart +
-systemd-sysupdate layout, then copies an installer bundle onto the USB so you
-can boot the machine from the USB, test the real hardware, and later install to
-an internal disk from the running USB system.
+Bootstraps an A/B layout (ESP + 2 root slots + optional HOME + DATA) on a
+target disk, manually seeds one root slot with the built .root.raw,
+installs systemd-boot, and copies an installer bundle onto the
+seeded root. Works on:
+
+  - removable USB / SD targets (the original "hardware test USB" workflow), and
+  - fixed internal disks (pass --allow-fixed-disk; this is the same code path
+    the on-target installer/live-usb-install.sh delegates to).
 
 Options:
-  --target PATH         removable USB disk device (or raw disk image file)
+  --target PATH         removable USB / SD device, fixed internal disk, or
+                        raw disk image file
   --build-dir PATH      specific build folder under mkosi.output/builds/ to
                         flash. Takes precedence over --host / --profile.
   --definitions DIR     sysupdate transfer definitions (default: ./mkosi.sysupdate)
   --repart-dir DIR      bootstrap repart definitions (default: ./deploy.repart)
-  --bundle-dir PATH     path inside the USB root where the installer bundle is copied
-                        (default: /root/ab-installer)
+  --bundle-dir PATH     path inside the seeded root where the installer
+                        bundle is copied (default: /root/ab-installer)
   --profile NAME        resolve mkosi.output/builds/latest-NAME when --host
                         is not given and --build-dir is not set
   --host NAME           resolve mkosi.output/builds/latest-NAME (the host
                         name); with no --build-dir this is the usual way
                         to pick the right build
-  --loader-timeout N    loader menu timeout to write to the USB ESP (default: 3)
-  --usb-esp-size SIZE   override the ESP size used for the USB bootstrap
-  --usb-root-size SIZE  override the per-slot root size used for the USB bootstrap
-  --embed-full-image    also copy the built full disk image into the USB bundle
-  --no-usb-storage      do not create the trailing exFAT storage partition
-                        (by default the remaining USB space becomes a
-                        user-writable exFAT partition labeled USBDATA)
-  --usb-storage-label L set the exFAT partition label (default: USBDATA)
+  --loader-timeout N    loader menu timeout to write to the ESP (default: 3)
+  --esp-size SIZE       override the ESP size (default: 1G via deploy.repart)
+                        accepts the same SIZE grammar as systemd-repart
+                        SizeMinBytes (e.g. 512M, 1G).
+                        Alias: --usb-esp-size (older name).
+  --root-size SIZE      override the per-slot root size. With no override,
+                        a removable target auto-sizes to ~3× the .root.raw
+                        size; a fixed-disk target uses deploy.repart's value.
+                        Alias: --usb-root-size.
+  --home-size TOKEN     allocate a separate /home partition (Type=home,
+                        Format=ext4, Label=HOME). TOKEN is one of:
+                          none   - do not create /home (default)
+                          rest   - take whatever space remains
+                          SIZE   - explicit size, e.g. 64G
+  --data-size TOKEN     allocate a /mnt/data partition (Type=linux-generic,
+                        Format=ext4, Label=DATA). Same TOKEN grammar as
+                        --home-size. Default: rest (the persistent slot
+                        that survives A/B retained-version swaps).
+  --embed-full-image    also copy the built full disk image into the bundle
   --allow-fixed-disk    permit writing to a non-removable (internal) disk;
                         the default refuses such targets to prevent the
                         "I flashed my laptop's SSD by accident" case
@@ -161,20 +185,21 @@ Options:
                         passphrase for a LUKS-encrypted root partition. Required
                         when *.root.raw uses LUKS (auto-detected after dd). The
                         passphrase is fed to cryptsetup via stdin and is not
-                        stored anywhere on the USB.
+                        stored anywhere on the disk.
   --reflash             FORCE reflash mode: do NOT repartition. Detect the
                         existing A/B layout, write the new image into the
                         *inactive* root slot, and leave the active slot +
-                        USBDATA untouched. Errors out if the target has no
-                        valid A/B layout. This is the same as the auto
-                        default when a layout is already present; pass it
-                        explicitly to fail fast on a fresh disk.
+                        any HOME / DATA partitions untouched.
+                        Errors out if the target has no valid A/B layout.
+                        This is the same as the auto default when a layout
+                        is already present; pass it explicitly to fail fast
+                        on a fresh disk.
   --reimage, --repartition
                         FORCE destructive bootstrap: wipe everything on the
-                        target and re-create the GPT layout (ESP + 2 root
-                        slots + USBDATA). Use this when you want a fully
-                        fresh USB even though an A/B layout already exists,
-                        e.g. to switch image-id schemes or recover from a
+                        target and re-create the GPT layout. Use this when
+                        you want a fully fresh disk even though an A/B
+                        layout already exists, e.g. to switch image-id
+                        schemes, change HOME/DATA sizing, or recover from a
                         broken layout.
 
 By default (no --reflash, no --repartition), the tool detects whether the
@@ -193,6 +218,59 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
 
+# Normalize a layout-size token to one of:
+#   none | rest | SIZE     (where SIZE matches systemd-repart SizeMinBytes)
+# Empty input falls back to $2 (the existing value). die()s on
+# malformed input so a typo at the prompt or in a flag doesn't silently
+# produce an unintended layout.
+normalize_size_token() {
+  local value default_value lowered
+  value="$1"
+  default_value="$2"
+
+  # Trim leading/trailing whitespace without spawning a subshell on
+  # the (very) hot path of arg parsing.
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+
+  if [[ -z "$value" ]]; then
+    value="$default_value"
+  fi
+
+  lowered="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  case "$lowered" in
+    none|no|off|"")
+      printf 'none\n'
+      return 0
+      ;;
+    rest|remaining|all)
+      printf 'rest\n'
+      return 0
+      ;;
+  esac
+
+  if [[ "$value" =~ ^[0-9]+([KMGTP]i?B?|[kmgpt])?$ ]]; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+
+  die "invalid size token '$value' (use none, rest, or a size like 100G)"
+}
+
+# Validates that AT MOST ONE of HOME / DATA requested 'rest'.
+# systemd-repart would happily accept multiple unbounded partitions
+# and silently allocate them in the order it sees on disk, which is
+# not what an operator typing the same word twice means.
+validate_layout_tokens() {
+  local rest_count=0 t
+  for t in "$HOME_SIZE_TOKEN" "$DATA_SIZE_TOKEN"; do
+    [[ "$t" == "rest" ]] && rest_count=$((rest_count + 1))
+  done
+  if (( rest_count > 1 )); then
+    die "only one of --home-size or --data-size may be 'rest' (got $rest_count)"
+  fi
+}
+
 cleanup() {
     set +e
     [[ -n "${ROOT_MOUNT:-}" ]] && mountpoint -q "$ROOT_MOUNT" && umount "$ROOT_MOUNT"
@@ -204,12 +282,6 @@ cleanup() {
     if [[ -n "${LUKS_MAP:-}" ]]; then
         cryptsetup luksClose "$LUKS_MAP" >/dev/null 2>&1 || true
         LUKS_MAP=""
-    fi
-    if [[ -n "${USBDATA_BUNDLE_MOUNT:-}" ]]; then
-        mountpoint -q "$USBDATA_BUNDLE_MOUNT" 2>/dev/null \
-            && umount "$USBDATA_BUNDLE_MOUNT" 2>/dev/null || true
-        [[ -d "$USBDATA_BUNDLE_MOUNT" ]] \
-            && rmdir "$USBDATA_BUNDLE_MOUNT" 2>/dev/null || true
     fi
     [[ -n "${TEMP_REPART_DIR:-}" && -d "$TEMP_REPART_DIR" ]] && rm -rf "$TEMP_REPART_DIR"
     [[ -n "${TEMP_DEFINITIONS_DIR:-}" && -d "$TEMP_DEFINITIONS_DIR" ]] && rm -rf "$TEMP_DEFINITIONS_DIR"
@@ -339,12 +411,6 @@ preview_current_and_planned_layout() {
     "$target_real" 2>&1 \
     | grep -v '^Refusing to repartition' \
     | sed 's/^/  /' || true
-  if [[ "$INCLUDE_USB_STORAGE" == true ]]; then
-    echo
-    echo "  Note: the USBDATA partition above is created unformatted by"
-    echo "        systemd-repart, then formatted as exFAT (label=$USB_STORAGE_LABEL)"
-    echo "        after the A/B bootstrap finishes."
-  fi
   echo
 }
 
@@ -362,7 +428,7 @@ confirm_usb_write_or_abort() {
   if [[ "$REFLASH" == true ]]; then
     echo "===================================================================="
     echo "RE-FLASH (non-destructive): writes to the *inactive* root slot only;"
-    echo "the active slot, USBDATA partition, and ESP fallback entries are kept."
+    echo "the active slot, HOME / DATA partitions, and ESP fallback entries are kept."
     echo "===================================================================="
   else
     echo "===================================================================="
@@ -435,7 +501,7 @@ find_seeded_root_partition() {
     [[ -n "$NAME" ]] || continue
 
     case "$PARTLABEL" in
-      ESP|_empty|HOME|DATA|USBDATA)
+      ESP|_empty|HOME|DATA)
         continue
         ;;
     esac
@@ -454,7 +520,7 @@ find_seeded_root_partition() {
     [[ -n "$NAME" ]] || continue
 
     case "$PARTLABEL" in
-      ESP|_empty|HOME|DATA|USBDATA)
+      ESP|_empty|HOME|DATA)
         continue
         ;;
     esac
@@ -481,7 +547,7 @@ select_root_slot_for_seed() {
         [[ -n "$NAME" ]] || continue
 
         case "$PARTLABEL" in
-            ESP|HOME|DATA|USBDATA)
+            ESP|HOME|DATA)
                 continue
                 ;;
         esac
@@ -543,7 +609,7 @@ select_root_slot_for_seed() {
 # Non-destructive "is there already an A/B layout here?" probe. Used by
 # the auto-mode dispatcher to decide between reflash and repartition.
 # Returns 0 if the target has ≥1 ESP partition and ≥2 root-shaped slots
-# (ext4 or unformatted, PARTLABEL not in {ESP,USBDATA,DATA,HOME});
+# (ext4 or unformatted, PARTLABEL not in {ESP,DATA,HOME});
 # returns 1 in every other case. Never dies — even on a fresh disk
 # with no partition table, lsblk is a clean no-op and we just return 1.
 #
@@ -573,7 +639,7 @@ detect_existing_ab_layout() {
       ESP)
         esp_count=$((esp_count + 1))
         ;;
-      USBDATA|DATA|HOME)
+      DATA|HOME)
         ;;
       *)
         if [[ "$FSTYPE" == "ext4" || "$FSTYPE" == "crypto_LUKS" || -z "$FSTYPE" ]]; then
@@ -590,7 +656,7 @@ detect_existing_ab_layout() {
 
 # Validate that $DISK_DEVICE already has the GPT layout we expect:
 # at least one ESP partition and two root-shaped partitions (ext4 or
-# unformatted, PARTLABEL not in {ESP,USBDATA,DATA,HOME}). Errors out
+# unformatted, PARTLABEL not in {ESP,DATA,HOME}). Errors out
 # if the layout cannot be reused — the user should either drop
 # --reflash to do a destructive bootstrap, or fix the disk manually.
 validate_existing_ab_layout() {
@@ -604,7 +670,7 @@ validate_existing_ab_layout() {
             ESP)
                 esp_count=$((esp_count + 1))
                 ;;
-            USBDATA|DATA|HOME)
+            DATA|HOME)
                 continue
                 ;;
             *)
@@ -688,7 +754,7 @@ select_inactive_root_slot_for_reseed() {
         [[ -n "$NAME" ]] || continue
 
         case "$PARTLABEL" in
-            ESP|USBDATA|DATA|HOME)
+            ESP|DATA|HOME)
                 continue
                 ;;
         esac
@@ -749,18 +815,6 @@ select_inactive_root_slot_for_reseed() {
     select_root_slot_for_seed
 }
 
-# Returns 0 if the existing USBDATA partition already has a usable
-# filesystem (exfat/vfat/ntfs/etc) — i.e. a re-flash should NOT mkfs
-# it, because that wipes the user's USB-stick contents which is
-# precisely the regression --reflash is meant to avoid.
-usbdata_partition_already_formatted() {
-    local part fstype
-    part="$(find_usb_storage_partition || true)"
-    [[ -n "$part" ]] || return 1
-    fstype="$(blkid -s TYPE -o value "$part" 2>/dev/null || true)"
-    [[ -n "$fstype" ]] || return 1
-    return 0
-}
 # --- end --reflash helpers -------------------------------------------------
 
 # Seed the chosen ROOT_PART with ${prefix}.root.raw and relabel it to
@@ -1192,15 +1246,15 @@ prepare_bootstrap_repart_dir() {
   BOOTSTRAP_REPART_DIR="$TEMP_REPART_DIR"
 
   # Auto-size root slots from the .root.raw image size when the user has not
-  # given an explicit --usb-root-size.  Each slot gets 3× the raw image size,
+  # given an explicit --root-size. Each slot gets 3× the raw image size,
   # rounded up to the next whole GiB, so the slot comfortably holds:
   #   (1) the dd'd OS image itself
   #   (2) the full installer bundle (includes another copy of .root.raw)
   #   (3) headroom for the image to grow over many A/B reflash cycles
   #
   # Example: 6 GiB raw → 18 GiB per slot → 36 GiB total (A+B).
-  # On a 64 GiB USB: 1 GiB ESP + 36 GiB roots + ~27 GiB USBDATA.
-  # Pass --usb-root-size explicitly to override.
+  # On a 64 GiB disk: 1 GiB ESP + 36 GiB roots + ~27 GiB DATA.
+  # Pass --root-size explicitly to override.
   if [[ -z "$USB_ROOT_SIZE" && -n "${IMAGE_ID:-}" && -n "${IMAGE_VERSION:-}" && -n "${IMAGE_ARCH:-}" ]]; then
     local _auto_prefix="${IMAGE_ID}_${IMAGE_VERSION}_${IMAGE_ARCH}"
     local _raw_path="$SOURCE_DIR/${_auto_prefix}.root.raw"
@@ -1212,70 +1266,76 @@ prepare_bootstrap_repart_dir() {
         local _target_gib=$(( (_target_bytes + _gib - 1) / _gib ))
         local _raw_gib=$(( (_raw_bytes + _gib - 1) / _gib ))
         USB_ROOT_SIZE="${_target_gib}G"
-        echo "==> Auto-sized USB root slots: ${_target_gib}G each"              "(3× ~${_raw_gib}G raw; ${_target_gib}G × 2 = $(( _target_gib * 2 ))G total for A+B)"
+        echo "==> Auto-sized root slots: ${_target_gib}G each"              "(3× ~${_raw_gib}G raw; ${_target_gib}G × 2 = $(( _target_gib * 2 ))G total for A+B)"
       fi
     fi
   fi
 
-  # Base layout: if neither user nor auto-sizing set sizes, copy the committed
-  # deploy.repart/ confs directly (USB mirrors internal-disk layout). Otherwise
-  # generate fresh confs with the computed or user-supplied sizes.
-  if [[ -z "$USB_ESP_SIZE" && -z "$USB_ROOT_SIZE" ]]; then
-    cp "$REPART_DIR"/*.conf "$TEMP_REPART_DIR/"
-  else
-    write_fixed_partition_conf "$TEMP_REPART_DIR/00-esp.conf" esp ESP "${USB_ESP_SIZE:-1G}" vfat
-    write_fixed_partition_conf "$TEMP_REPART_DIR/10-root-a.conf" root _empty "${USB_ROOT_SIZE:-8G}" ext4
-    write_fixed_partition_conf "$TEMP_REPART_DIR/11-root-b.conf" root _empty "${USB_ROOT_SIZE:-8G}" ext4
+  # Base layout: always start by copying whatever the caller supplied in
+  # $REPART_DIR (committed deploy.repart/ for plain USB writes, or a
+  # temp dir prepared by installer/live-usb-install.sh that adds HOME/
+  # DATA partitions for internal-disk installs). Then, if the user
+  # explicitly overrode sizes, regenerate ONLY the affected confs in
+  # place — the previous shape "fresh ESP + A + B but lose anything
+  # extra" used to silently drop HOME/DATA when called from the
+  # internal installer.
+  cp "$REPART_DIR"/*.conf "$TEMP_REPART_DIR/"
+  if [[ -n "$USB_ESP_SIZE" ]]; then
+    write_fixed_partition_conf "$TEMP_REPART_DIR/00-esp.conf" esp ESP "$USB_ESP_SIZE" vfat
+  fi
+  if [[ -n "$USB_ROOT_SIZE" ]]; then
+    write_fixed_partition_conf "$TEMP_REPART_DIR/10-root-a.conf" root _empty "$USB_ROOT_SIZE" ext4
+    write_fixed_partition_conf "$TEMP_REPART_DIR/11-root-b.conf" root _empty "$USB_ROOT_SIZE" ext4
   fi
 
-  if [[ "$INCLUDE_USB_STORAGE" == true ]]; then
-    write_usb_storage_partition_conf "$TEMP_REPART_DIR/20-usb-storage.conf"
-  fi
+  # HOME / DATA partitions are part of the unified layout model. Each
+  # token can be 'none' (skip), 'rest' (no Size*Bytes so systemd-repart
+  # grows it into whatever's left), or an explicit size.
+  # validate_layout_tokens has already made sure at most one of the
+  # two asked for 'rest'.
+  rm -f "$TEMP_REPART_DIR/20-home.conf" \
+        "$TEMP_REPART_DIR/30-data.conf"
+
+  case "$HOME_SIZE_TOKEN" in
+    none)
+      ;;
+    rest)
+      write_flexible_partition_conf "$TEMP_REPART_DIR/20-home.conf" home HOME 2G ext4
+      ;;
+    *)
+      write_fixed_partition_conf "$TEMP_REPART_DIR/20-home.conf" home HOME "$HOME_SIZE_TOKEN" ext4
+      ;;
+  esac
+
+  case "$DATA_SIZE_TOKEN" in
+    none)
+      ;;
+    rest)
+      write_flexible_partition_conf "$TEMP_REPART_DIR/30-data.conf" linux-generic DATA 2G ext4
+      ;;
+    *)
+      write_fixed_partition_conf "$TEMP_REPART_DIR/30-data.conf" linux-generic DATA "$DATA_SIZE_TOKEN" ext4
+      ;;
+  esac
 }
 
-# Writes the GPT entry for the trailing USB storage partition.
-# systemd-repart creates the partition but does NOT format it; we
-# mkfs.exfat it ourselves after bootstrap because repart's built-in
-# Format= list does not reliably include exfat across the systemd
-# versions we target. With no Size*Bytes set, repart grows the
-# partition to fill whatever space remains after the fixed ESP and
-# root partitions. If nothing is left, repart simply does not
-# allocate this partition and format_usb_storage_partition() treats
-# the absence as "no storage partition, nothing to do".
-write_usb_storage_partition_conf() {
+# Helper for "give this partition at least N bytes, but grow it into
+# whatever space is left after the fixed-size partitions". Mirrors what
+# installer/live-usb-install.sh used to do locally; lifted here so the
+# unified layout generator owns both shapes.
+write_flexible_partition_conf() {
   local path="$1"
-  cat > "$path" <<EOF
-[Partition]
-Type=linux-generic
-Label=$USB_STORAGE_LABEL
-EOF
-}
-
-find_usb_storage_partition() {
-  local line NAME PARTLABEL FSTYPE TYPE
-  while read -r line; do
-    eval "$line"
-    [[ "$TYPE" == "part" ]] || continue
-    if [[ "$PARTLABEL" == "$USB_STORAGE_LABEL" ]]; then
-      printf '%s\n' "$NAME"
-      return 0
-    fi
-  done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
-  return 1
-}
-
-format_usb_storage_partition() {
-  local part
-  [[ "$INCLUDE_USB_STORAGE" == true ]] || return 0
-  part="$(find_usb_storage_partition || true)"
-  if [[ -z "$part" ]]; then
-    echo "==> No USBDATA partition present (likely no free space after roots); skipping exFAT format"
-    return 0
-  fi
-  echo "==> Formatting $part as exFAT (label=$USB_STORAGE_LABEL)"
-  # -L sets both filesystem label and is visible in `lsblk -o LABEL`.
-  # GPT PARTLABEL was already set by systemd-repart.
-  mkfs.exfat -L "$USB_STORAGE_LABEL" "$part"
+  local type="$2"
+  local label="$3"
+  local min_size="$4"
+  local format="$5"
+  {
+    echo '[Partition]'
+    printf 'Type=%s\n' "$type"
+    printf 'Label=%s\n' "$label"
+    printf 'SizeMinBytes=%s\n' "$min_size"
+    printf 'Format=%s\n' "$format"
+  } > "$path"
 }
 
 wait_for_seeded_root_partition() {
@@ -1310,39 +1370,11 @@ copy_bundle() {
   avail="$(df -B1 --output=avail "$ROOT_MOUNT" | tail -n1 | tr -d '[:space:]')"
   headroom=$((256 * 1024 * 1024))
 
-  local usbdata_fallback=false
-  local slot_tag
-  slot_tag="$(basename "$ROOT_PART")"
-
   if [[ "$avail" =~ ^[0-9]+$ ]] && (( avail < required + headroom )); then
-    # Root has insufficient free space. Fall back to USBDATA using a
-    # slot-specific subdir so --reflash of a second slot never clobbers the
-    # first slot's installer bundle. Each slot gets its own
-    # ab-installer-<slot> directory, so you can boot from either root and
-    # run its matching installer independently.
-    local usbdata_part
-    usbdata_part="$(find_usb_storage_partition || true)"
-    if [[ -z "$usbdata_part" ]]; then
-      die "USB root filesystem does not have enough free space for the installer bundle (need about $(( (required + headroom) / 1024 / 1024 )) MiB free); no USBDATA partition available"
-    fi
-    echo "==> Root has $(( avail / 1024 / 1024 )) MiB free; bundle needs $(( (required + headroom) / 1024 / 1024 )) MiB"
-    echo "==> Falling back: copying installer bundle to USBDATA ($usbdata_part) [slot: $slot_tag]"
-    USBDATA_BUNDLE_MOUNT="$(mktemp -d /tmp/ab-usbdata.XXXXXX)"
-    mount "$usbdata_part" "$USBDATA_BUNDLE_MOUNT"
-    local usbdata_avail
-    usbdata_avail="$(df -B1 --output=avail "$USBDATA_BUNDLE_MOUNT" | tail -n1 | tr -d '[:space:]')"
-    if ! [[ "$usbdata_avail" =~ ^[0-9]+$ ]] || (( usbdata_avail < required + headroom )); then
-      die "installer bundle needs $(( (required + headroom) / 1024 / 1024 )) MiB; root $(( avail / 1024 / 1024 )) MiB, USBDATA ${usbdata_avail:-0} bytes — not enough on either"
-    fi
-    bundle_root="$USBDATA_BUNDLE_MOUNT/ab-installer-${slot_tag}"
-    usbdata_fallback=true
+    die "root filesystem on $ROOT_PART has $(( avail / 1024 / 1024 )) MiB free; the installer bundle needs about $(( (required + headroom) / 1024 / 1024 )) MiB. Re-run with --root-size set large enough to hold the dd'd image plus the bundle (3× the .root.raw size is a safe rule of thumb)."
   fi
 
-  if [[ "$usbdata_fallback" == true ]]; then
-    echo "==> Copying installer bundle into USBDATA ($bundle_root)"
-  else
-    echo "==> Copying installer bundle into root filesystem ($bundle_root)"
-  fi
+  echo "==> Copying installer bundle into root filesystem ($bundle_root)"
   install -d -m 0700 "$bundle_root"
   install -d -m 0755 "$bundle_root/bin" "$bundle_root/installer" "$bundle_root/scripts/lib" "$bundle_root/mkosi.output" "$bundle_root/mkosi.sysupdate" "$bundle_root/deploy.repart"
 
@@ -1379,77 +1411,47 @@ copy_bundle() {
     copy_file_preserving_layout "$SOURCE_DIR/$IMAGE_BASENAME" "$bundle_root/mkosi.output/$IMAGE_BASENAME"
   fi
 
-  # When the bundle went to USBDATA, plant a thin launcher on the root so
-  # the operator can run the installer with the same path they'd expect
-  # (/root/INSTALL-TO-INTERNAL-DISK.sh) even though the payload lives on
-  # the USBDATA exFAT partition.
-  # Plant INSTALL-TO-INTERNAL-DISK.sh — path is always the same for the
-  # operator; the implementation differs depending on where the bundle landed.
+  # Plant /root/INSTALL-TO-INTERNAL-DISK.sh as the well-known operator
+  # entry point. The bundle lives at $BUNDLE_DIR on the root partition
+  # (auto-sized to ~3× the .root.raw image, which leaves plenty of room
+  # for the bundle), so the launcher is just an exec stub.
   install -d -m 0700 "$ROOT_MOUNT/root"
-  if [[ "$usbdata_fallback" == true ]]; then
-    # Bundle is on USBDATA. Write a thin launcher that mounts USBDATA at
-    # runtime and execs from the slot-specific subdirectory baked in at
-    # flash time. sda2's launcher always uses ab-installer-sda2, sda3 uses
-    # ab-installer-sda3 — both coexist after a --reflash with no clobbering.
-    #
-    # NOTE: lsblk -npo already returns full /dev/... paths (-p flag), so
-    # awk must use `print $1` not `print "/dev/"$1` (that would produce
-    # /dev//dev/sdX4 which doesn't exist and makes mount fail silently).
-    cat > "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh" <<WRAPPER
-#!/bin/bash
-# This slot's installer bundle is on USBDATA. Mount it, run the installer,
-# then unmount automatically via the EXIT trap.
-set -euo pipefail
-USBDATA_PART="\$(lsblk -npo NAME,LABEL | awk '\$2=="USBDATA"{print \$1; exit}')"
-[[ -n "\$USBDATA_PART" ]] || { echo "ERROR: USBDATA partition not found" >&2; exit 1; }
-USBDATA_MNT="\$(mktemp -d /tmp/usbdata.XXXXXX)"
-mount "\$USBDATA_PART" "\$USBDATA_MNT"
-trap "umount '\$USBDATA_MNT'; rmdir '\$USBDATA_MNT'" EXIT
-exec "\$USBDATA_MNT/ab-installer-${slot_tag}/installer/live-usb-install.sh" "\$@"
-WRAPPER
-    chmod 0755 "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh"
-    echo "==> Planted USBDATA launcher at /root/INSTALL-TO-INTERNAL-DISK.sh (slot: $slot_tag)"
-  else
-    # Bundle is on the root filesystem at $BUNDLE_DIR (normal case when the
-    # root partition is large enough — 3× raw with auto-sizing ensures this).
-    cat > "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh" <<LAUNCHER
+  cat > "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh" <<LAUNCHER
 #!/usr/bin/env bash
 exec $BUNDLE_DIR/installer/live-usb-install.sh "\$@"
 LAUNCHER
-    chmod 0755 "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh"
-    echo "==> Planted root launcher at /root/INSTALL-TO-INTERNAL-DISK.sh -> $BUNDLE_DIR"
-  fi
+  chmod 0755 "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh"
+  echo "==> Planted root launcher at /root/INSTALL-TO-INTERNAL-DISK.sh -> $BUNDLE_DIR"
 
   cat > "$bundle_root/README.txt" <<EOF2
-Hardware test USB bundle
-========================
+Install bundle (built by bin/write-live-test-usb.sh)
+====================================================
 
-This USB was bootstrapped from build:
+This disk was bootstrapped from build:
   image id:      $IMAGE_ID
   image version: $IMAGE_VERSION
   arch:          $IMAGE_ARCH
 
-Recommended workflow after booting from the USB:
+Recommended workflow after booting:
   sudo /root/INSTALL-TO-INTERNAL-DISK.sh
 
 That wrapper runs:
   $BUNDLE_DIR/installer/live-usb-install.sh
 
-The bundled installer defaults to a fresh destructive A/B bootstrap onto the
-selected target disk. By default it creates:
+The bundled installer defaults to a fresh destructive A/B bootstrap onto
+the selected target disk. By default it creates:
   - a 1G ESP
   - two retained root partitions of 8G each
-  - a GPT home partition that takes the rest of the disk
-  - no /mnt/data partition unless you ask for one
+  - /mnt/data taking the rest of the disk (persistent across A/B swaps)
 
 Use the live installer prompts to change that layout.
 
-To iterate on the build without losing the USB's DATA/USBDATA partition,
+To iterate on the build without losing the disk's DATA partition,
 use --reflash on the host:
   sudo ./bin/write-live-test-usb.sh --target /dev/sdX --reflash --yes
 That writes the new image into whichever root slot is NOT currently the
 default-boot slot, leaves the active slot in place as a known-good
-fallback, and does not repartition or wipe USBDATA.
+fallback, and does not repartition or wipe DATA.
 
 Subsequent updates of the *internal* disk after install go through
 systemd-sysupdate (`./bin/sysupdate-local-update.sh`) which is also
@@ -1578,25 +1580,25 @@ while [[ $# -gt 0 ]]; do
       LOADER_TIMEOUT="${2:?missing loader timeout}"
       shift 2
       ;;
-    --usb-esp-size)
-      USB_ESP_SIZE="${2:?missing USB ESP size}"
+    --esp-size|--usb-esp-size)
+      USB_ESP_SIZE="${2:?missing ESP size}"
       shift 2
       ;;
-    --usb-root-size)
-      USB_ROOT_SIZE="${2:?missing USB root size}"
+    --root-size|--usb-root-size)
+      USB_ROOT_SIZE="${2:?missing root size}"
+      shift 2
+      ;;
+    --home-size)
+      HOME_SIZE_TOKEN="$(normalize_size_token "${2:?missing home size token}" "$HOME_SIZE_TOKEN")"
+      shift 2
+      ;;
+    --data-size)
+      DATA_SIZE_TOKEN="$(normalize_size_token "${2:?missing data size token}" "$DATA_SIZE_TOKEN")"
       shift 2
       ;;
     --embed-full-image)
       EMBED_FULL_IMAGE=true
       shift
-      ;;
-    --no-usb-storage)
-      INCLUDE_USB_STORAGE=false
-      shift
-      ;;
-    --usb-storage-label)
-      USB_STORAGE_LABEL="${2:?missing usb storage label}"
-      shift 2
       ;;
     --allow-fixed-disk)
       ALLOW_FIXED_DISK=yes
@@ -1637,30 +1639,26 @@ done
 [[ -d "$DEFINITIONS_DIR" ]] || die "definitions directory not found: $DEFINITIONS_DIR"
 [[ -d "$REPART_DIR" ]] || die "repart directory not found: $REPART_DIR"
 
-if ! ab_hostdeps_have_all_commands systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df blkid objcopy; then
+# validate_layout_tokens enforces "at most one of HOME/DATA is 'rest'"
+# before we tell systemd-repart, so a typo at the prompt or in a flag
+# turns into a clear error instead of a surprise layout.
+validate_layout_tokens
+
+if ! ab_hostdeps_have_all_commands systemd-repart systemd-sysupdate bootctl mkfs.fat mkfs.ext4 e2fsck resize2fs losetup lsblk df blkid objcopy; then
   # binutils provides objcopy, which we now use to extract the kernel and
   # initrd PE sections out of the UKI for Type 1 BLS booting (see comments
-  # near the .linux/.initrd extraction below for why Type 1 BLS).
-  ab_hostdeps_ensure_packages "hardware test USB prerequisites" systemd-container systemd-repart systemd-boot-tools systemd-boot-efi dosfstools fdisk util-linux binutils || exit 1
+  # near the .linux/.initrd extraction below for why Type 1 BLS). e2fsprogs
+  # provides mkfs.ext4 + resize2fs + e2fsck, used to format and grow ext4
+  # root/home/data partitions; mkosi-built minimal Debian images do NOT
+  # ship e2fsprogs by default, so this must be installed explicitly when
+  # this script runs from a booted live USB.
+  ab_hostdeps_ensure_packages "hardware test USB prerequisites" systemd-container systemd-repart systemd-boot-tools systemd-boot-efi dosfstools e2fsprogs fdisk util-linux binutils || exit 1
 fi
-ab_hostdeps_ensure_commands "hardware test USB prerequisites" systemd-repart systemd-sysupdate bootctl mkfs.fat losetup lsblk df blkid objcopy || {
+ab_hostdeps_ensure_commands "hardware test USB prerequisites" systemd-repart systemd-sysupdate bootctl mkfs.fat mkfs.ext4 e2fsck resize2fs losetup lsblk df blkid objcopy || {
   echo "==> If this host still cannot provide systemd-sysupdate, use a newer Debian/systemd host for the native USB workflow." >&2
   echo "==> Fast fallback for a hardware smoke test: write the built .raw image directly to the USB instead of using the native installer USB flow." >&2
   exit 1
 }
-
-# mkfs.exfat (from exfatprogs) is only needed when the trailing USB
-# storage partition is enabled. Install-and-check separately so
-# --no-usb-storage users on hosts without exfatprogs keep working.
-if [[ "$INCLUDE_USB_STORAGE" == true ]]; then
-  if ! ab_hostdeps_have_all_commands mkfs.exfat; then
-    ab_hostdeps_ensure_packages "USB exFAT storage partition" exfatprogs || exit 1
-  fi
-  ab_hostdeps_ensure_commands "USB exFAT storage partition" mkfs.exfat || {
-    echo "==> Re-run with --no-usb-storage to skip the trailing exFAT partition if this host cannot provide mkfs.exfat." >&2
-    exit 1
-  }
-fi
 
 load_build_metadata
 prepare_sysupdate_definitions_dir
@@ -1710,24 +1708,15 @@ esac
 if [[ "$REFLASH" == true ]]; then
     # --reflash: validate the existing layout, skip systemd-repart and
     # bootctl install entirely. The user has already booted from this
-    # USB at least once, so the systemd-boot binary on the ESP is
-    # known-working; we don't need to rewrite it. We also don't touch
-    # USBDATA — preserving the user's files on the stick is the whole
+    # disk at least once, so the systemd-boot binary on the ESP is
+    # known-working; we don't need to rewrite it. HOME and DATA are
+    # left untouched — preserving them across reflashes is the whole
     # point of this mode.
     resolve_disk_device
     validate_existing_ab_layout
     confirm_usb_write_or_abort
     # Collect LUKS passphrase before slow dd — no-op if not LUKS or already supplied.
     preflight_collect_luks_passphrase
-    if usbdata_partition_already_formatted; then
-        echo "==> --reflash: USBDATA partition already formatted, leaving it untouched"
-    elif [[ "$INCLUDE_USB_STORAGE" == true ]]; then
-        # Edge case: layout is valid but USBDATA was never mkfs'd
-        # (e.g. an interrupted previous run). Format it so the live
-        # session has a usable scratch partition; this is non-
-        # destructive because there's no filesystem on it yet.
-        format_usb_storage_partition
-    fi
 else
     prepare_bootstrap_repart_dir
     confirm_usb_write_or_abort
@@ -1746,12 +1735,11 @@ else
       # so always pass --yes down. If the user wants bootstrap's prompt,
       # they should call bootstrap directly.
       --yes
-      # Skip sysupdate inside bootstrap. The USBDATA partition is
-      # unformatted at this point (repart creates it without Format= and
-      # we mkfs.exfat it ourselves below). systemd-dissect inside
-      # sysupdate cannot handle the unformatted partition and fails with
-      # "Failed to mount image: No such file or directory". We run
-      # sysupdate ourselves after formatting USBDATA.
+      # Skip sysupdate inside bootstrap. We seed the first slot manually
+      # via dd after this returns, so bootstrap's `systemd-sysupdate
+      # --image=$DISK update` step is both unnecessary and unreliable on
+      # a freshly-repartitioned, still-empty disk (systemd-dissect fails
+      # with "Failed to mount image: No such file or directory").
       --skip-sysupdate
     )
     # Propagate --allow-fixed-disk: confirm_usb_write_or_abort has already
@@ -1761,11 +1749,10 @@ else
     [[ "$ALLOW_FIXED_DISK" == "yes" ]] && bootstrap_args+=(--allow-fixed-disk)
     [[ -n "$IMAGE_ID" ]] && bootstrap_args+=(--image-id "$IMAGE_ID")
 
-    echo "==> Bootstrapping hardware test USB on $TARGET"
+    echo "==> Bootstrapping A/B layout on $TARGET"
     "$PROJECT_ROOT/bin/bootstrap-ab-disk.sh" "${bootstrap_args[@]}"
 
     resolve_disk_device
-    format_usb_storage_partition
 fi
 
 # Seed the first system version directly by writing the root.raw image
@@ -1778,19 +1765,13 @@ seed_first_root_slot
 # bundle onto the seeded root filesystem.
 copy_bundle
 
-echo "==> Syncing data to USB drive (this may take several minutes)..."
+echo "==> Syncing data to disk (this may take several minutes)..."
 sync
 
-echo "==> Hardware test USB is ready"
-echo " Boot target: $TARGET"
+echo "==> Install ready on $TARGET"
 echo " Seeded root: $ROOT_PART"
+echo " Layout:      home=${HOME_SIZE_TOKEN} data=${DATA_SIZE_TOKEN}"
 echo " Installer entry: /root/INSTALL-TO-INTERNAL-DISK.sh"
-if [[ "$INCLUDE_USB_STORAGE" == true ]]; then
-    STORAGE_PART="$(find_usb_storage_partition || true)"
-    if [[ -n "$STORAGE_PART" ]]; then
-        echo " exFAT storage: $STORAGE_PART (label=$USB_STORAGE_LABEL)"
-    fi
-fi
 if [[ "$EMBED_FULL_IMAGE" == true ]]; then
     echo " Full raw image: copied into $BUNDLE_DIR/mkosi.output/"
 fi

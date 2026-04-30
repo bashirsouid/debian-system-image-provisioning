@@ -1,6 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Thin on-target wrapper around bin/write-live-test-usb.sh.
+#
+# The booted live USB needs a separate entry point because:
+#   1. It defaults --allow-fixed-disk=yes (the script exists to write
+#      to an internal disk; the underlying installer defaults to
+#      refusing fixed disks for the same reasons run.sh does).
+#   2. It picks the bundle layout shipped under /root/ab-installer
+#      (flat mkosi.output, no builds/ symlink) instead of the build
+#      tree's mkosi.output/builds/<host>.
+#   3. It prompts interactively for /home and /mnt/data sizing when
+#      the operator did not supply them on the CLI, since on a fresh
+#      internal disk those are real choices and not "the default just
+#      happens to be right" the way they are for a removable USB.
+#
+# All actual partitioning, seeding, bootloader, and bundle work lives
+# in bin/write-live-test-usb.sh — this file only collects answers and
+# forwards them. Keeping one implementation means testing the script
+# against a USB target (cheap, non-destructive to the host) also
+# covers the internal-disk path.
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=SCRIPTDIR/../scripts/lib/host-deps.sh
@@ -13,16 +33,22 @@ ASSUME_YES=false
 MODE=""
 ESP_SIZE="${AB_INSTALL_ESP_SIZE:-1G}"
 ROOT_SIZE="${AB_INSTALL_ROOT_SIZE:-8G}"
-HOME_SIZE_TOKEN="${AB_INSTALL_HOME_SIZE:-rest}"
-DATA_SIZE_TOKEN="${AB_INSTALL_DATA_SIZE:-none}"
+HOME_SIZE_TOKEN="${AB_INSTALL_HOME_SIZE:-none}"
+# /mnt/data defaults to "rest" because it is the persistent slot
+# shared across retained-version A/B swaps; on both internal disks
+# and removable test USBs the natural meaning of "remaining space"
+# is "whatever survives an OS update."
+DATA_SIZE_TOKEN="${AB_INSTALL_DATA_SIZE:-rest}"
+ALLOW_FIXED_DISK="${AB_INSTALL_ALLOW_FIXED_DISK:-yes}"
+DIAGNOSTIC_MODE=false
 
 usage() {
   cat <<'USAGE'
 Usage: sudo ./installer/live-usb-install.sh [options]
 
-Interactive installer intended for a booted hardware-test USB. By default it
-asks for a target disk, offers a destructive fresh A/B bootstrap, and can also
-stage the bundled version onto an existing systemd-sysupdate layout.
+Interactive on-target installer that runs after the user has booted from a
+hardware-test USB. Lays out an A/B install on the chosen target disk
+(typically the internal one) by forwarding to bin/write-live-test-usb.sh.
 
 Options:
   --target PATH        whole target disk (for example /dev/nvme0n1)
@@ -34,9 +60,18 @@ Options:
   --esp-size SIZE      ESP size for fresh bootstrap (default: 1G)
   --root-size SIZE     per-slot root size for fresh bootstrap (default: 8G)
   --home-size TOKEN    /home partition size: none, rest, or explicit size
-                       (default: rest)
+                       (default: none — /home lives inside the root slot
+                       unless you opt into a separate partition)
   --data-size TOKEN    /mnt/data partition size: none, rest, or explicit size
-                       (default: none)
+                       (default: rest — persistent across A/B swaps)
+  --allow-fixed-disk[=yes|no]
+                       permit / refuse writing to a non-removable (internal)
+                       disk. Defaults to yes for this installer (its whole
+                       reason for existing is to write to internal disks);
+                       pass --allow-fixed-disk=no to re-enable the safety
+                       refusal when re-targeting a removable disk.
+  --diagnostic-mode    forward --diagnostic-mode to write-live-test-usb.sh
+                       so the loader entry gets initrd debug params
   --yes                skip confirmation prompts after values are chosen
 USAGE
 }
@@ -61,6 +96,11 @@ lower() {
   printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
+# Local copy of the token grammar parser so we can validate operator
+# input at the prompt and abort with a clear error before exec'ing
+# write-live-test-usb.sh. write-live-test-usb.sh runs the same
+# validation defensively, but the on-target UX is cleaner if we catch
+# typos here.
 normalize_size_token() {
   local value default_value lowered
   value="$(trim "${1:-}")"
@@ -102,7 +142,7 @@ validate_layout_tokens() {
   local rest_count
   rest_count="$(count_rest_tokens "$HOME_SIZE_TOKEN" "$DATA_SIZE_TOKEN")"
   if (( rest_count > 1 )); then
-    die "only one of /home or /mnt/data may use 'rest'"
+    die "only one of /home or /mnt/data may use 'rest' (got $rest_count)"
   fi
 }
 
@@ -192,15 +232,9 @@ choose_mode_interactive() {
   echo "  2) Update existing retained-version layout without repartitioning" >&2
   answer="$(prompt_with_default "Choice" "1")"
   case "$answer" in
-    1|fresh|Fresh)
-      MODE="fresh"
-      ;;
-    2|update|Update)
-      MODE="update"
-      ;;
-    *)
-      die "invalid mode selection: $answer"
-      ;;
+    1|fresh|Fresh) MODE="fresh" ;;
+    2|update|Update) MODE="update" ;;
+    *) die "invalid mode selection: $answer" ;;
   esac
 }
 
@@ -220,7 +254,7 @@ prompt_layout_interactive() {
   ESP_SIZE="$(prompt_with_default "ESP size" "$ESP_SIZE")"
   ROOT_SIZE="$(prompt_with_default "Per-slot root size" "$ROOT_SIZE")"
   HOME_SIZE_TOKEN="$(normalize_size_token "$(prompt_with_default "Separate /home partition size (none, rest, or size)" "$HOME_SIZE_TOKEN")" "$HOME_SIZE_TOKEN")"
-  DATA_SIZE_TOKEN="$(normalize_size_token "$(prompt_with_default "Optional /mnt/data partition size (none, rest, or size)" "$DATA_SIZE_TOKEN")" "$DATA_SIZE_TOKEN")"
+  DATA_SIZE_TOKEN="$(normalize_size_token "$(prompt_with_default "/mnt/data partition size (none, rest, or size)" "$DATA_SIZE_TOKEN")" "$DATA_SIZE_TOKEN")"
   validate_layout_tokens
 }
 
@@ -246,84 +280,48 @@ confirm_or_abort() {
   esac
 }
 
-write_fixed_partition_conf() {
-  local path="$1"
-  local type="$2"
-  local label="$3"
-  local size="$4"
-  local format="${5:-}"
-  {
-    echo '[Partition]'
-    printf 'Type=%s\n' "$type"
-    printf 'Label=%s\n' "$label"
-    printf 'SizeMinBytes=%s\n' "$size"
-    printf 'SizeMaxBytes=%s\n' "$size"
-    if [[ -n "$format" ]]; then
-      printf 'Format=%s\n' "$format"
-    fi
-  } > "$path"
-}
-
-write_flexible_partition_conf() {
-  local path="$1"
-  local type="$2"
-  local label="$3"
-  local min_size="$4"
-  local format="$5"
-  {
-    echo '[Partition]'
-    printf 'Type=%s\n' "$type"
-    printf 'Label=%s\n' "$label"
-    printf 'SizeMinBytes=%s\n' "$min_size"
-    printf 'Format=%s\n' "$format"
-  } > "$path"
-}
-
-generate_repart_dir() {
-  local outdir="$1"
-  mkdir -p "$outdir"
-  write_fixed_partition_conf "$outdir/00-esp.conf" esp ESP "$ESP_SIZE" vfat
-  write_fixed_partition_conf "$outdir/10-root-a.conf" root _empty "$ROOT_SIZE"
-  write_fixed_partition_conf "$outdir/11-root-b.conf" root _empty "$ROOT_SIZE"
-
-  case "$HOME_SIZE_TOKEN" in
-    none)
-      ;;
-    rest)
-      write_flexible_partition_conf "$outdir/20-home.conf" home HOME 2G ext4
-      ;;
-    *)
-      write_fixed_partition_conf "$outdir/20-home.conf" home HOME "$HOME_SIZE_TOKEN" ext4
-      ;;
-  esac
-
-  case "$DATA_SIZE_TOKEN" in
-    none)
-      ;;
-    rest)
-      write_flexible_partition_conf "$outdir/30-data.conf" linux-generic DATA 2G ext4
-      ;;
-    *)
-      write_fixed_partition_conf "$outdir/30-data.conf" linux-generic DATA "$DATA_SIZE_TOKEN" ext4
-      ;;
-  esac
-}
-
 run_fresh_bootstrap() {
-  local tmp_repart
-  tmp_repart="$(mktemp -d /tmp/ab-live-repart.XXXXXX)"
-  trap 'rm -rf "$tmp_repart"' RETURN
-  generate_repart_dir "$tmp_repart"
+  # Forward all the layout choices to write-live-test-usb.sh, which
+  # owns the partitioning + bootloader + manual-seed flow. Originally
+  # this script generated its own systemd-repart definitions and called
+  # bootstrap-ab-disk.sh directly, but that path tried to seed the
+  # first version with `systemd-sysupdate --image=$DISK update` and
+  # systemd-dissect was unreliable on freshly-repartitioned disks
+  # ("Failed to mount image: file system type not supported or not
+  # known."). write-live-test-usb.sh already worked around this for
+  # the hardware-test USB workflow; we now share that proven flow.
+  local bundle_root build_dir installer_script
+  bundle_root="$PROJECT_ROOT"
+  build_dir="$bundle_root/mkosi.output"
+  installer_script="$bundle_root/bin/write-live-test-usb.sh"
 
-  "$PROJECT_ROOT/bin/bootstrap-ab-disk.sh" \
-    --target "$TARGET" \
-    --source-dir "$SOURCE_DIR" \
-    --definitions "$DEFINITIONS_DIR" \
-    --repart-dir "$tmp_repart" \
-    $( [[ "$ASSUME_YES" == true ]] && printf -- '--yes' )
+  [[ -d "$build_dir" ]] \
+    || die "expected bundled build dir not found: $build_dir (the live USB bundle should ship one under /root/ab-installer/mkosi.output)"
+  [[ -x "$installer_script" ]] \
+    || die "expected installer script not found or not executable: $installer_script"
+  [[ -f "$build_dir/build.env" ]] \
+    || die "bundled build dir is missing build.env: $build_dir/build.env"
 
-  rm -rf "$tmp_repart"
-  trap - RETURN
+  local args=(
+    --target "$TARGET"
+    --build-dir "$build_dir"
+    # Force the destructive bootstrap path. write-live-test-usb.sh's
+    # auto-mode would otherwise look at the existing partition table
+    # and may pick --reflash on a previously-installed disk; the
+    # operator picked "fresh" deliberately above.
+    --reimage
+    --esp-size "$ESP_SIZE"
+    --root-size "$ROOT_SIZE"
+    --home-size "$HOME_SIZE_TOKEN"
+    --data-size "$DATA_SIZE_TOKEN"
+  )
+  [[ "$ALLOW_FIXED_DISK" == "yes" ]] && args+=(--allow-fixed-disk)
+  [[ "$ASSUME_YES" == true ]] && args+=(--yes)
+  [[ "$DIAGNOSTIC_MODE" == true ]] && args+=(--diagnostic-mode)
+
+  echo "==> Delegating partition + seed + bootloader install to:"
+  echo "    $installer_script"
+  "$installer_script" "${args[@]}"
 }
 
 run_existing_layout_update() {
@@ -384,6 +382,22 @@ while [[ $# -gt 0 ]]; do
       DATA_SIZE_TOKEN="$(normalize_size_token "${2:?missing data size token}" "$DATA_SIZE_TOKEN")"
       shift 2
       ;;
+    --allow-fixed-disk)
+      ALLOW_FIXED_DISK=yes
+      shift
+      ;;
+    --allow-fixed-disk=*)
+      ALLOW_FIXED_DISK="$(lower "${1#--allow-fixed-disk=}")"
+      case "$ALLOW_FIXED_DISK" in
+        yes|no) ;;
+        *) die "--allow-fixed-disk expects yes or no, got '$ALLOW_FIXED_DISK'" ;;
+      esac
+      shift
+      ;;
+    --diagnostic-mode)
+      DIAGNOSTIC_MODE=true
+      shift
+      ;;
     --yes)
       ASSUME_YES=true
       shift
@@ -399,10 +413,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ $EUID -eq 0 ]] || die "live-usb-install.sh must run as root"
-if ! ab_hostdeps_have_all_commands systemd-sysupdate systemd-repart bootctl lsblk findmnt; then
-  ab_hostdeps_ensure_packages "live USB install prerequisites" systemd-container systemd-repart systemd-boot-tools systemd-boot-efi dosfstools fdisk util-linux || exit 1
+if ! ab_hostdeps_have_all_commands systemd-sysupdate systemd-repart bootctl lsblk findmnt mkfs.ext4 e2fsck resize2fs objcopy; then
+  # e2fsprogs is required to format and grow the ext4 root/home/data
+  # partitions during the manual-seed install path; binutils provides
+  # objcopy, used to extract the UKI's .linux/.initrd PE sections so a
+  # Type 1 BLS loader entry can boot the freshly-seeded slot. mkosi-built
+  # minimal Debian images do not ship either by default — without these
+  # the install reaches systemd-repart, formats the ESP, and then dies at
+  # the seed step.
+  ab_hostdeps_ensure_packages "live USB install prerequisites" systemd-container systemd-repart systemd-boot-tools systemd-boot-efi dosfstools e2fsprogs fdisk util-linux binutils || exit 1
 fi
-ab_hostdeps_ensure_commands "live USB install prerequisites" systemd-sysupdate systemd-repart bootctl lsblk findmnt || {
+ab_hostdeps_ensure_commands "live USB install prerequisites" systemd-sysupdate systemd-repart bootctl lsblk findmnt mkfs.ext4 e2fsck resize2fs objcopy || {
   echo "==> The live USB installer requires systemd-sysupdate on the running USB system." >&2
   echo "==> If you are seeing this on the build host, you are running the wrong script: use write-live-test-usb.sh on the host and live-usb-install.sh only after booting from that USB." >&2
   exit 1

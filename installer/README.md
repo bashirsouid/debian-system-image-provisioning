@@ -14,7 +14,7 @@ that runs on the booted *target* image (not the USB) lives under
 
 | Script                     | Runs where                                                    | What it does                                                                                                        |
 | -------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `live-usb-install.sh`      | Booted hardware-test USB, via `/root/INSTALL-TO-INTERNAL-DISK.sh` | Interactive installer that either freshly bootstraps the internal disk or stages the bundled version onto an existing layout. |
+| `live-usb-install.sh`      | Booted hardware-test USB, via `/root/INSTALL-TO-INTERNAL-DISK.sh` | Thin interactive wrapper around `bin/write-live-test-usb.sh`. Asks for target disk + ESP / root / home / data sizing, defaults `--allow-fixed-disk` to `yes`, and forwards everything to the same partition + seed + bootloader code path that produced the USB you are booting from. |
 
 ## How it gets onto the USB
 
@@ -23,7 +23,8 @@ retained-version layout, then copies this directory plus a small subset of
 `bin/` and `scripts/lib/` into the USB's bundle directory
 (default: `/root/ab-installer/`). The bundle mirrors the layout of this
 repo, so `installer/live-usb-install.sh` can reach
-`bin/bootstrap-ab-disk.sh` at a stable relative path inside the bundle.
+`bin/write-live-test-usb.sh` (the unified install script) at a stable
+relative path inside the bundle and run it as the on-target installer.
 
 After booting the USB you run:
 

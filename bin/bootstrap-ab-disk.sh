@@ -250,10 +250,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ $EUID -eq 0 ]] || die "bootstrap-ab-disk.sh must run as root"
-if ! ab_hostdeps_have_all_commands bootctl systemd-repart systemd-sysupdate mkfs.fat findmnt lsblk losetup; then
-  ab_hostdeps_ensure_packages "bootstrap prerequisites" systemd-boot-tools systemd-boot-efi systemd-repart systemd-container dosfstools util-linux || exit 1
+if ! ab_hostdeps_have_all_commands bootctl systemd-repart systemd-sysupdate mkfs.fat mkfs.ext4 findmnt lsblk losetup; then
+  ab_hostdeps_ensure_packages "bootstrap prerequisites" systemd-boot-tools systemd-boot-efi systemd-repart systemd-container dosfstools e2fsprogs util-linux || exit 1
 fi
-ab_hostdeps_ensure_commands "bootstrap prerequisites" bootctl systemd-repart systemd-sysupdate mkfs.fat findmnt lsblk losetup || exit 1
+ab_hostdeps_ensure_commands "bootstrap prerequisites" bootctl systemd-repart systemd-sysupdate mkfs.fat mkfs.ext4 findmnt lsblk losetup || exit 1
 
 [[ -n "$TARGET" ]] || die "--target is required"
 [[ -d "$SOURCE_DIR" ]] || die "source directory not found: $SOURCE_DIR"
