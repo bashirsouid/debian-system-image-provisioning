@@ -106,8 +106,8 @@
           [Partition]
           Type=esp
           Label=ESP
-          SizeMinBytes={{ cloudbox_esp_size | default('512M') }}
-          SizeMaxBytes={{ cloudbox_esp_size | default('512M') }}
+          SizeMinBytes={{ cloudbox_esp_size | default('1G') }}
+          SizeMaxBytes={{ cloudbox_esp_size | default('1G') }}
           Format=vfat
       when: cloudbox_bootstrap_mode
 

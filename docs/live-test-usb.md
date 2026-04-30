@@ -73,7 +73,7 @@ The interactive helper lets you either:
 
 The default fresh layout is:
 
-- `ESP` — 512M
+- `ESP` — 1G
 - two retained root partitions — 8G each
 - `/home` as a GPT `home` partition using the remaining space
 - no `/mnt/data` partition unless you ask for one

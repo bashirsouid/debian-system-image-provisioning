@@ -1098,7 +1098,7 @@ prepare_bootstrap_repart_dir() {
   if [[ -z "$USB_ESP_SIZE" && -z "$USB_ROOT_SIZE" ]]; then
     cp "$REPART_DIR"/*.conf "$TEMP_REPART_DIR/"
   else
-    write_fixed_partition_conf "$TEMP_REPART_DIR/00-esp.conf" esp ESP "${USB_ESP_SIZE:-512M}" vfat
+    write_fixed_partition_conf "$TEMP_REPART_DIR/00-esp.conf" esp ESP "${USB_ESP_SIZE:-1G}" vfat
     write_fixed_partition_conf "$TEMP_REPART_DIR/10-root-a.conf" root _empty "${USB_ROOT_SIZE:-8G}" ext4
     write_fixed_partition_conf "$TEMP_REPART_DIR/11-root-b.conf" root _empty "${USB_ROOT_SIZE:-8G}" ext4
   fi
@@ -1262,7 +1262,7 @@ That wrapper runs:
 
 The bundled installer defaults to a fresh destructive A/B bootstrap onto the
 selected target disk. By default it creates:
-  - a 512M ESP
+  - a 1G ESP
   - two retained root partitions of 8G each
   - a GPT home partition that takes the rest of the disk
   - no /mnt/data partition unless you ask for one

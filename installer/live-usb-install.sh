@@ -11,7 +11,7 @@ SOURCE_DIR="$PROJECT_ROOT/mkosi.output"
 DEFINITIONS_DIR="$PROJECT_ROOT/mkosi.sysupdate"
 ASSUME_YES=false
 MODE=""
-ESP_SIZE="${AB_INSTALL_ESP_SIZE:-512M}"
+ESP_SIZE="${AB_INSTALL_ESP_SIZE:-1G}"
 ROOT_SIZE="${AB_INSTALL_ROOT_SIZE:-8G}"
 HOME_SIZE_TOKEN="${AB_INSTALL_HOME_SIZE:-rest}"
 DATA_SIZE_TOKEN="${AB_INSTALL_DATA_SIZE:-none}"
@@ -31,7 +31,7 @@ Options:
                        (default: ../mkosi.output relative to this script)
   --definitions DIR    sysupdate transfer definition directory
                        (default: ../mkosi.sysupdate relative to this script)
-  --esp-size SIZE      ESP size for fresh bootstrap (default: 512M)
+  --esp-size SIZE      ESP size for fresh bootstrap (default: 1G)
   --root-size SIZE     per-slot root size for fresh bootstrap (default: 8G)
   --home-size TOKEN    /home partition size: none, rest, or explicit size
                        (default: rest)
