@@ -117,6 +117,10 @@ MODE="auto"
 # Computed from MODE after arg-parsing + load_build_metadata so user
 # echo lines can name the resolved disk path.
 REFLASH=false
+LUKS_PASSPHRASE=""    # passphrase for LUKS-encrypted roots (--luks-passphrase)
+LUKS_MAP=""           # mapper name opened by seed_first_root_slot; closed by cleanup()
+LUKS_PASS_FILE=""     # tmpfile holding passphrase; shredded by cleanup()
+USBDATA_BUNDLE_MOUNT="" # set by copy_bundle() when bundle overflows to USBDATA
 
 usage() {
   cat <<'USAGE'
@@ -143,9 +147,6 @@ Options:
   --loader-timeout N    loader menu timeout to write to the USB ESP (default: 3)
   --usb-esp-size SIZE   override the ESP size used for the USB bootstrap
   --usb-root-size SIZE  override the per-slot root size used for the USB bootstrap
-                         (default: auto — 3× the .root.raw image size, rounded up
-                          to the next GiB; fits the OS + full installer bundle
-                          with headroom for image growth over many reflash cycles)
   --embed-full-image    also copy the built full disk image into the USB bundle
   --no-usb-storage      do not create the trailing exFAT storage partition
                         (by default the remaining USB space becomes a
@@ -156,6 +157,11 @@ Options:
                         "I flashed my laptop's SSD by accident" case
   --yes                 skip destructive confirmation prompts
   --diagnostic-mode     append initrd debug params to the boot entry
+  --luks-passphrase PASSPHRASE
+                        passphrase for a LUKS-encrypted root partition. Required
+                        when *.root.raw uses LUKS (auto-detected after dd). The
+                        passphrase is fed to cryptsetup via stdin and is not
+                        stored anywhere on the USB.
   --reflash             FORCE reflash mode: do NOT repartition. Detect the
                         existing A/B layout, write the new image into the
                         *inactive* root slot, and leave the active slot +
@@ -191,6 +197,20 @@ cleanup() {
     set +e
     [[ -n "${ROOT_MOUNT:-}" ]] && mountpoint -q "$ROOT_MOUNT" && umount "$ROOT_MOUNT"
     [[ -n "${ROOT_MOUNT:-}" && -d "$ROOT_MOUNT" ]] && rmdir "$ROOT_MOUNT"
+    if [[ -n "${LUKS_PASS_FILE:-}" && -f "${LUKS_PASS_FILE}" ]]; then
+        shred -u "$LUKS_PASS_FILE" 2>/dev/null || rm -f "$LUKS_PASS_FILE"
+        LUKS_PASS_FILE=""
+    fi
+    if [[ -n "${LUKS_MAP:-}" ]]; then
+        cryptsetup luksClose "$LUKS_MAP" >/dev/null 2>&1 || true
+        LUKS_MAP=""
+    fi
+    if [[ -n "${USBDATA_BUNDLE_MOUNT:-}" ]]; then
+        mountpoint -q "$USBDATA_BUNDLE_MOUNT" 2>/dev/null \
+            && umount "$USBDATA_BUNDLE_MOUNT" 2>/dev/null || true
+        [[ -d "$USBDATA_BUNDLE_MOUNT" ]] \
+            && rmdir "$USBDATA_BUNDLE_MOUNT" 2>/dev/null || true
+    fi
     [[ -n "${TEMP_REPART_DIR:-}" && -d "$TEMP_REPART_DIR" ]] && rm -rf "$TEMP_REPART_DIR"
     [[ -n "${TEMP_DEFINITIONS_DIR:-}" && -d "$TEMP_DEFINITIONS_DIR" ]] && rm -rf "$TEMP_DEFINITIONS_DIR"
     if [[ -n "${LOOPDEV:-}" ]]; then
@@ -425,7 +445,7 @@ find_seeded_root_partition() {
       printf '%s\n' "$NAME"
       return 0
     fi
-  done < <(lsblk -P -nrpo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
+  done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
 
   # Fallback: any non-reserved partition
   while read -r line; do
@@ -440,7 +460,7 @@ find_seeded_root_partition() {
     esac
     printf '%s\n' "$NAME"
     return 0
-  done < <(lsblk -P -nrpo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
+  done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
 
   return 1
 }
@@ -470,7 +490,7 @@ select_root_slot_for_seed() {
 
         candidates+=("$NAME")
         labels+=("$PARTLABEL")
-    done < <(lsblk -P -nrpo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
+    done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
 
     (( ${#candidates[@]} > 0 )) || die "no candidate root partitions found on $DISK_DEVICE"
 
@@ -561,7 +581,7 @@ detect_existing_ab_layout() {
         fi
         ;;
     esac
-  done < <(lsblk -P -nrpo NAME,PARTLABEL,FSTYPE,TYPE "$device" 2>/dev/null)
+  done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$device" 2>/dev/null)
 
   [[ -n "$tmp_loop" ]] && losetup -d "$tmp_loop" >/dev/null 2>&1 || true
 
@@ -593,7 +613,7 @@ validate_existing_ab_layout() {
                 fi
                 ;;
         esac
-    done < <(lsblk -P -nrpo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
+    done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
 
     (( esp_count >= 1 )) \
         || die "--reflash: target $DISK_DEVICE has no ESP partition; do a fresh write (drop --reflash) first"
@@ -623,7 +643,7 @@ read_default_entry_root_partuuid() {
             esp_part="$NAME"
             break
         fi
-    done < <(lsblk -P -nrpo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
+    done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
     [[ -n "$esp_part" ]] || { printf ''; return 0; }
 
     esp_mount="$(mktemp -d /tmp/ab-reflash-esp.XXXXXX)"
@@ -678,7 +698,7 @@ select_inactive_root_slot_for_reseed() {
         candidates+=("$NAME")
         labels+=("$PARTLABEL")
         partuuids+=("$partuuid")
-    done < <(lsblk -P -nrpo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
+    done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
 
     (( ${#candidates[@]} >= 2 )) \
         || die "--reflash: expected ≥2 root slots on $DISK_DEVICE, found ${#candidates[@]}"
@@ -766,8 +786,18 @@ seed_first_root_slot() {
     echo "==> Writing root filesystem image into $ROOT_PART from ${prefix}.root.raw"
     dd if="$SOURCE_DIR/${prefix}.root.raw" of="$ROOT_PART" bs=4M status=progress conv=fsync
     
-    # Grow the ext4 filesystem to fill the partition (best-effort)
-    if command -v e2fsck >/dev/null 2>&1 && command -v resize2fs >/dev/null 2>&1; then
+    # Detect the root filesystem type so LUKS-specific paths skip steps
+    # that only apply to plain ext4 roots.
+    local root_fstype
+    root_fstype="$(blkid -s TYPE -o value "$ROOT_PART" 2>/dev/null || true)"
+    echo "==> Detected root partition type: ${root_fstype:-unknown}"
+
+    # Grow the ext4 filesystem to fill the partition (best-effort).
+    # Skip entirely for LUKS: e2fsck misreads the LUKS header as a corrupt
+    # ext4 superblock and irrecoverably overwrites LUKS metadata.
+    if [[ "$root_fstype" == "crypto_LUKS" ]]; then
+        echo "==> Root is LUKS-encrypted; skipping e2fsck/resize2fs"
+    elif command -v e2fsck >/dev/null 2>&1 && command -v resize2fs >/dev/null 2>&1; then
         echo "==> Running e2fsck + resize2fs on $ROOT_PART"
         e2fsck -f -y "$ROOT_PART" || true
         resize2fs "$ROOT_PART" || true
@@ -803,16 +833,87 @@ seed_first_root_slot() {
     # Mount the seeded root for bundle copy
     ROOT_MOUNT="$(mktemp -d /tmp/ab-live-root.XXXXXX)"
     echo "==> Mounting seeded root $ROOT_PART on $ROOT_MOUNT"
-    mount "$ROOT_PART" "$ROOT_MOUNT"
+    if [[ "$root_fstype" == "crypto_LUKS" ]]; then
+        command -v cryptsetup >/dev/null 2>&1 \
+            || die "cryptsetup is required to mount a LUKS-encrypted root; install cryptsetup on the build host"
+        # ── Passphrase handling ───────────────────────────────────────────
+        # Write passphrase to a chmod-600 tmpfile so luksOpen and resize
+        # both use --key-file= (no pipe/stdin races). Loop on empty input
+        # or wrong passphrase so a stray Enter from a previous step does
+        # not silently abort the flash.
+        local _luks_pass_file
+        _luks_pass_file="$(mktemp /tmp/ab-luks-pass.XXXXXX)"
+        chmod 600 "$_luks_pass_file"
+        LUKS_PASS_FILE="$_luks_pass_file"   # registered for cleanup
+
+        local luks_map="ab-live-root-luks-$$"
+
+        if [[ -n "${LUKS_PASSPHRASE:-}" ]]; then
+            # Passphrase already supplied externally (e.g. by a parent script).
+            printf '%s' "$LUKS_PASSPHRASE" > "$_luks_pass_file"
+            echo "==> Opening LUKS container $ROOT_PART -> /dev/mapper/$luks_map"
+            cryptsetup luksOpen "$ROOT_PART" "$luks_map" --key-file="$_luks_pass_file"
+        else
+            echo "==> $ROOT_PART is LUKS-encrypted and no passphrase was supplied"
+            local _luks_attempts=0
+            while true; do
+                (( _luks_attempts++ )) || true
+                LUKS_PASSPHRASE=""
+                read -rsp "    Enter LUKS passphrase (input hidden, not saved to history): " \
+                    LUKS_PASSPHRASE </dev/tty
+                echo >&2   # newline after hidden input
+                if [[ -z "$LUKS_PASSPHRASE" ]]; then
+                    echo "    (empty passphrase — please try again)" >&2
+                    continue
+                fi
+                printf '%s' "$LUKS_PASSPHRASE" > "$_luks_pass_file"
+                echo "==> Opening LUKS container $ROOT_PART -> /dev/mapper/$luks_map"
+                if cryptsetup luksOpen "$ROOT_PART" "$luks_map" \
+                        --key-file="$_luks_pass_file" 2>/dev/null; then
+                    break   # success
+                fi
+                # Wrong passphrase — clear file and retry
+                printf '%s' "" > "$_luks_pass_file"
+                if (( _luks_attempts >= 5 )); then
+                    die "Failed to open LUKS container $ROOT_PART after 5 attempts"
+                fi
+                echo "    Incorrect passphrase (attempt $_luks_attempts/5), try again." >&2
+            done
+        fi
+        LUKS_MAP="$luks_map"
+        # The .root.raw image is smaller than the allocated partition.
+        # Expand the LUKS container to fill the full partition, then grow
+        # the inner filesystem to match — otherwise the root has no free
+        # space for the installer bundle.
+        echo "==> Expanding LUKS container $luks_map to fill partition $ROOT_PART"
+        cryptsetup resize "$luks_map" --key-file="$_luks_pass_file"
+        if command -v e2fsck >/dev/null 2>&1 && command -v resize2fs >/dev/null 2>&1; then
+            echo "==> Running e2fsck + resize2fs on /dev/mapper/$luks_map"
+            e2fsck -f -y "/dev/mapper/$luks_map" || true
+            resize2fs "/dev/mapper/$luks_map" || true
+        else
+            echo "WARNING: e2fsck/resize2fs not available; inner filesystem not grown" >&2
+        fi
+        mount "/dev/mapper/$luks_map" "$ROOT_MOUNT"
+    else
+        mount "$ROOT_PART" "$ROOT_MOUNT"
+    fi
 
     # Determine PARTUUID of the seeded root partition for boot entry
-    local root_partuuid=""
+    local root_partuuid="" luks_uuid=""
     if command -v blkid >/dev/null 2>&1; then
         root_partuuid="$(blkid -s PARTUUID -o value "$ROOT_PART" 2>/dev/null || true)"
         if [[ -z "$root_partuuid" ]]; then
             echo "WARNING: could not determine PARTUUID for $ROOT_PART; boot entry will not be patched" >&2
         else
             echo "==> Seeded root PARTUUID: $root_partuuid"
+        fi
+        # For LUKS roots, also capture the LUKS header UUID (different from PARTUUID).
+        # blkid -s UUID on a LUKS partition returns the UUID stored inside the LUKS
+        # header, which is what rd.luks.uuid= / cryptdevice=UUID= must reference.
+        if [[ "$root_fstype" == "crypto_LUKS" ]]; then
+            luks_uuid="$(blkid -s UUID -o value "$ROOT_PART" 2>/dev/null || true)"
+            [[ -n "$luks_uuid" ]] && echo "==> LUKS container UUID: $luks_uuid"
         fi
     else
         echo "WARNING: blkid not available; boot entry will not be patched with PARTUUID." >&2
@@ -838,7 +939,7 @@ seed_first_root_slot() {
             esp_part="$NAME"
             break
         fi
-    done < <(lsblk -P -nrpo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
+    done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
     if [[ -n "$esp_part" ]]; then
         local esp_mount
         esp_mount="$(mktemp -d /tmp/ab-live-esp.XXXXXX)"
@@ -904,6 +1005,19 @@ seed_first_root_slot() {
             local _kernel_dst="$esp_mount/EFI/Linux/${prefix}.linux"
             local _initrd_dst="$esp_mount/EFI/Linux/${prefix}.initrd"
 
+            # Clean up stale kernel/initrd files from PREVIOUS reflashes into
+            # this same slot so old versions do not accumulate on the ESP.
+            # We delete any *.linux / *.initrd file whose name starts with
+            # IMAGE_ID_IMAGE_ARCH (same image family) but is NOT the current
+            # prefix (i.e. an older version).  This keeps exactly 2 pairs on
+            # the ESP at any time — one per slot — regardless of reflash count.
+            local _img_base="${IMAGE_ID}_${IMAGE_ARCH}"
+            find "$esp_mount/EFI/Linux/" -maxdepth 1 \
+                \( -name "${_img_base}_*.linux"  -o -name "${_img_base}_*.initrd" \
+                   -o -name "${_img_base}.linux"  -o -name "${_img_base}.initrd" \) \
+                ! -name "${prefix}.linux" ! -name "${prefix}.initrd" \
+                -delete 2>/dev/null || true
+
             echo "==> Extracting .linux from UKI -> $(basename "$_kernel_dst")"
             objcopy -O binary --only-section=.linux "$_uki_src" "$_kernel_dst"
             echo "==> Extracting .initrd from UKI -> $(basename "$_initrd_dst")"
@@ -945,8 +1059,23 @@ seed_first_root_slot() {
             # but PARTUUID is what we just learned from the actual seeded slot).
             if [[ -n "$root_partuuid" ]]; then
                 _src_options="$(echo "$_src_options" | sed -E 's#root=[^ ]*##g')"
-                _src_options="root=PARTUUID=$root_partuuid rootfstype=ext4 rootwait $_src_options"
-                echo "==> Setting root=PARTUUID=$root_partuuid in boot entry"
+                if [[ "$root_fstype" == "crypto_LUKS" && -n "$luks_uuid" ]]; then
+                    # LUKS root: the initrd must unlock the LUKS container before it
+                    # can mount /sysroot. rd.luks.uuid tells systemd-cryptsetup (or
+                    # cryptsetup-initramfs) which container to unlock; the mapper
+                    # device is then available as /dev/mapper/luks-<UUID>.
+                    # Note: luks_uuid is the UUID from the LUKS header (blkid UUID),
+                    # NOT the GPT PARTUUID — they are different values.
+                    _src_options="rd.luks.uuid=$luks_uuid root=/dev/mapper/luks-$luks_uuid rootwait $_src_options"
+                    echo "==> Setting rd.luks.uuid=$luks_uuid root=/dev/mapper/luks-$luks_uuid in boot entry"
+                elif [[ "$root_fstype" == "crypto_LUKS" ]]; then
+                    echo "WARNING: could not determine LUKS UUID; boot entry may not unlock the root" >&2
+                    _src_options="root=PARTUUID=$root_partuuid rootwait $_src_options"
+                    echo "==> Setting root=PARTUUID=$root_partuuid in boot entry (LUKS UUID unknown)"
+                else
+                    _src_options="root=PARTUUID=$root_partuuid rootfstype=ext4 rootwait $_src_options"
+                    echo "==> Setting root=PARTUUID=$root_partuuid in boot entry"
+                fi
             else
                 echo "WARNING: root PARTUUID unknown; leaving boot entry root= unchanged." >&2
             fi
@@ -1062,18 +1191,16 @@ prepare_bootstrap_repart_dir() {
   TEMP_REPART_DIR="$(mktemp -d /tmp/ab-usb-repart.XXXXXX)"
   BOOTSTRAP_REPART_DIR="$TEMP_REPART_DIR"
 
-  # Auto-size root slots from the .root.raw image when the user has not given
-  # an explicit --usb-root-size.  We use 3× the raw image size so each slot
-  # can hold: (1) the dd'd OS image, (2) the full installer bundle copied onto
-  # the same root partition, and (3) comfortable headroom for the filesystem
-  # to grow over many A/B reflash cycles as the image gets larger over time.
-  # The result is rounded up to the next whole GiB.
+  # Auto-size root slots from the .root.raw image size when the user has not
+  # given an explicit --usb-root-size.  Each slot gets 3× the raw image size,
+  # rounded up to the next whole GiB, so the slot comfortably holds:
+  #   (1) the dd'd OS image itself
+  #   (2) the full installer bundle (includes another copy of .root.raw)
+  #   (3) headroom for the image to grow over many A/B reflash cycles
   #
-  # Example: 6 GiB raw → 18 GiB per slot (36 GiB total for both roots).
-  # On a 64 GiB USB: 1 GiB ESP + 36 GiB roots + ~27 GiB USBDATA — still
-  # plenty of exFAT storage space for file transfer use.
-  #
-  # Pass --usb-root-size explicitly to override this calculation.
+  # Example: 6 GiB raw → 18 GiB per slot → 36 GiB total (A+B).
+  # On a 64 GiB USB: 1 GiB ESP + 36 GiB roots + ~27 GiB USBDATA.
+  # Pass --usb-root-size explicitly to override.
   if [[ -z "$USB_ROOT_SIZE" && -n "${IMAGE_ID:-}" && -n "${IMAGE_VERSION:-}" && -n "${IMAGE_ARCH:-}" ]]; then
     local _auto_prefix="${IMAGE_ID}_${IMAGE_VERSION}_${IMAGE_ARCH}"
     local _raw_path="$SOURCE_DIR/${_auto_prefix}.root.raw"
@@ -1081,20 +1208,18 @@ prepare_bootstrap_repart_dir() {
       local _raw_bytes _gib=$((1024 * 1024 * 1024))
       _raw_bytes="$(stat -Lc '%s' "$_raw_path" 2>/dev/null || echo 0)"
       if [[ "$_raw_bytes" =~ ^[0-9]+$ ]] && (( _raw_bytes > 0 )); then
-        # 3× raw size, rounded up to the next whole GiB boundary.
         local _target_bytes=$(( _raw_bytes * 3 ))
         local _target_gib=$(( (_target_bytes + _gib - 1) / _gib ))
         local _raw_gib=$(( (_raw_bytes + _gib - 1) / _gib ))
         USB_ROOT_SIZE="${_target_gib}G"
-        echo "==> Auto-sized USB root slots: ${_target_gib}G each"              "(3× ~${_raw_gib}G raw; ${_target_gib}G × 2 = $(( _target_gib * 2 ))G total for both A+B roots)"
+        echo "==> Auto-sized USB root slots: ${_target_gib}G each"              "(3× ~${_raw_gib}G raw; ${_target_gib}G × 2 = $(( _target_gib * 2 ))G total for A+B)"
       fi
     fi
   fi
 
-  # Base layout: if the user did not override sizes (and auto-sizing above
-  # found nothing), mirror the committed deploy.repart/ exactly so the USB
-  # layout matches an internal-disk bootstrap. With any size override (user
-  # or auto), generate fresh confs so the computed sizes take effect.
+  # Base layout: if neither user nor auto-sizing set sizes, copy the committed
+  # deploy.repart/ confs directly (USB mirrors internal-disk layout). Otherwise
+  # generate fresh confs with the computed or user-supplied sizes.
   if [[ -z "$USB_ESP_SIZE" && -z "$USB_ROOT_SIZE" ]]; then
     cp "$REPART_DIR"/*.conf "$TEMP_REPART_DIR/"
   else
@@ -1135,7 +1260,7 @@ find_usb_storage_partition() {
       printf '%s\n' "$NAME"
       return 0
     fi
-  done < <(lsblk -P -nrpo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
+  done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
   return 1
 }
 
@@ -1191,9 +1316,10 @@ copy_bundle() {
 
   if [[ "$avail" =~ ^[0-9]+$ ]] && (( avail < required + headroom )); then
     # Root has insufficient free space. Fall back to USBDATA using a
-    # slot-specific subdir so --reflash of a second slot doesn't clobber
-    # the first slot's installer bundle, allowing either A or B to be
-    # booted and independently install to the internal disk.
+    # slot-specific subdir so --reflash of a second slot never clobbers the
+    # first slot's installer bundle. Each slot gets its own
+    # ab-installer-<slot> directory, so you can boot from either root and
+    # run its matching installer independently.
     local usbdata_part
     usbdata_part="$(find_usb_storage_partition || true)"
     if [[ -z "$usbdata_part" ]]; then
@@ -1208,13 +1334,11 @@ copy_bundle() {
     if ! [[ "$usbdata_avail" =~ ^[0-9]+$ ]] || (( usbdata_avail < required + headroom )); then
       die "installer bundle needs $(( (required + headroom) / 1024 / 1024 )) MiB; root $(( avail / 1024 / 1024 )) MiB, USBDATA ${usbdata_avail:-0} bytes — not enough on either"
     fi
-    # Use a slot-specific subdirectory (ab-installer-sda2, ab-installer-sda3,
-    # etc.) so both A and B slots can store independent bundles on USBDATA.
     bundle_root="$USBDATA_BUNDLE_MOUNT/ab-installer-${slot_tag}"
     usbdata_fallback=true
   fi
 
-  echo "==> Copying installer bundle into $BUNDLE_DIR"
+  echo "==> Copying installer bundle into ${usbdata_fallback:+USBDATA }$bundle_root"
   install -d -m 0700 "$bundle_root"
   install -d -m 0755 "$bundle_root/bin" "$bundle_root/installer" "$bundle_root/scripts/lib" "$bundle_root/mkosi.output" "$bundle_root/mkosi.sysupdate" "$bundle_root/deploy.repart"
 
@@ -1226,8 +1350,8 @@ copy_bundle() {
   copy_file_preserving_layout "$PROJECT_ROOT/scripts/lib/confirm-destructive.sh" "$bundle_root/scripts/lib/confirm-destructive.sh"
   chmod 0755 "$bundle_root/bin/bootstrap-ab-disk.sh" "$bundle_root/installer/live-usb-install.sh" "$bundle_root/bin/sysupdate-local-update.sh"
 
-  cp -a "${GENERATED_DEFINITIONS_DIR:-$PROJECT_ROOT/mkosi.sysupdate}/." "$bundle_root/mkosi.sysupdate/"
-  cp -a "$PROJECT_ROOT/deploy.repart/." "$bundle_root/deploy.repart/"
+  cp -r --no-preserve=ownership "${GENERATED_DEFINITIONS_DIR:-$PROJECT_ROOT/mkosi.sysupdate}/." "$bundle_root/mkosi.sysupdate/"
+  cp -r --no-preserve=ownership "$PROJECT_ROOT/deploy.repart/." "$bundle_root/deploy.repart/"
 
   # The bundle's mkosi.output/ is flat (no builds/ subtree) because the
   # installer on the USB expects a single transfer-source directory. We
@@ -1243,6 +1367,47 @@ copy_bundle() {
 
   if [[ "$EMBED_FULL_IMAGE" == true ]]; then
     copy_file_preserving_layout "$SOURCE_DIR/$IMAGE_BASENAME" "$bundle_root/mkosi.output/$IMAGE_BASENAME"
+  fi
+
+  # When the bundle went to USBDATA, plant a thin launcher on the root so
+  # the operator can run the installer with the same path they'd expect
+  # (/root/INSTALL-TO-INTERNAL-DISK.sh) even though the payload lives on
+  # the USBDATA exFAT partition.
+  # Plant INSTALL-TO-INTERNAL-DISK.sh — path is always the same for the
+  # operator; the implementation differs depending on where the bundle landed.
+  install -d -m 0700 "$ROOT_MOUNT/root"
+  if [[ "$usbdata_fallback" == true ]]; then
+    # Bundle is on USBDATA. Write a thin launcher that mounts USBDATA at
+    # runtime and execs from the slot-specific subdirectory baked in at
+    # flash time. sda2's launcher always uses ab-installer-sda2, sda3 uses
+    # ab-installer-sda3 — both coexist after a --reflash with no clobbering.
+    #
+    # NOTE: lsblk -npo already returns full /dev/... paths (-p flag), so
+    # awk must use `print $1` not `print "/dev/"$1` (that would produce
+    # /dev//dev/sdX4 which doesn't exist and makes mount fail silently).
+    cat > "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh" <<WRAPPER
+#!/bin/bash
+# This slot's installer bundle is on USBDATA. Mount it, run the installer,
+# then unmount automatically via the EXIT trap.
+set -euo pipefail
+USBDATA_PART="\$(lsblk -npo NAME,LABEL | awk '\$2=="USBDATA"{print \$1; exit}')"
+[[ -n "\$USBDATA_PART" ]] || { echo "ERROR: USBDATA partition not found" >&2; exit 1; }
+USBDATA_MNT="\$(mktemp -d /tmp/usbdata.XXXXXX)"
+mount "\$USBDATA_PART" "\$USBDATA_MNT"
+trap "umount '\$USBDATA_MNT'; rmdir '\$USBDATA_MNT'" EXIT
+exec "\$USBDATA_MNT/ab-installer-${slot_tag}/installer/live-usb-install.sh" "\$@"
+WRAPPER
+    chmod 0755 "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh"
+    echo "==> Planted USBDATA launcher at /root/INSTALL-TO-INTERNAL-DISK.sh (slot: $slot_tag)"
+  else
+    # Bundle is on the root filesystem at $BUNDLE_DIR (normal case when the
+    # root partition is large enough — 3× raw with auto-sizing ensures this).
+    cat > "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh" <<LAUNCHER
+#!/usr/bin/env bash
+exec $BUNDLE_DIR/installer/live-usb-install.sh "\$@"
+LAUNCHER
+    chmod 0755 "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh"
+    echo "==> Planted root launcher at /root/INSTALL-TO-INTERNAL-DISK.sh -> $BUNDLE_DIR"
   fi
 
   cat > "$bundle_root/README.txt" <<EOF2
@@ -1283,46 +1448,6 @@ touches DATA / HOME / ESP partition data.
 EOF2
   chmod 0644 "$bundle_root/README.txt"
 
-  # Plant the INSTALL-TO-INTERNAL-DISK.sh launcher on the seeded root so
-  # the operator always finds it at the same path regardless of where the
-  # bundle actually lives (root partition or USBDATA).
-  install -d -m 0700 "$ROOT_MOUNT/root"
-  if [[ "$usbdata_fallback" == true ]]; then
-    # Bundle is on USBDATA. Write a thin launcher that mounts USBDATA and
-    # execs from the slot-specific subdirectory. The slot tag ($slot_tag)
-    # is baked in at flash time so:
-    #   - sda2's launcher always uses ab-installer-sda2
-    #   - sda3's launcher always uses ab-installer-sda3
-    # Both coexist on USBDATA after a --reflash, with no clobbering.
-    #
-    # NOTE: lsblk -nrpo already returns full /dev/... paths, so awk
-    # must use `print $1` not `print "/dev/"$1` (which would produce
-    # /dev//dev/sdX4 and make mount fail with "No such file").
-    cat > "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh" <<WRAPPER
-#!/bin/bash
-# This slot's installer bundle is on USBDATA. Mount it, run the installer,
-# and unmount automatically on exit.
-set -euo pipefail
-USBDATA_PART="\$(lsblk -nrpo NAME,LABEL | awk '\$2=="USBDATA"{print \$1; exit}')"
-[[ -n "\$USBDATA_PART" ]] || { echo "ERROR: USBDATA partition not found" >&2; exit 1; }
-USBDATA_MNT="\$(mktemp -d /tmp/usbdata.XXXXXX)"
-mount "\$USBDATA_PART" "\$USBDATA_MNT"
-trap "umount '\$USBDATA_MNT'; rmdir '\$USBDATA_MNT'" EXIT
-exec "\$USBDATA_MNT/ab-installer-${slot_tag}/installer/live-usb-install.sh" "\$@"
-WRAPPER
-    chmod 0755 "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh"
-    echo "==> Planted USBDATA launcher at /root/INSTALL-TO-INTERNAL-DISK.sh (slot subdir: ab-installer-${slot_tag})"
-  else
-    # Bundle is on the root filesystem at $BUNDLE_DIR (the normal case when
-    # the root partition is large enough to hold both the OS image and the
-    # installer bundle). The launcher is a simple one-liner.
-    cat > "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh" <<LAUNCHER
-#!/usr/bin/env bash
-exec $BUNDLE_DIR/installer/live-usb-install.sh "\$@"
-LAUNCHER
-    chmod 0755 "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh"
-    echo "==> Planted root launcher at /root/INSTALL-TO-INTERNAL-DISK.sh -> $BUNDLE_DIR"
-  fi
 
   # Drop the identity file that the NEXT flash's
   # ab_confirm_read_existing_identity looks for. Keeping it next to
@@ -1340,6 +1465,75 @@ LAUNCHER
     "$IMAGE_ARCH" \
     "$git_rev"
 }
+
+# Detect whether the source .root.raw is LUKS-encrypted and, if so, collect
+# and verify the passphrase BEFORE the long-running bootstrap begins. This
+# lets the operator type the passphrase once at the start and then walk away
+# until the USB is ready — no surprise prompt after a 20-minute dd.
+#
+# If --luks-passphrase was already supplied on the command line, this is a
+# no-op (we still verify it against the image so a typo is caught early).
+preflight_collect_luks_passphrase() {
+  local prefix="${IMAGE_ID}_${IMAGE_VERSION}_${IMAGE_ARCH}"
+  local raw_path="$SOURCE_DIR/${prefix}.root.raw"
+
+  # Can't pre-check if the image file doesn't exist yet (should never happen
+  # at this point, but be defensive).
+  [[ -f "$raw_path" ]] || return 0
+
+  # Use cryptsetup isLuks to detect LUKS without needing blkid TYPE parsing.
+  if ! command -v cryptsetup >/dev/null 2>&1; then
+    return 0  # cryptsetup not available; LUKS will be caught later if needed
+  fi
+  if ! cryptsetup isLuks "$raw_path" 2>/dev/null; then
+    return 0  # not LUKS-encrypted
+  fi
+
+  echo "==> Source image is LUKS-encrypted."
+  echo "    Collecting passphrase now so the flash can run unattended."
+
+  local attempts=0 tmp_key tmp_map
+  tmp_key="$(mktemp /tmp/ab-luks-preflight.XXXXXX)"
+  chmod 600 "$tmp_key"
+  # Register cleanup in case we exit mid-function
+  trap 'shred -u "$tmp_key" 2>/dev/null || rm -f "$tmp_key"; '"$(trap -p EXIT | sed "s/trap -- '//;s/' EXIT//")" EXIT
+
+  while true; do
+    (( attempts++ )) || true
+
+    if [[ -n "${LUKS_PASSPHRASE:-}" ]]; then
+      # Passphrase was supplied via --luks-passphrase; verify it once.
+      printf '%s' "$LUKS_PASSPHRASE" > "$tmp_key"
+    else
+      read -rsp "  Enter LUKS passphrase: " LUKS_PASSPHRASE </dev/tty
+      echo >&2
+      if [[ -z "$LUKS_PASSPHRASE" ]]; then
+        echo "  (empty passphrase — please try again)" >&2
+        LUKS_PASSPHRASE=""
+        continue
+      fi
+      printf '%s' "$LUKS_PASSPHRASE" > "$tmp_key"
+    fi
+
+    # --test-passphrase verifies the key slot without actually opening the
+    # device, so it works on both block devices and regular files.
+    tmp_map="ab-luks-preflight-verify-$$"
+    if cryptsetup luksOpen --test-passphrase "$raw_path"          --key-file="$tmp_key" 2>/dev/null; then
+      echo "==> LUKS passphrase verified. Flash will proceed unattended."
+      break
+    fi
+
+    echo "  Incorrect passphrase (attempt $attempts/5)." >&2
+    LUKS_PASSPHRASE=""
+    if (( attempts >= 5 )); then
+      shred -u "$tmp_key" 2>/dev/null || rm -f "$tmp_key"
+      die "Failed to verify LUKS passphrase after 5 attempts"
+    fi
+  done
+
+  shred -u "$tmp_key" 2>/dev/null || rm -f "$tmp_key"
+}
+
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -1406,6 +1600,10 @@ while [[ $# -gt 0 ]]; do
     --diagnostic-mode)
       DIAGNOSTIC_MODE=true
       shift
+      ;;
+    --luks-passphrase)
+      LUKS_PASSPHRASE="${2:?missing passphrase}"
+      shift 2
       ;;
     --reflash)
       MODE="reflash"
@@ -1510,6 +1708,8 @@ if [[ "$REFLASH" == true ]]; then
     resolve_disk_device
     validate_existing_ab_layout
     confirm_usb_write_or_abort
+    # Collect LUKS passphrase before slow dd — no-op if not LUKS or already supplied.
+    preflight_collect_luks_passphrase
     if usbdata_partition_already_formatted; then
         echo "==> --reflash: USBDATA partition already formatted, leaving it untouched"
     elif [[ "$INCLUDE_USB_STORAGE" == true ]]; then
@@ -1522,6 +1722,9 @@ if [[ "$REFLASH" == true ]]; then
 else
     prepare_bootstrap_repart_dir
     confirm_usb_write_or_abort
+    # Collect LUKS passphrase before the slow systemd-repart format + dd.
+    # No-op when image is not LUKS-encrypted or passphrase already supplied.
+    preflight_collect_luks_passphrase
 
     bootstrap_args=(
       --target "$TARGET"
