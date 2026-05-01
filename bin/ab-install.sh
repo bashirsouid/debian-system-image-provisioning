@@ -528,6 +528,12 @@ IMAGE_ID=""
 IMAGE_VERSION=""
 IMAGE_ARCH=""
 IMAGE_BASENAME=""
+# Single source of truth for "<image-id>_<version>_<arch>" — the prefix
+# every flash artifact is named with (.root.raw, .efi, .conf,
+# .artifacts.env). load_build_metadata() resolves this from the build
+# folder so on-disk reality wins over what build.env *says* the prefix
+# should be — that way a manually copied / renamed bundle still flashes.
+ARTIFACT_PREFIX=""
 ALLOW_FIXED_DISK=no
 # Layout sizing is expressed as two independent tokens, both of which
 # accept the grammar "none | rest | <size>". The defaults are the
@@ -614,7 +620,16 @@ Options:
                         Format=ext4, Label=DATA). Same TOKEN grammar as
                         --home-size. Default: rest (the persistent slot
                         that survives A/B retained-version swaps).
-  --embed-full-image    also copy the built full disk image into the bundle
+  --embed-full-image    also copy the built full disk image (.raw) into the
+                        bundle alongside the .root.raw / .efi / .conf. Useful
+                        when you want the live USB to carry the full disk
+                        image for sysupdate-style imaging of other hosts.
+                        Default: off (the install path does not need it).
+  --no-embed-full-image
+                        explicit opposite of --embed-full-image; useful
+                        when re-imaging an internal drive from a USB whose
+                        bundle includes the full image but you do not want
+                        to copy it again.
   --allow-fixed-disk    permit writing to a non-removable (internal) disk;
                         the default refuses such targets to prevent the
                         "I flashed my laptop's SSD by accident" case
@@ -783,18 +798,50 @@ load_build_metadata() {
 
   # Every path below this point reads from the resolved build folder.
   SOURCE_DIR="$BUILD_DIR"
+
+  # Resolve the artifact prefix that every downstream lookup uses
+  # (${prefix}.root.raw, .efi, .conf, .artifacts.env). The expected
+  # prefix is ${IMAGE_ID}_${IMAGE_VERSION}_${IMAGE_ARCH} — but on a
+  # live USB or after a manual bundle copy the on-disk filenames may
+  # not match exactly (different mkosi arch spelling, the user
+  # renamed something, build.env got out of sync). Trust the disk:
+  # if the expected name is there use it, otherwise pick the lone
+  # *.root.raw and derive the prefix from its name.
+  local _expected_prefix="${IMAGE_ID}_${IMAGE_VERSION}_${IMAGE_ARCH}"
+  if [[ -f "$SOURCE_DIR/${_expected_prefix}.root.raw" ]]; then
+    ARTIFACT_PREFIX="$_expected_prefix"
+  else
+    local _candidates=()
+    shopt -s nullglob
+    _candidates=("$SOURCE_DIR"/*.root.raw)
+    shopt -u nullglob
+    if (( ${#_candidates[@]} == 1 )); then
+      ARTIFACT_PREFIX="$(basename "${_candidates[0]}" .root.raw)"
+      echo "==> Note: build.env prefix '${_expected_prefix}' did not match any file in $SOURCE_DIR" >&2
+      echo "    Using actual on-disk prefix '$ARTIFACT_PREFIX' from $(basename "${_candidates[0]}")" >&2
+    elif (( ${#_candidates[@]} == 0 )); then
+      die "no *.root.raw found in $SOURCE_DIR (expected ${_expected_prefix}.root.raw)"
+    else
+      echo "ERROR: multiple *.root.raw files in $SOURCE_DIR; cannot pick one:" >&2
+      printf '       %s\n' "${_candidates[@]}" >&2
+      die "ambiguous source artifacts; remove the extras or pass --build-dir to a single-build folder"
+    fi
+  fi
 }
 
 print_selected_build() {
-  local artifact_prefix="$IMAGE_ID""_""$IMAGE_VERSION""_""$IMAGE_ARCH"
   echo "==> Selected build"
   echo "    Build folder:   $BUILD_DIR"
   echo "    Profile:        ${AB_LAST_BUILD_PROFILE:-${PROFILE:-unknown}}"
   echo "    Host:           ${AB_LAST_BUILD_HOST:-${HOST:-none}}"
   echo "    Image id:       $IMAGE_ID"
   echo "    Image version:  $IMAGE_VERSION"
-  echo "    Artifact prefix:$artifact_prefix"
-  echo "    Disk image:     $SOURCE_DIR/$IMAGE_BASENAME"
+  echo "    Artifact prefix:$ARTIFACT_PREFIX"
+  if [[ -f "$SOURCE_DIR/$IMAGE_BASENAME" ]]; then
+    echo "    Disk image:     $SOURCE_DIR/$IMAGE_BASENAME"
+  else
+    echo "    Disk image:     (not embedded; on-target install does not need the full disk image)"
+  fi
 }
 
 # Shows the user two things right before the typed-path gate:
@@ -1254,11 +1301,11 @@ select_inactive_root_slot_for_reseed() {
 # systemd-sysupdate --image seeding flow.
 seed_first_root_slot() {
     local prefix partnum new_label
-    
-    [[ -n "${IMAGE_ID:-}" && -n "${IMAGE_VERSION:-}" && -n "${IMAGE_ARCH:-}" ]] \
-        || die "seed_first_root_slot: IMAGE_ID/IMAGE_VERSION/IMAGE_ARCH not set"
-    
-    prefix="${IMAGE_ID}_${IMAGE_VERSION}_${IMAGE_ARCH}"
+
+    [[ -n "${ARTIFACT_PREFIX:-}" ]] \
+        || die "seed_first_root_slot: ARTIFACT_PREFIX not set (load_build_metadata not called?)"
+
+    prefix="$ARTIFACT_PREFIX"
     [[ -f "$SOURCE_DIR/${prefix}.root.raw" ]] \
         || die "root filesystem image not found: $SOURCE_DIR/${prefix}.root.raw"
 
@@ -1491,18 +1538,12 @@ seed_first_root_slot() {
             local _kernel_dst="$esp_mount/EFI/Linux/${prefix}.linux"
             local _initrd_dst="$esp_mount/EFI/Linux/${prefix}.initrd"
 
-            # Clean up stale kernel/initrd files from PREVIOUS reflashes into
-            # this same slot so old versions do not accumulate on the ESP.
-            # We delete any *.linux / *.initrd file whose name starts with
-            # IMAGE_ID_IMAGE_ARCH (same image family) but is NOT the current
-            # prefix (i.e. an older version).  This keeps exactly 2 pairs on
-            # the ESP at any time — one per slot — regardless of reflash count.
-            local _img_base="${IMAGE_ID}_${IMAGE_ARCH}"
-            find "$esp_mount/EFI/Linux/" -maxdepth 1 \
-                \( -name "${_img_base}_*.linux"  -o -name "${_img_base}_*.initrd" \
-                   -o -name "${_img_base}.linux"  -o -name "${_img_base}.initrd" \) \
-                ! -name "${prefix}.linux" ! -name "${prefix}.initrd" \
-                -delete 2>/dev/null || true
+            # We deliberately do NOT auto-delete other *.linux / *.initrd
+            # pairs from /EFI/Linux. In --reflash mode the OTHER slot's
+            # BLS entry references its own .linux/.initrd — deleting that
+            # would brick the still-bootable fallback slot. Old versions
+            # accumulate slowly (one extra pair per distinct version
+            # reflashed); the 1G ESP is sized to absorb that.
 
             echo "==> Extracting .linux from UKI -> $(basename "$_kernel_dst")"
             objcopy -O binary --only-section=.linux "$_uki_src" "$_kernel_dst"
@@ -1615,7 +1656,7 @@ seed_first_root_slot() {
 }
 
 required_bundle_files() {
-  local prefix="${IMAGE_ID}_${IMAGE_VERSION}_${IMAGE_ARCH}"
+  local prefix="$ARTIFACT_PREFIX"
   printf '%s\n' \
     "$SCRIPT_PATH" \
     "$SOURCE_DIR/${prefix}.root.raw" \
@@ -1679,9 +1720,8 @@ prepare_bootstrap_repart_dir() {
   # Example: 6 GiB raw → 18 GiB per slot → 36 GiB total (A+B).
   # On a 64 GiB disk: 1 GiB ESP + 36 GiB roots + ~27 GiB DATA.
   # Pass --root-size explicitly to override.
-  if [[ -z "$USB_ROOT_SIZE" && -n "${IMAGE_ID:-}" && -n "${IMAGE_VERSION:-}" && -n "${IMAGE_ARCH:-}" ]]; then
-    local _auto_prefix="${IMAGE_ID}_${IMAGE_VERSION}_${IMAGE_ARCH}"
-    local _raw_path="$SOURCE_DIR/${_auto_prefix}.root.raw"
+  if [[ -z "$USB_ROOT_SIZE" && -n "${ARTIFACT_PREFIX:-}" ]]; then
+    local _raw_path="$SOURCE_DIR/${ARTIFACT_PREFIX}.root.raw"
     if [[ -f "$_raw_path" ]]; then
       local _raw_bytes _gib=$((1024 * 1024 * 1024))
       _raw_bytes="$(stat -Lc '%s' "$_raw_path" 2>/dev/null || echo 0)"
@@ -1893,7 +1933,7 @@ copy_bundle() {
   install -m 0755 "$SCRIPT_PATH" "$out/ab-install.sh"
 
   # Image artifacts.
-  local prefix="${IMAGE_ID}_${IMAGE_VERSION}_${IMAGE_ARCH}"
+  local prefix="$ARTIFACT_PREFIX"
   echo "==> Copying image artifacts into $out"
   install -m 0644 "$SOURCE_DIR/${prefix}.root.raw"      "$out/${prefix}.root.raw"
   install -m 0644 "$SOURCE_DIR/${prefix}.efi"           "$out/${prefix}.efi"
@@ -1903,6 +1943,8 @@ copy_bundle() {
   install -m 0644 "$SOURCE_DIR/build.env"               "$out/build.env"
 
   if [[ "$EMBED_FULL_IMAGE" == true ]]; then
+    [[ -f "$SOURCE_DIR/$IMAGE_BASENAME" ]] \
+      || die "--embed-full-image was requested but the full disk image is not in $SOURCE_DIR ($IMAGE_BASENAME). Run ./build.sh on the host first, or drop --embed-full-image."
     install -m 0644 "$SOURCE_DIR/$IMAGE_BASENAME"       "$out/$IMAGE_BASENAME"
   fi
 
@@ -1974,8 +2016,7 @@ EOF
 # If --luks-passphrase was already supplied on the command line, this is a
 # no-op (we still verify it against the image so a typo is caught early).
 preflight_collect_luks_passphrase() {
-  local prefix="${IMAGE_ID}_${IMAGE_VERSION}_${IMAGE_ARCH}"
-  local raw_path="$SOURCE_DIR/${prefix}.root.raw"
+  local raw_path="$SOURCE_DIR/${ARTIFACT_PREFIX}.root.raw"
 
   # Can't pre-check if the image file doesn't exist yet (should never happen
   # at this point, but be defensive).
@@ -2080,6 +2121,10 @@ while [[ $# -gt 0 ]]; do
       EMBED_FULL_IMAGE=true
       shift
       ;;
+    --no-embed-full-image)
+      EMBED_FULL_IMAGE=false
+      shift
+      ;;
     --allow-fixed-disk)
       ALLOW_FIXED_DISK=yes
       shift
@@ -2149,7 +2194,11 @@ need_cmd dd
 need_cmd sfdisk
 need_cmd blkid
 
-[[ -f "$SOURCE_DIR/$IMAGE_BASENAME" ]] || die "built disk image not found: $SOURCE_DIR/$IMAGE_BASENAME"
+# The full disk image (IMAGE_BASENAME, e.g. mkosi_<ver>.raw) is NOT
+# required to flash — only ${ARTIFACT_PREFIX}.root.raw is needed for
+# the install path. Only --embed-full-image cares about it, and that
+# requirement is enforced inside copy_bundle so it can produce a more
+# specific error.
 
 # Resolve MODE → REFLASH. In auto mode this is where we peek at the
 # target so the destructive-confirmation banner downstream knows
