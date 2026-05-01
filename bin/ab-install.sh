@@ -962,6 +962,13 @@ resolve_disk_device() {
   local target_real
   target_real="$(readlink -f "$TARGET")"
 
+  # systemd-repart and the loop refresh want the *original* path
+  # (block device or regular file), not the loop device path. Capture
+  # it before any loop attachment so bootstrap_disk can pass it
+  # through to systemd-repart and re-attach a fresh loop with
+  # --partscan after the partition table is rewritten.
+  TARGET_FOR_SYSUPDATE="$target_real"
+
   if [[ -b "$target_real" ]]; then
     DISK_DEVICE="$target_real"
     return 0
