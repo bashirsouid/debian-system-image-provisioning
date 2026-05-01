@@ -1197,7 +1197,7 @@ EOF
   # disk .raw, the split-out sysupdate bits, per-build SHA256SUMS, and
   # the build.env metadata — live under one folder so back-to-back
   # builds of the same or different targets cannot overwrite each
-  # other, and so write-live-test-usb / test-rollback / run.sh can
+  # other, and so ab-install / test-rollback / run.sh can
   # address a single build by a single path.
   #
   # The folder timestamp is wall-clock at staging time and is

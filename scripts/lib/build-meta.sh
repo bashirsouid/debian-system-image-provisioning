@@ -27,7 +27,7 @@
 #       latest-<profile> -> <ts>__...   # newest build of that profile with
 #                                       # no host (QEMU smoke tests).
 #
-# Downstream tools (write-live-test-usb, test-rollback, bootstrap-ab-disk,
+# Downstream tools (ab-install, test-rollback,
 # run.sh) never read anything outside a single build folder — once a folder
 # is resolved, everything needed to flash / boot / rollback-test that build
 # is inside it.

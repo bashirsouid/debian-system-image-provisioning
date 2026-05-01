@@ -20,7 +20,7 @@ USB bundle and run from the booted USB live in `installer/`.
 | `export-sysupdate-artifacts.sh`   | `build.sh` (post-build)                      | Export versioned root/UKI/BLS artifacts for `systemd-sysupdate`.      |
 | `verify-build-secrets.sh`         | `build.sh` (preflight)                       | Audit `.mkosi-secrets/` shape and permissions.                        |
 | `verify-no-baked-identity.sh`     | `build.sh` (preflight)                       | Refuse to build if per-machine identity files are tracked.            |
-| `usb-write-and-verify.sh`         | `bin/write-live-test-usb.sh`                 | Raw-image write to a USB device with hash-back verification.          |
+| `usb-write-and-verify.sh`         | `bin/ab-install.sh`                 | Raw-image write to a USB device with hash-back verification.          |
 | `lint.sh`                         | `build.sh`, `.github/workflows/lint.yml`     | Run shellcheck across overlay-owned shell scripts.                    |
 
 ### Sourced libraries (not executables)

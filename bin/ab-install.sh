@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# write-live-test-usb.sh
+# ab-install.sh
 #
-# High-level behavior
-# -------------------
-# This tool turns a removable USB disk (or raw image file) into a
-# "hardware test" / installer USB with a systemd-repart + A/B root
-# layout, and then copies an installer bundle onto the seeded root so
-# you can:
+# Single self-contained install script. Same code, same prompts,
+# whether you're:
 #
-#   - Boot real hardware from the USB
-#   - Smoke-test the built image on that hardware
-#   - Optionally install onto an internal disk from the running system
+#   - building a hardware-test USB from a host-side mkosi build, or
+#   - re-imaging an internal disk from a booted live USB.
+#
+# The script copies ITSELF, plus the .root.raw / .efi / .conf /
+# build.env it just used, into /root/ on the seeded disk. That means a
+# successfully-installed system can re-image another disk without
+# needing the build host or a bundle subdirectory of helper files —
+# everything is one self-contained file plus a few image artifacts.
 #
 # Layout (on a fresh target)
 # --------------------------
@@ -57,31 +58,465 @@ set -euo pipefail
 # installer and future A/B updates, while avoiding the fragile
 # sysupdate --image flow for the initial seed.
 #
-# The installer bundle written into $BUNDLE_DIR on the seeded root
-# carries:
-#   - bootstrap-ab-disk.sh
-#   - live-usb-install.sh
-#   - sysupdate-local-update.sh
-#   - mkosi.sysupdate/*.transfer
-#   - deploy.repart/*.conf
-#   - mkosi artifacts for ${IMAGE_ID}/${IMAGE_VERSION}/${IMAGE_ARCH}
+# The seeded root's /root/ ends up holding only what's needed to
+# rerun the install elsewhere — no subdirectory, no separate scripts:
+#   - ab-install.sh                          (this script, copied verbatim)
+#   - <image-id>_<version>_<arch>.root.raw   (image to dd into a root slot)
+#   - <image-id>_<version>_<arch>.efi        (UKI for systemd-boot)
+#   - <image-id>_<version>_<arch>.conf       (BLS entry source)
+#   - build.env                              (image identity)
+#   - SHA256SUMS                             (integrity check)
+#   - INSTALL-TO-INTERNAL-DISK.sh            (muscle-memory alias for ab-install.sh)
 #
 # See the --help output below for CLI usage and options.
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=SCRIPTDIR/../scripts/lib/host-deps.sh
-source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
-# shellcheck source=SCRIPTDIR/../scripts/lib/build-meta.sh
-source "$PROJECT_ROOT/scripts/lib/build-meta.sh"
-# shellcheck source=SCRIPTDIR/../scripts/lib/confirm-destructive.sh
-source "$PROJECT_ROOT/scripts/lib/confirm-destructive.sh"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+# PROJECT_ROOT only matters when this script runs from a checkout's bin/.
+# When it runs from /root/ on a freshly seeded disk there is no parent
+# repo, and that is intentional: the script is fully self-contained
+# (every helper it needs is inlined below) so the seeded disk never
+# ends up referencing files that aren't there.
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
+[[ -n "$PROJECT_ROOT" ]] || PROJECT_ROOT="$SCRIPT_DIR"
+
+# ──────────────────────────────────────────────────────────────────────
+# Inlined helper library
+#
+# Previously this script sourced three files under scripts/lib/ at
+# runtime. That worked on the build host (where the repo is on disk),
+# but it broke spectacularly when the same script ran from /root/ on a
+# booted live USB and tried to reach files that were never copied
+# alongside it. The contract this script promises now is: ONE file,
+# ZERO source statements, and you can scp it onto any system together
+# with a *.root.raw and it will work.
+# ──────────────────────────────────────────────────────────────────────
+
+# --- ab_hostdeps: lifted from scripts/lib/host-deps.sh ---------------------
+
+ab_hostdeps_normalize_path() {
+  local dir
+  for dir in /usr/local/sbin /usr/sbin /sbin /usr/lib/systemd /lib/systemd /usr/libexec /usr/local/libexec; do
+    case ":$PATH:" in
+      *":$dir:"*) ;;
+      *) PATH="$PATH:$dir" ;;
+    esac
+  done
+  export PATH
+}
+ab_hostdeps_normalize_path
+
+ab_hostdeps_log() { echo "==> $*" >&2; }
+
+ab_hostdeps_auto_install_enabled() {
+  case "${AB_AUTO_INSTALL_DEPS:-yes}" in
+    0|no|false|off) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+ab_hostdeps_resolve_command() {
+  local cmd="$1" candidate
+  if command -v "$cmd" >/dev/null 2>&1; then
+    command -v "$cmd"
+    return 0
+  fi
+  for candidate in "/usr/bin/$cmd" "/usr/sbin/$cmd" "/usr/lib/systemd/$cmd" \
+                   "/lib/systemd/$cmd" "/usr/libexec/$cmd" "/usr/local/libexec/$cmd"; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ab_hostdeps_have_all_commands() {
+  local cmd
+  for cmd in "$@"; do
+    ab_hostdeps_resolve_command "$cmd" >/dev/null 2>&1 || return 1
+  done
+}
+
+ab_hostdeps_is_debian_like() {
+  local id="" like=""
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    id="${ID:-}"
+    like=" ${ID_LIKE:-} "
+  fi
+  [[ "$id" == "debian" || "$id" == "ubuntu" || "$like" == *" debian "* ]]
+}
+
+ab_hostdeps_have_package_installed() {
+  local pkg="$1" status
+  if ! ab_hostdeps_is_debian_like || ! command -v dpkg-query >/dev/null 2>&1; then
+    return 1
+  fi
+  status="$(dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null || true)"
+  [[ "$status" == "install ok installed" ]]
+}
+
+ab_hostdeps_manual_install_hint() {
+  local packages=("$@") pkg
+  if ab_hostdeps_is_debian_like && command -v apt-get >/dev/null 2>&1; then
+    printf 'sudo apt-get install -y --no-install-recommends'
+    for pkg in "${packages[@]}"; do printf ' %q' "$pkg"; done
+    printf '\n'
+    return 0
+  fi
+  printf 'install the required host packages:'
+  for pkg in "${packages[@]}"; do printf ' %q' "$pkg"; done
+  printf '\n'
+}
+
+ab_hostdeps_dedup_packages() {
+  local pkg
+  declare -A seen=()
+  for pkg in "$@"; do
+    [[ -n "$pkg" ]] || continue
+    if [[ -z "${seen[$pkg]:-}" ]]; then
+      seen[$pkg]=1
+      printf '%s\n' "$pkg"
+    fi
+  done
+}
+
+ab_hostdeps_install_packages() {
+  local context="$1"; shift
+  local packages=() pkg
+  while IFS= read -r pkg; do
+    [[ -n "$pkg" ]] && packages+=("$pkg")
+  done < <(ab_hostdeps_dedup_packages "$@")
+  [[ ${#packages[@]} -gt 0 ]] || return 0
+
+  if ! ab_hostdeps_auto_install_enabled; then
+    ab_hostdeps_log "$context: automatic host dependency installation is disabled (AB_AUTO_INSTALL_DEPS=no)"
+    ab_hostdeps_manual_install_hint "${packages[@]}" >&2
+    return 1
+  fi
+  if ! ab_hostdeps_is_debian_like || ! command -v apt-get >/dev/null 2>&1; then
+    ab_hostdeps_log "$context: automatic host dependency installation is only implemented for Debian/Ubuntu apt-based hosts"
+    ab_hostdeps_manual_install_hint "${packages[@]}" >&2
+    return 1
+  fi
+
+  local runner=()
+  if (( EUID != 0 )); then
+    if command -v sudo >/dev/null 2>&1; then
+      runner=(sudo)
+    else
+      ab_hostdeps_log "$context: sudo is required to auto-install host packages when not running as root"
+      ab_hostdeps_manual_install_hint "${packages[@]}" >&2
+      return 1
+    fi
+  fi
+
+  ab_hostdeps_log "$context: installing missing host packages: ${packages[*]}"
+  if [[ -z "${AB_HOST_DEPS_APT_UPDATED:-}" ]]; then
+    "${runner[@]}" apt-get update
+    AB_HOST_DEPS_APT_UPDATED=1
+  fi
+  "${runner[@]}" apt-get install -y --no-install-recommends "${packages[@]}"
+}
+
+ab_hostdeps_ensure_packages() {
+  local context="$1"; shift
+  local requested=() missing=() pkg status
+  while IFS= read -r pkg; do
+    [[ -n "$pkg" ]] && requested+=("$pkg")
+  done < <(ab_hostdeps_dedup_packages "$@")
+  [[ ${#requested[@]} -gt 0 ]] || return 0
+  if ab_hostdeps_is_debian_like && command -v dpkg-query >/dev/null 2>&1; then
+    for pkg in "${requested[@]}"; do
+      status="$(dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null || true)"
+      [[ "$status" == "install ok installed" ]] || missing+=("$pkg")
+    done
+  else
+    missing=("${requested[@]}")
+  fi
+  [[ ${#missing[@]} -gt 0 ]] || return 0
+  ab_hostdeps_install_packages "$context" "${missing[@]}"
+}
+
+ab_hostdeps_ensure_commands() {
+  local context="$1"; shift
+  local missing=() cmd
+  for cmd in "$@"; do
+    ab_hostdeps_resolve_command "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    ab_hostdeps_log "$context: missing required commands: ${missing[*]}"
+    return 1
+  fi
+  return 0
+}
+
+# --- ab_buildmeta: lifted from scripts/lib/build-meta.sh -------------------
+
+ab_buildmeta_safe_component() {
+  local value="${1:-}"
+  if [[ -z "$value" ]]; then printf 'none\n'; return 0; fi
+  printf '%s' "$value" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+ab_buildmeta_builds_dir() {
+  printf '%s\n' "$1/mkosi.output/builds"
+}
+
+ab_buildmeta_resolve_build_dir() {
+  local project_root="$1" profile="${2:-}" host="${3:-}" builds_dir link target
+  builds_dir="$(ab_buildmeta_builds_dir "$project_root")"
+  [[ -d "$builds_dir" ]] || return 1
+  if [[ -n "$host" ]]; then
+    link="$builds_dir/latest-$(ab_buildmeta_safe_component "$host")"
+  elif [[ -n "$profile" ]]; then
+    link="$builds_dir/latest-$(ab_buildmeta_safe_component "$profile")"
+  else
+    link="$builds_dir/latest"
+  fi
+  [[ -L "$link" || -d "$link" ]] || return 1
+  target="$(readlink -f "$link" 2>/dev/null || true)"
+  [[ -n "$target" && -d "$target" ]] || return 1
+  printf '%s\n' "$target"
+}
+
+ab_buildmeta_load_env() {
+  local folder="$1"
+  [[ -n "$folder" ]] || return 1
+  [[ -r "$folder/build.env" ]] || return 1
+  # shellcheck disable=SC1091
+  . "$folder/build.env"
+  AB_BUILD_DIR="$folder"
+  export AB_BUILD_DIR
+}
+
+ab_buildmeta_host_default_profile() {
+  local project_root="$1" host="$2" path
+  [[ -n "$host" ]] || return 0
+  path="$project_root/hosts/$host/profile.default"
+  [[ -f "$path" ]] || return 0
+  sed -e 's/[[:space:]]*#.*$//' "$path" | xargs echo -n
+}
+
+# --- ab_confirm: lifted from scripts/lib/confirm-destructive.sh ------------
+
+ab_confirm_removable_flag() {
+  local device="$1" real name path
+  real="$(readlink -f "$device")"
+  [[ -b "$real" ]] || { printf 'unknown\n'; return 0; }
+  name="$(basename "$real")"
+  path="/sys/block/$name/removable"
+  if [[ -r "$path" ]]; then cat "$path"; else printf 'unknown\n'; fi
+}
+
+ab_confirm_describe_target() {
+  local target="$1" real size model vendor serial tran rotational removable labels part_count
+  if [[ -z "$target" || ! -e "$target" ]]; then
+    printf '  target:     %s (does not exist)\n' "$target"
+    return 0
+  fi
+  real="$(readlink -f "$target")"
+  printf '  target:     %s' "$target"
+  [[ "$real" != "$target" ]] && printf ' -> %s' "$real"
+  printf '\n'
+  if [[ -b "$real" ]]; then
+    size="$(lsblk -dno SIZE "$real" 2>/dev/null | awk 'NF{print;exit}')"
+    model="$(lsblk -dno MODEL "$real" 2>/dev/null | sed 's/[[:space:]]*$//' | awk 'NF{print;exit}')"
+    vendor="$(lsblk -dno VENDOR "$real" 2>/dev/null | sed 's/[[:space:]]*$//' | awk 'NF{print;exit}')"
+    serial="$(lsblk -dno SERIAL "$real" 2>/dev/null | awk 'NF{print;exit}')"
+    tran="$(lsblk -dno TRAN "$real" 2>/dev/null | awk 'NF{print;exit}')"
+    rotational="$(lsblk -dno ROTA "$real" 2>/dev/null | awk 'NF{print;exit}')"
+    removable="$(ab_confirm_removable_flag "$real")"
+    labels="$(lsblk -rno PARTLABEL "$real" 2>/dev/null | awk 'NF' | paste -sd, - 2>/dev/null)"
+    part_count="$(lsblk -rno NAME "$real" 2>/dev/null | wc -l)"
+    (( part_count > 0 )) && part_count=$(( part_count - 1 ))
+    printf '  size:       %s\n' "${size:-unknown}"
+    printf '  model:      %s\n' "${model:-unknown}"
+    [[ -n "$vendor" ]] && printf '  vendor:     %s\n' "$vendor"
+    [[ -n "$serial" ]] && printf '  serial:     %s\n' "$serial"
+    [[ -n "$tran" ]]   && printf '  transport:  %s\n' "$tran"
+    case "$rotational" in
+      1) printf '  rotational: yes\n' ;;
+      0) printf '  rotational: no (SSD/flash)\n' ;;
+    esac
+    case "$removable" in
+      1) printf '  removable:  yes\n' ;;
+      0) printf '  removable:  no (treated as a FIXED disk)\n' ;;
+      *) printf '  removable:  unknown\n' ;;
+    esac
+    if (( part_count > 0 )); then
+      printf '  partitions: %s existing (labels: %s)\n' "$part_count" "${labels:-none}"
+    else
+      printf '  partitions: none (blank / unpartitioned)\n'
+    fi
+  elif [[ -f "$real" ]]; then
+    size="$(stat -Lc '%s' "$real" 2>/dev/null || echo unknown)"
+    printf '  kind:       raw disk image file\n'
+    printf '  size:       %s bytes\n' "$size"
+    printf '  removable:  n/a (file, will be loop-attached)\n'
+  else
+    printf '  kind:       neither a block device nor a regular file\n'
+  fi
+}
+
+ab_confirm_require_removable() {
+  local target="$1" allow_fixed="${2:-no}" removable
+  if [[ ! -b "$(readlink -f "$target")" ]]; then
+    return 0
+  fi
+  removable="$(ab_confirm_removable_flag "$target")"
+  case "$removable" in
+    1) return 0 ;;
+    0)
+      if [[ "$allow_fixed" == "yes" ]]; then
+        echo "==> --allow-fixed-disk set; proceeding despite non-removable target" >&2
+        return 0
+      fi
+      cat >&2 <<EOF
+ERROR: refusing to write to $target because it is a FIXED disk
+       (/sys/block/$(basename "$(readlink -f "$target")")/removable == 0).
+       This default exists specifically to catch the accident of flashing
+       the host's own SSD when you meant a USB stick. Re-run with
+       --allow-fixed-disk if you genuinely intend to install internally.
+EOF
+      return 1
+      ;;
+    *)
+      [[ "$allow_fixed" == "yes" ]] && return 0
+      cat >&2 <<EOF
+ERROR: could not determine whether $target is a removable device. Re-run
+       with --allow-fixed-disk if you are sure.
+EOF
+      return 1
+      ;;
+  esac
+}
+
+ab_confirm_describe_image() {
+  local profile="${1:-unknown}" host="${2:-none}" image_id="${3:-unknown}"
+  local image_version="${4:-unknown}" image_arch="${5:-unknown}" disk_image="${6:-}"
+  local disk_size=""
+  if [[ -n "$disk_image" && -f "$disk_image" ]]; then
+    disk_size="$(stat -Lc '%s' "$disk_image" 2>/dev/null)"
+  fi
+  printf '  profile:    %s\n' "$profile"
+  printf '  host:       %s\n' "$host"
+  printf '  image id:   %s\n' "$image_id"
+  printf '  version:    %s\n' "$image_version"
+  printf '  arch:       %s\n' "$image_arch"
+  if [[ -n "$disk_image" ]]; then
+    printf '  disk image: %s' "$disk_image"
+    if [[ -n "$disk_size" ]]; then
+      printf ' (%s bytes)' "$disk_size"
+    elif [[ ! -f "$disk_image" ]]; then
+      printf ' (MISSING)'
+    fi
+    printf '\n'
+  fi
+}
+
+ab_confirm_typed_path() {
+  local target="$1" answer
+  printf '\nTo confirm destruction, type the target path exactly as shown above\n'
+  printf 'and press enter. Anything else aborts.\n\n'
+  printf '  > '
+  IFS= read -r answer || return 1
+  if [[ "$answer" == "$target" ]]; then return 0; fi
+  printf 'Typed path did not match. Aborting.\n' >&2
+  return 1
+}
+
+ab_confirm_read_existing_identity() {
+  local device="$1" real part label fstype mnt
+  real="$(readlink -f "$device")"
+  [[ -b "$real" ]] || return 1
+  local candidate=""
+  while read -r part label fstype; do
+    [[ -n "$part" && -n "$fstype" ]] || continue
+    case "$fstype" in ext2|ext3|ext4|vfat|xfs|btrfs) ;; *) continue ;; esac
+    case "$label" in ESP|HOME|DATA) continue ;; esac
+    candidate="$part"
+    break
+  done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$real" 2>/dev/null)
+  [[ -n "$candidate" ]] || return 1
+  mnt="$(mktemp -d /tmp/ab-usb-probe.XXXXXX)" || return 1
+  # shellcheck disable=SC2064
+  trap "umount '$mnt' >/dev/null 2>&1 || true; rmdir '$mnt' >/dev/null 2>&1 || true" RETURN
+  if ! mount -o ro "$candidate" "$mnt" 2>/dev/null; then return 1; fi
+  local id_file="" c
+  for c in "$mnt/root/USB-IDENTITY.env" "$mnt/USB-IDENTITY.env"; do
+    if [[ -f "$c" ]]; then id_file="$c"; break; fi
+  done
+  [[ -n "$id_file" ]] || return 1
+  awk '/^[A-Za-z_][A-Za-z0-9_]*=/ { print }' "$id_file"
+  return 0
+}
+
+ab_confirm_write_usb_identity() {
+  local path="$1" profile="${2:-unknown}" host="${3:-}" image_id="${4:-unknown}"
+  local image_version="${5:-unknown}" image_arch="${6:-unknown}" git_rev="${7:-unknown}"
+  local dir
+  dir="$(dirname "$path")"
+  install -d -m 0755 "$dir"
+  umask 077
+  cat > "$path" <<EOF
+# Written by bin/ab-install.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ).
+# Used by the next flash to detect cross-host/cross-profile re-flashes.
+AB_USB_IDENTITY_WRITTEN_AT_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+AB_USB_IDENTITY_PROFILE=${profile}
+AB_USB_IDENTITY_HOST=${host}
+AB_USB_IDENTITY_IMAGE_ID=${image_id}
+AB_USB_IDENTITY_IMAGE_VERSION=${image_version}
+AB_USB_IDENTITY_IMAGE_ARCH=${image_arch}
+AB_USB_IDENTITY_GIT_REV=${git_rev}
+EOF
+  chmod 0644 "$path"
+}
+
+ab_confirm_identity_mismatch() {
+  local profile="$1" host="$2" image_id="$3" version="$4" arch="$5"
+  local existing ex_host ex_profile ex_id
+  existing="$(cat)"
+  ex_profile="$(awk -F= '/^AB_USB_IDENTITY_PROFILE=/{print $2; exit}' <<<"$existing")"
+  ex_host="$(awk -F= '/^AB_USB_IDENTITY_HOST=/{print $2; exit}'       <<<"$existing")"
+  ex_id="$(awk -F= '/^AB_USB_IDENTITY_IMAGE_ID=/{print $2; exit}'     <<<"$existing")"
+  [[ -z "$ex_id" ]] && return 0
+  [[ "$ex_id" == "$image_id" ]] && return 0
+  cat >&2 <<EOF
+
+----------------------------------------------------------------------
+WARNING: this disk already holds a different image identity.
+
+Existing on disk:
+  profile:    ${ex_profile:-unknown}
+  host:       ${ex_host:-unknown}
+  image id:   ${ex_id}
+
+Incoming:
+  profile:    ${profile}
+  host:       ${host}
+  image id:   ${image_id}
+
+If the disk was originally built for a different host, reflashing it for
+a new target is usually intentional, but it is also the exact shape of
+the "I grabbed the wrong disk" mistake. The prompt below will still
+require typing the device path, so you have one more chance to abort.
+----------------------------------------------------------------------
+
+EOF
+  return 1
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# End of inlined helpers
+# ──────────────────────────────────────────────────────────────────────
 
 TARGET=""
 BUILD_DIR=""
 SOURCE_DIR=""
-DEFINITIONS_DIR="$PROJECT_ROOT/mkosi.sysupdate"
 REPART_DIR="$PROJECT_ROOT/deploy.repart"
-BUNDLE_DIR="/root/ab-installer"
 PROFILE=""
 HOST=""
 ASSUME_YES=false
@@ -132,26 +567,30 @@ LUKS_PASS_FILE=""     # tmpfile holding passphrase; shredded by cleanup()
 
 usage() {
   cat <<'USAGE'
-Usage: sudo ./bin/write-live-test-usb.sh --target /dev/sdX [options]
+Usage: sudo ./bin/ab-install.sh --target /dev/sdX [options]
 
 Bootstraps an A/B layout (ESP + 2 root slots + optional HOME + DATA) on a
 target disk, manually seeds one root slot with the built .root.raw,
-installs systemd-boot, and copies an installer bundle onto the
-seeded root. Works on:
+installs systemd-boot, and copies ITSELF + the image artifacts into
+/root/ on the seeded disk so that disk can re-image others without
+needing the build host. Works on:
 
-  - removable USB / SD targets (the original "hardware test USB" workflow), and
-  - fixed internal disks (pass --allow-fixed-disk; this is the same code path
-    the on-target installer/live-usb-install.sh delegates to).
+  - removable USB / SD targets, and
+  - fixed internal disks (pass --allow-fixed-disk).
+
+Same script, same flags, same prompts, regardless of target — testing
+on a USB exercises the same code that runs an internal-disk install.
 
 Options:
   --target PATH         removable USB / SD device, fixed internal disk, or
                         raw disk image file
   --build-dir PATH      specific build folder under mkosi.output/builds/ to
                         flash. Takes precedence over --host / --profile.
-  --definitions DIR     sysupdate transfer definitions (default: ./mkosi.sysupdate)
-  --repart-dir DIR      bootstrap repart definitions (default: ./deploy.repart)
-  --bundle-dir PATH     path inside the seeded root where the installer
-                        bundle is copied (default: /root/ab-installer)
+                        On a booted live USB, this auto-detects to the
+                        directory containing this script when a
+                        *.root.raw is found there.
+  --repart-dir DIR      bootstrap repart definitions (default: ./deploy.repart;
+                        falls back to inlined ESP+A+B layout when missing)
   --profile NAME        resolve mkosi.output/builds/latest-NAME when --host
                         is not given and --build-dir is not set
   --host NAME           resolve mkosi.output/builds/latest-NAME (the host
@@ -284,7 +723,6 @@ cleanup() {
         LUKS_MAP=""
     fi
     [[ -n "${TEMP_REPART_DIR:-}" && -d "$TEMP_REPART_DIR" ]] && rm -rf "$TEMP_REPART_DIR"
-    [[ -n "${TEMP_DEFINITIONS_DIR:-}" && -d "$TEMP_DEFINITIONS_DIR" ]] && rm -rf "$TEMP_DEFINITIONS_DIR"
     if [[ -n "${LOOPDEV:-}" ]]; then
         losetup -d "$LOOPDEV" >/dev/null 2>&1 || true
     fi
@@ -292,6 +730,19 @@ cleanup() {
 trap cleanup EXIT
 
 load_build_metadata() {
+  # On-target shortcut: when the script runs from /root/ on a
+  # successfully-installed disk, the *.root.raw / *.efi / *.conf /
+  # build.env that this same script just laid down are sitting right
+  # next to it. Using SCRIPT_DIR as BUILD_DIR turns the on-target
+  # invocation into a no-flag operation — no --host, no --profile,
+  # no mkosi.output/builds tree required.
+  if [[ -z "$BUILD_DIR" && -z "$HOST" && -z "$PROFILE" ]]; then
+    if [[ -r "$SCRIPT_DIR/build.env" ]] && compgen -G "$SCRIPT_DIR/*.root.raw" >/dev/null 2>&1; then
+      BUILD_DIR="$SCRIPT_DIR"
+      echo "==> Detected on-target run: using $SCRIPT_DIR as the build artifact directory"
+    fi
+  fi
+
   # Per-host profile default: when --host is given and --profile is not,
   # look at hosts/<host>/profile.default so the tool picks the same
   # profile build.sh would have used by default. This is only for
@@ -312,7 +763,7 @@ load_build_metadata() {
     elif [[ -n "$PROFILE" ]]; then
       die "no build found for profile='$PROFILE' under mkosi.output/builds/ — run ./build.sh --profile '$PROFILE' first"
     else
-      die "no build found under mkosi.output/builds/ — run ./build.sh first, or pass --build-dir / --host / --profile"
+      die "no build found under mkosi.output/builds/ and no *.root.raw next to this script — run ./build.sh first, or pass --build-dir / --host / --profile, or copy the artifacts next to ab-install.sh"
     fi
   fi
 
@@ -332,25 +783,6 @@ load_build_metadata() {
 
   # Every path below this point reads from the resolved build folder.
   SOURCE_DIR="$BUILD_DIR"
-}
-
-prepare_sysupdate_definitions_dir() {
-  local src dest image_id_escaped
-
-  [[ -d "$DEFINITIONS_DIR" ]] || die "definitions directory not found: $DEFINITIONS_DIR"
-  TEMP_DEFINITIONS_DIR="$(mktemp -d /tmp/ab-sysupdate-defs.XXXXXX)"
-  GENERATED_DEFINITIONS_DIR="$TEMP_DEFINITIONS_DIR"
-  image_id_escaped="$(printf '%s' "$IMAGE_ID" | sed 's/[\/&]/\\&/g')"
-
-  shopt -s nullglob
-  local matches=("$DEFINITIONS_DIR"/*.transfer)
-  shopt -u nullglob
-  (( ${#matches[@]} > 0 )) || die "no *.transfer files found in $DEFINITIONS_DIR"
-
-  for src in "${matches[@]}"; do
-    dest="$TEMP_DEFINITIONS_DIR/$(basename "$src")"
-    sed "s/debian-provisioning/${image_id_escaped}/g" "$src" > "$dest"
-  done
 }
 
 print_selected_build() {
@@ -415,9 +847,9 @@ preview_current_and_planned_layout() {
 }
 
 # The one destructive-confirmation point for the USB write flow. Runs
-# BEFORE bootstrap-ab-disk.sh so the enhanced panel here (drive identity
+# BEFORE bootstrap_disk() so the enhanced panel here (drive identity
 # + full image identity from loaded build metadata) is the last thing
-# the user reads. bootstrap-ab-disk.sh is then invoked with --yes so the
+# the user reads. bootstrap_disk() is then invoked with --yes so the
 # user isn't double-prompted with a less-informed version of the same
 # question. This is also where the non-removable-disk refusal lives;
 # bootstrap has its own copy for direct callers.
@@ -1158,7 +1590,7 @@ seed_first_root_slot() {
             [[ "$REFLASH" == true ]] && _slot_tag=" [slot=$(basename "$ROOT_PART")]"
 
             {
-                echo "# Generated by bin/write-live-test-usb.sh (Type 1 BLS for live-test USB)"
+                echo "# Generated by bin/ab-install.sh (Type 1 BLS for live-test USB)"
                 echo "title Debian TEST BOOT (${IMAGE_ID}) ${IMAGE_VERSION}${_slot_tag}"
                 # sort-key includes slot basename so multiple coexisting
                 # entries (one per slot) sort deterministically in the
@@ -1183,23 +1615,15 @@ seed_first_root_slot() {
 }
 
 required_bundle_files() {
-  local prefix="$IMAGE_ID""_""$IMAGE_VERSION""_""$IMAGE_ARCH"
+  local prefix="${IMAGE_ID}_${IMAGE_VERSION}_${IMAGE_ARCH}"
   printf '%s\n' \
+    "$SCRIPT_PATH" \
     "$SOURCE_DIR/${prefix}.root.raw" \
     "$SOURCE_DIR/${prefix}.efi" \
     "$SOURCE_DIR/${prefix}.conf" \
     "$SOURCE_DIR/${prefix}.artifacts.env" \
     "$SOURCE_DIR/SHA256SUMS" \
-    "$SOURCE_DIR/build.env" \
-    "$PROJECT_ROOT/bin/bootstrap-ab-disk.sh" \
-    "$PROJECT_ROOT/installer/live-usb-install.sh" \
-    "$PROJECT_ROOT/bin/sysupdate-local-update.sh" \
-    "$PROJECT_ROOT/scripts/lib/host-deps.sh" \
-    "$PROJECT_ROOT/scripts/lib/build-meta.sh" \
-    "$PROJECT_ROOT/scripts/lib/confirm-destructive.sh"
-
-  find "${GENERATED_DEFINITIONS_DIR:-$PROJECT_ROOT/mkosi.sysupdate}" -maxdepth 1 -type f -name '*.transfer' -print
-  find "$PROJECT_ROOT/deploy.repart" -maxdepth 1 -type f -name '*.conf' -print
+    "$SOURCE_DIR/build.env"
 
   if [[ "$EMBED_FULL_IMAGE" == true ]]; then
     printf '%s\n' "$SOURCE_DIR/$IMAGE_BASENAME"
@@ -1271,22 +1695,20 @@ prepare_bootstrap_repart_dir() {
     fi
   fi
 
-  # Base layout: always start by copying whatever the caller supplied in
-  # $REPART_DIR (committed deploy.repart/ for plain USB writes, or a
-  # temp dir prepared by installer/live-usb-install.sh that adds HOME/
-  # DATA partitions for internal-disk installs). Then, if the user
-  # explicitly overrode sizes, regenerate ONLY the affected confs in
-  # place — the previous shape "fresh ESP + A + B but lose anything
-  # extra" used to silently drop HOME/DATA when called from the
-  # internal installer.
-  cp "$REPART_DIR"/*.conf "$TEMP_REPART_DIR/"
-  if [[ -n "$USB_ESP_SIZE" ]]; then
-    write_fixed_partition_conf "$TEMP_REPART_DIR/00-esp.conf" esp ESP "$USB_ESP_SIZE" vfat
+  # Base ESP + A/B layout. Inlined defaults so the script does not
+  # depend on deploy.repart/*.conf existing on disk — the on-target
+  # invocation runs from /root/ where there is no repo. --repart-dir
+  # still exists as an escape hatch for advanced users who want to
+  # supply their own confs (any *.conf in the directory is copied
+  # in before the size overrides below).
+  if [[ -n "$REPART_DIR" && -d "$REPART_DIR" ]] && compgen -G "$REPART_DIR/*.conf" >/dev/null 2>&1; then
+    cp "$REPART_DIR"/*.conf "$TEMP_REPART_DIR/"
   fi
-  if [[ -n "$USB_ROOT_SIZE" ]]; then
-    write_fixed_partition_conf "$TEMP_REPART_DIR/10-root-a.conf" root _empty "$USB_ROOT_SIZE" ext4
-    write_fixed_partition_conf "$TEMP_REPART_DIR/11-root-b.conf" root _empty "$USB_ROOT_SIZE" ext4
-  fi
+  : "${USB_ESP_SIZE:=1G}"
+  : "${USB_ROOT_SIZE:=8G}"
+  write_fixed_partition_conf "$TEMP_REPART_DIR/00-esp.conf" esp ESP "$USB_ESP_SIZE" vfat
+  write_fixed_partition_conf "$TEMP_REPART_DIR/10-root-a.conf" root _empty "$USB_ROOT_SIZE" ext4
+  write_fixed_partition_conf "$TEMP_REPART_DIR/11-root-b.conf" root _empty "$USB_ROOT_SIZE" ext4
 
   # HOME / DATA partitions are part of the unified layout model. Each
   # token can be 'none' (skip), 'rest' (no Size*Bytes so systemd-repart
@@ -1321,7 +1743,7 @@ prepare_bootstrap_repart_dir() {
 
 # Helper for "give this partition at least N bytes, but grow it into
 # whatever space is left after the fixed-size partitions". Mirrors what
-# installer/live-usb-install.sh used to do locally; lifted here so the
+# the on-target install path used to do locally; lifted here so the
 # unified layout generator owns both shapes.
 write_flexible_partition_conf() {
   local path="$1"
@@ -1336,6 +1758,81 @@ write_flexible_partition_conf() {
     printf 'SizeMinBytes=%s\n' "$min_size"
     printf 'Format=%s\n' "$format"
   } > "$path"
+}
+
+find_esp_partition() {
+  local part label fstype
+  while read -r part label fstype; do
+    if [[ "$label" == "ESP" || "$fstype" == "vfat" ]]; then
+      printf '%s\n' "$part"
+      return 0
+    fi
+  done < <(lsblk -nrpo NAME,PARTLABEL,FSTYPE "$DISK_DEVICE")
+  return 1
+}
+
+wait_for_esp_partition() {
+  local part="" i
+  command -v udevadm >/dev/null 2>&1 && udevadm settle >/dev/null 2>&1 || true
+  command -v partprobe >/dev/null 2>&1 && partprobe "$DISK_DEVICE" >/dev/null 2>&1 || true
+  command -v blockdev >/dev/null 2>&1 && blockdev --rereadpt "$DISK_DEVICE" >/dev/null 2>&1 || true
+  for i in $(seq 1 20); do
+    part="$(find_esp_partition || true)"
+    if [[ -n "$part" ]]; then
+      printf '%s\n' "$part"
+      return 0
+    fi
+    command -v udevadm >/dev/null 2>&1 && udevadm settle --timeout=5 >/dev/null 2>&1 || true
+    sleep 0.5
+  done
+  return 1
+}
+
+write_loader_conf() {
+  local path="$1"
+  install -d -m 0755 "$(dirname "$path")"
+  cat > "$path" <<EOF
+# Managed by bin/ab-install.sh
+default *@saved
+editor yes
+timeout $LOADER_TIMEOUT
+console-mode keep
+EOF
+}
+
+# Inlined replacement for the previous inlined bootstrap_disk()
+# subprocess. Runs systemd-repart against the prepared definitions
+# directory, finds and mounts the freshly-formatted ESP, installs
+# systemd-boot via bootctl, writes loader.conf, and releases the ESP
+# so the seed step that follows has a clean view of the disk.
+bootstrap_disk() {
+  echo "==> Repartitioning $TARGET with systemd-repart"
+  systemd-repart --dry-run=no --empty=force \
+    --definitions="$BOOTSTRAP_REPART_DIR" "$TARGET_FOR_SYSUPDATE"
+
+  # Refresh the loop attach so DISK_DEVICE points at the new partition
+  # layout. Block-device targets don't need this because the kernel
+  # rescans automatically.
+  if [[ -n "${LOOPDEV:-}" ]]; then
+    losetup -d "$LOOPDEV" >/dev/null 2>&1 || true
+    LOOPDEV="$(losetup --find --show --partscan "$TARGET_FOR_SYSUPDATE")"
+    DISK_DEVICE="$LOOPDEV"
+  fi
+
+  local esp_part esp_mount
+  esp_part="$(wait_for_esp_partition)" \
+    || die "unable to locate ESP partition after repart"
+  esp_mount="$(mktemp -d /tmp/ab-esp.XXXXXX)"
+  mount "$esp_part" "$esp_mount"
+
+  echo "==> Installing systemd-boot into target ESP"
+  bootctl --esp-path="$esp_mount" --no-variables install
+  write_loader_conf "$esp_mount/loader/loader.conf"
+
+  umount "$esp_mount"
+  rmdir "$esp_mount"
+  sync
+  command -v udevadm >/dev/null 2>&1 && udevadm settle --timeout=10 >/dev/null 2>&1 || true
 }
 
 wait_for_seeded_root_partition() {
@@ -1364,68 +1861,63 @@ wait_for_seeded_root_partition() {
 }
 
 copy_bundle() {
-  local bundle_root="$ROOT_MOUNT$BUNDLE_DIR"
+  # Flat layout under /root/ — no subdirectory, no separate scripts.
+  # Everything the installer needs at runtime lives next to the script:
+  #
+  #   /root/ab-install.sh                      ← the script itself (this file)
+  #   /root/<prefix>.root.raw                  ← what gets dd'd into a root slot
+  #   /root/<prefix>.efi                       ← UKI for systemd-boot
+  #   /root/<prefix>.conf                      ← BLS entry source
+  #   /root/<prefix>.artifacts.env             ← per-build artifact metadata
+  #   /root/build.env                          ← image-id / version / arch
+  #   /root/SHA256SUMS                         ← integrity check
+  #   /root/USB-IDENTITY.env                   ← cross-flash identity probe
+  #   /root/INSTALL-TO-INTERNAL-DISK.sh        ← muscle-memory alias for ab-install.sh
+  #   /root/<full-image>.raw                   ← only when --embed-full-image
+  local out="$ROOT_MOUNT/root"
   local required avail headroom
   required="$(bundle_bytes_required)"
   avail="$(df -B1 --output=avail "$ROOT_MOUNT" | tail -n1 | tr -d '[:space:]')"
   headroom=$((256 * 1024 * 1024))
 
   if [[ "$avail" =~ ^[0-9]+$ ]] && (( avail < required + headroom )); then
-    die "root filesystem on $ROOT_PART has $(( avail / 1024 / 1024 )) MiB free; the installer bundle needs about $(( (required + headroom) / 1024 / 1024 )) MiB. Re-run with --root-size set large enough to hold the dd'd image plus the bundle (3× the .root.raw size is a safe rule of thumb)."
+    die "root filesystem on $ROOT_PART has $(( avail / 1024 / 1024 )) MiB free; the installer payload needs about $(( (required + headroom) / 1024 / 1024 )) MiB. Re-run with --root-size set large enough to hold the dd'd image plus the payload (3× the .root.raw size is a safe rule of thumb)."
   fi
 
-  echo "==> Copying installer bundle into root filesystem ($bundle_root)"
-  install -d -m 0700 "$bundle_root"
-  install -d -m 0755 "$bundle_root/bin" "$bundle_root/installer" "$bundle_root/scripts/lib" "$bundle_root/mkosi.output" "$bundle_root/mkosi.sysupdate" "$bundle_root/deploy.repart"
+  install -d -m 0700 "$out"
 
-  copy_file_preserving_layout "$PROJECT_ROOT/bin/bootstrap-ab-disk.sh" "$bundle_root/bin/bootstrap-ab-disk.sh"
-  copy_file_preserving_layout "$PROJECT_ROOT/installer/live-usb-install.sh" "$bundle_root/installer/live-usb-install.sh"
-  copy_file_preserving_layout "$PROJECT_ROOT/bin/sysupdate-local-update.sh" "$bundle_root/bin/sysupdate-local-update.sh"
-  copy_file_preserving_layout "$PROJECT_ROOT/scripts/lib/host-deps.sh" "$bundle_root/scripts/lib/host-deps.sh"
-  copy_file_preserving_layout "$PROJECT_ROOT/scripts/lib/build-meta.sh" "$bundle_root/scripts/lib/build-meta.sh"
-  copy_file_preserving_layout "$PROJECT_ROOT/scripts/lib/confirm-destructive.sh" "$bundle_root/scripts/lib/confirm-destructive.sh"
-  chmod 0755 "$bundle_root/bin/bootstrap-ab-disk.sh" "$bundle_root/installer/live-usb-install.sh" "$bundle_root/bin/sysupdate-local-update.sh"
+  # The script itself. This is the SAME file you ran to create this
+  # disk; copying it verbatim guarantees /root/ab-install.sh on the
+  # target behaves identically when invoked there.
+  echo "==> Copying ab-install.sh into $out"
+  install -m 0755 "$SCRIPT_PATH" "$out/ab-install.sh"
 
-  if [[ -d "${GENERATED_DEFINITIONS_DIR:-}" ]]; then
-    cp -r --no-preserve=ownership "$GENERATED_DEFINITIONS_DIR/." "$bundle_root/mkosi.sysupdate/"
-  elif [[ -d "$PROJECT_ROOT/mkosi.sysupdate" ]]; then
-    cp -r --no-preserve=ownership "$PROJECT_ROOT/mkosi.sysupdate/." "$bundle_root/mkosi.sysupdate/"
-  else
-    echo "==> WARNING: no sysupdate definitions found; skipping mkosi.sysupdate/ in bundle" >&2
-  fi
-  cp -r --no-preserve=ownership "$PROJECT_ROOT/deploy.repart/." "$bundle_root/deploy.repart/"
-
-  # The bundle's mkosi.output/ is flat (no builds/ subtree) because the
-  # installer on the USB expects a single transfer-source directory. We
-  # copy only the artifacts that installer + bootstrap need, and carry
-  # build.env alongside so the installer has full identity info.
-  local prefix="$IMAGE_ID""_""$IMAGE_VERSION""_""$IMAGE_ARCH"
-  copy_file_preserving_layout "$SOURCE_DIR/${prefix}.root.raw" "$bundle_root/mkosi.output/${prefix}.root.raw"
-  copy_file_preserving_layout "$SOURCE_DIR/${prefix}.efi" "$bundle_root/mkosi.output/${prefix}.efi"
-  copy_file_preserving_layout "$SOURCE_DIR/${prefix}.conf" "$bundle_root/mkosi.output/${prefix}.conf"
-  copy_file_preserving_layout "$SOURCE_DIR/${prefix}.artifacts.env" "$bundle_root/mkosi.output/${prefix}.artifacts.env"
-  copy_file_preserving_layout "$SOURCE_DIR/SHA256SUMS" "$bundle_root/mkosi.output/SHA256SUMS"
-  copy_file_preserving_layout "$SOURCE_DIR/build.env" "$bundle_root/mkosi.output/build.env"
+  # Image artifacts.
+  local prefix="${IMAGE_ID}_${IMAGE_VERSION}_${IMAGE_ARCH}"
+  echo "==> Copying image artifacts into $out"
+  install -m 0644 "$SOURCE_DIR/${prefix}.root.raw"      "$out/${prefix}.root.raw"
+  install -m 0644 "$SOURCE_DIR/${prefix}.efi"           "$out/${prefix}.efi"
+  install -m 0644 "$SOURCE_DIR/${prefix}.conf"          "$out/${prefix}.conf"
+  install -m 0644 "$SOURCE_DIR/${prefix}.artifacts.env" "$out/${prefix}.artifacts.env"
+  install -m 0644 "$SOURCE_DIR/SHA256SUMS"              "$out/SHA256SUMS"
+  install -m 0644 "$SOURCE_DIR/build.env"               "$out/build.env"
 
   if [[ "$EMBED_FULL_IMAGE" == true ]]; then
-    copy_file_preserving_layout "$SOURCE_DIR/$IMAGE_BASENAME" "$bundle_root/mkosi.output/$IMAGE_BASENAME"
+    install -m 0644 "$SOURCE_DIR/$IMAGE_BASENAME"       "$out/$IMAGE_BASENAME"
   fi
 
-  # Plant /root/INSTALL-TO-INTERNAL-DISK.sh as the well-known operator
-  # entry point. The bundle lives at $BUNDLE_DIR on the root partition
-  # (auto-sized to ~3× the .root.raw image, which leaves plenty of room
-  # for the bundle), so the launcher is just an exec stub.
-  install -d -m 0700 "$ROOT_MOUNT/root"
-  cat > "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh" <<LAUNCHER
+  # Muscle-memory alias. Operators have been typing this path since
+  # the first version of the bundle layout; keeping it as a thin exec
+  # stub means the change-of-bundle-shape is invisible at the prompt.
+  cat > "$out/INSTALL-TO-INTERNAL-DISK.sh" <<'LAUNCHER'
 #!/usr/bin/env bash
-exec $BUNDLE_DIR/installer/live-usb-install.sh "\$@"
+exec /root/ab-install.sh "$@"
 LAUNCHER
-  chmod 0755 "$ROOT_MOUNT/root/INSTALL-TO-INTERNAL-DISK.sh"
-  echo "==> Planted root launcher at /root/INSTALL-TO-INTERNAL-DISK.sh -> $BUNDLE_DIR"
+  chmod 0755 "$out/INSTALL-TO-INTERNAL-DISK.sh"
 
-  cat > "$bundle_root/README.txt" <<EOF2
-Install bundle (built by bin/write-live-test-usb.sh)
-====================================================
+  cat > "$out/README.txt" <<EOF
+Install payload (laid down by bin/ab-install.sh)
+================================================
 
 This disk was bootstrapped from build:
   image id:      $IMAGE_ID
@@ -1433,43 +1925,39 @@ This disk was bootstrapped from build:
   arch:          $IMAGE_ARCH
 
 Recommended workflow after booting:
-  sudo /root/INSTALL-TO-INTERNAL-DISK.sh
+  sudo /root/ab-install.sh
 
-That wrapper runs:
-  $BUNDLE_DIR/installer/live-usb-install.sh
+(For muscle memory, /root/INSTALL-TO-INTERNAL-DISK.sh is a thin alias.)
 
-The bundled installer defaults to a fresh destructive A/B bootstrap onto
-the selected target disk. By default it creates:
-  - a 1G ESP
+The script auto-detects the image artifacts in /root/ next to itself,
+so it asks the same questions it asked the build host: target disk,
+ESP / root / home / data sizes. Default layout:
+  - 1G ESP
   - two retained root partitions of 8G each
   - /mnt/data taking the rest of the disk (persistent across A/B swaps)
 
-Use the live installer prompts to change that layout.
-
 To iterate on the build without losing the disk's DATA partition,
 use --reflash on the host:
-  sudo ./bin/write-live-test-usb.sh --target /dev/sdX --reflash --yes
+  sudo ./bin/ab-install.sh --target /dev/sdX --reflash --yes
 That writes the new image into whichever root slot is NOT currently the
 default-boot slot, leaves the active slot in place as a known-good
 fallback, and does not repartition or wipe DATA.
 
-Subsequent updates of the *internal* disk after install go through
-systemd-sysupdate (`./bin/sysupdate-local-update.sh`) which is also
-non-destructive: it writes only the inactive root slot and never
-touches DATA / HOME / ESP partition data.
-EOF2
-  chmod 0644 "$bundle_root/README.txt"
-
+Subsequent in-place updates of the *internal* disk after install go
+through systemd-sysupdate (./bin/sysupdate-local-update.sh on the
+build host or its bundled copy when shipped) and only ever rewrite
+the inactive root slot; HOME / DATA / ESP partition data is preserved.
+EOF
+  chmod 0644 "$out/README.txt"
 
   # Drop the identity file that the NEXT flash's
-  # ab_confirm_read_existing_identity looks for. Keeping it next to
-  # the bundle means it's always on the USB's root partition alongside
-  # the installer it describes. The git rev is best-effort; lands as
-  # 'unknown' if the build happened outside a git checkout.
+  # ab_confirm_read_existing_identity looks for. The git rev is
+  # best-effort; lands as 'unknown' if the build happened outside a
+  # git checkout.
   local git_rev
   git_rev="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
   ab_confirm_write_usb_identity \
-    "$bundle_root/USB-IDENTITY.env" \
+    "$out/USB-IDENTITY.env" \
     "${AB_LAST_BUILD_PROFILE:-unknown}" \
     "${AB_LAST_BUILD_HOST:-}" \
     "$IMAGE_ID" \
@@ -1556,16 +2044,8 @@ while [[ $# -gt 0 ]]; do
       BUILD_DIR="${2:?missing build dir}"
       shift 2
       ;;
-    --definitions)
-      DEFINITIONS_DIR="${2:?missing definitions dir}"
-      shift 2
-      ;;
     --repart-dir)
       REPART_DIR="${2:?missing repart dir}"
-      shift 2
-      ;;
-    --bundle-dir)
-      BUNDLE_DIR="${2:?missing bundle dir}"
       shift 2
       ;;
     --profile)
@@ -1634,10 +2114,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ $EUID -eq 0 ]] || die "write-live-test-usb.sh must run as root"
+[[ $EUID -eq 0 ]] || die "ab-install.sh must run as root"
 [[ -n "$TARGET" ]] || die "--target is required"
-[[ -d "$DEFINITIONS_DIR" ]] || die "definitions directory not found: $DEFINITIONS_DIR"
-[[ -d "$REPART_DIR" ]] || die "repart directory not found: $REPART_DIR"
 
 # validate_layout_tokens enforces "at most one of HOME/DATA is 'rest'"
 # before we tell systemd-repart, so a typo at the prompt or in a flag
@@ -1661,7 +2139,6 @@ ab_hostdeps_ensure_commands "hardware test USB prerequisites" systemd-repart sys
 }
 
 load_build_metadata
-prepare_sysupdate_definitions_dir
 print_selected_build
 need_cmd losetup
 need_cmd lsblk
@@ -1678,7 +2155,7 @@ need_cmd blkid
 # target so the destructive-confirmation banner downstream knows
 # whether the run is going to wipe everything or just rewrite the
 # inactive slot. The peek is read-only and detaches its scratch loop
-# device immediately so it does not interfere with bootstrap-ab-disk's
+# device immediately so it does not interfere with bootstrap_disk's
 # own loop attachment.
 case "$MODE" in
   reflash)
@@ -1718,41 +2195,15 @@ if [[ "$REFLASH" == true ]]; then
     # Collect LUKS passphrase before slow dd — no-op if not LUKS or already supplied.
     preflight_collect_luks_passphrase
 else
+    resolve_disk_device
     prepare_bootstrap_repart_dir
     confirm_usb_write_or_abort
     # Collect LUKS passphrase before the slow systemd-repart format + dd.
     # No-op when image is not LUKS-encrypted or passphrase already supplied.
     preflight_collect_luks_passphrase
 
-    bootstrap_args=(
-      --target "$TARGET"
-      --source-dir "$SOURCE_DIR"
-      --definitions "$GENERATED_DEFINITIONS_DIR"
-      --repart-dir "$BOOTSTRAP_REPART_DIR"
-      --loader-timeout "$LOADER_TIMEOUT"
-      # Confirmation already happened in confirm_usb_write_or_abort above
-      # with strictly more context than bootstrap's own prompt can provide,
-      # so always pass --yes down. If the user wants bootstrap's prompt,
-      # they should call bootstrap directly.
-      --yes
-      # Skip sysupdate inside bootstrap. We seed the first slot manually
-      # via dd after this returns, so bootstrap's `systemd-sysupdate
-      # --image=$DISK update` step is both unnecessary and unreliable on
-      # a freshly-repartitioned, still-empty disk (systemd-dissect fails
-      # with "Failed to mount image: No such file or directory").
-      --skip-sysupdate
-    )
-    # Propagate --allow-fixed-disk: confirm_usb_write_or_abort has already
-    # enforced the removable check; bootstrap's own check would otherwise
-    # reject the target again and there's no way for the user to recover
-    # without this pass-through.
-    [[ "$ALLOW_FIXED_DISK" == "yes" ]] && bootstrap_args+=(--allow-fixed-disk)
-    [[ -n "$IMAGE_ID" ]] && bootstrap_args+=(--image-id "$IMAGE_ID")
-
     echo "==> Bootstrapping A/B layout on $TARGET"
-    "$PROJECT_ROOT/bin/bootstrap-ab-disk.sh" "${bootstrap_args[@]}"
-
-    resolve_disk_device
+    bootstrap_disk
 fi
 
 # Seed the first system version directly by writing the root.raw image
@@ -1771,7 +2222,7 @@ sync
 echo "==> Install ready on $TARGET"
 echo " Seeded root: $ROOT_PART"
 echo " Layout:      home=${HOME_SIZE_TOKEN} data=${DATA_SIZE_TOKEN}"
-echo " Installer entry: /root/INSTALL-TO-INTERNAL-DISK.sh"
+echo " Installer entry: /root/ab-install.sh (alias /root/INSTALL-TO-INTERNAL-DISK.sh)"
 if [[ "$EMBED_FULL_IMAGE" == true ]]; then
-    echo " Full raw image: copied into $BUNDLE_DIR/mkosi.output/"
+    echo " Full raw image: copied into /root/"
 fi

@@ -11,7 +11,7 @@ The recommended path is now:
 
 ## The first install
 
-Use `bin/bootstrap-ab-disk.sh` against a blank or offline target disk or raw image.
+Use `bin/ab-install.sh` against a blank or offline target disk or raw image.
 That script:
 
 - destroys the target partition table
@@ -19,7 +19,7 @@ That script:
 - installs `systemd-boot`
 - seeds the first retained version from `mkosi.output/` using `systemd-sysupdate`
 
-Before running `bootstrap-ab-disk.sh` (or a remote Ansible deploy) against
+Before running `ab-install.sh` (or a remote Ansible deploy) against
 real hardware, it is cheap and worth running
 `./bin/verify-image-raw.sh` on the freshly built `mkosi.output/*.raw`.
 It catches truncated writes, missing ESP bootloader, and unsubstituted

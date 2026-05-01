@@ -5,7 +5,7 @@
 #
 #   1. Start from a pre-built image (./build.sh must have succeeded).
 #   2. Create a fresh raw disk file and bootstrap it with
-#      bootstrap-ab-disk.sh so it has the same layout as a real
+#      ab-install.sh so it has the same layout as a real
 #      install (ESP + root_a + root_b, first version seeded).
 #   3. Inject a health-check hook that always fails into the seeded
 #      root, so ab-health-gate.service will report "unhealthy" on
@@ -223,7 +223,7 @@ detach_loop() {
 
 seeded_root_partition() {
   # Pick the first partition whose PARTLABEL starts with IMAGE_ID_;
-  # that's the slot bootstrap-ab-disk.sh filled via sysupdate.
+  # that's the slot ab-install.sh filled via sysupdate.
   lsblk -nrpo NAME,PARTLABEL,FSTYPE "$LOOPDEV" | awk -v id="${IMAGE_ID}" '
     $2 ~ "^"id"_" && $3 != "" { print $1; exit }
   '
@@ -294,11 +294,16 @@ append_timeline() {
 bootstrap_disk() {
   log "Creating $DISK_SIZE raw disk at $DISK_IMG"
   truncate -s "$DISK_SIZE" "$DISK_IMG"
-  log "Bootstrapping with bootstrap-ab-disk.sh"
-  "$PROJECT_ROOT/bin/bootstrap-ab-disk.sh" \
+  log "Bootstrapping with ab-install.sh"
+  # The unified install script handles raw image files the same way it
+  # handles block devices — losetup --partscan + systemd-repart + dd.
+  # --data-size none keeps the rollback test layout minimal (just
+  # ESP + A + B); the rollback flow rewrites root slots, not /mnt/data.
+  "$PROJECT_ROOT/bin/ab-install.sh" \
     --target "$DISK_IMG" \
-    --source-dir "$SOURCE_DIR" \
-    --image-id "$IMAGE_ID" \
+    --build-dir "$BUILD_DIR" \
+    --data-size none \
+    --reimage \
     --yes \
     --allow-fixed-disk
 }

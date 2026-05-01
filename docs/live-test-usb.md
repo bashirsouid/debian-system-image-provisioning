@@ -33,13 +33,13 @@ Build first as usual, for example:
 Then write the test USB:
 
 ```bash
-sudo ./bin/write-live-test-usb.sh --target /dev/sdX
+sudo ./bin/ab-install.sh --target /dev/sdX
 ```
 
 Optional:
 
 ```bash
-sudo ./bin/write-live-test-usb.sh --target /dev/sdX --embed-full-image
+sudo ./bin/ab-install.sh --target /dev/sdX --embed-full-image
 ```
 
 What this does:

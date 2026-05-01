@@ -12,7 +12,7 @@
 #       --target /dev/sdX \
 #       [--bs 4M] [--assume-yes] [--keep-cache]
 #
-# Designed to be called from bin/write-live-test-usb.sh *after*
+# Designed to be called from bin/ab-install.sh *after*
 # that script has produced the image and confirmed the target device.
 # It can also be used standalone when you just want to flash an
 # already-built image.
