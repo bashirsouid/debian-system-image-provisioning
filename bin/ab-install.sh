@@ -1154,9 +1154,14 @@ prune_old_boot_entries() {
 
     [[ -d "$entries_dir" ]] || return 0
 
-    # PARTUUIDs of every current root-shaped slot on the target disk.
+    # PARTUUIDs of every current root-shaped slot on the target disk,
+    # plus a luks_uuid -> PARTUUID map so we can identify entries whose
+    # cmdline uses `rd.luks.uuid=...` instead of `root=PARTUUID=...`.
+    # `blkid -s UUID` on a crypto_LUKS partition returns the LUKS header
+    # UUID, which is exactly what rd.luks.uuid= references.
     local valid_pus_glob=""
-    local line NAME PARTLABEL FSTYPE TYPE pu
+    declare -A luks_uuid_to_pu=()
+    local line NAME PARTLABEL FSTYPE TYPE pu lu
     while read -r line; do
         eval "$line"
         [[ "$TYPE" == "part" ]] || continue
@@ -1165,7 +1170,12 @@ prune_old_boot_entries() {
         esac
         [[ "$FSTYPE" == "ext4" || "$FSTYPE" == "crypto_LUKS" || -z "$FSTYPE" ]] || continue
         pu="$(blkid -s PARTUUID -o value "$NAME" 2>/dev/null || true)"
-        [[ -n "$pu" ]] && valid_pus_glob="${valid_pus_glob}|${pu^^}"
+        [[ -n "$pu" ]] || continue
+        valid_pus_glob="${valid_pus_glob}|${pu^^}"
+        if [[ "$FSTYPE" == "crypto_LUKS" ]]; then
+            lu="$(blkid -s UUID -o value "$NAME" 2>/dev/null || true)"
+            [[ -n "$lu" ]] && luks_uuid_to_pu[${lu,,}]="${pu^^}"
+        fi
     done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
 
     # Phase 1: pick a single winner per PARTUUID. The just-written
@@ -1173,10 +1183,13 @@ prune_old_boot_entries() {
     declare -A winner_per_pu=()
     declare -A winner_mtime=()
 
-    local conf entry_pu mt
+    local conf entry_pu entry_luks mt
     shopt -s nullglob
     for conf in "$entries_dir"/*.conf; do
         [[ -f "$conf" ]] || continue
+
+        # Try to resolve the slot two ways: first `root=PARTUUID=`, then
+        # `rd.luks.uuid=`. Either is enough to pin the entry to a slot.
         entry_pu="$(awk '
             /^options/ {
                 for (i=1; i<=NF; i++) {
@@ -1186,7 +1199,34 @@ prune_old_boot_entries() {
                     }
                 }
             }' "$conf" 2>/dev/null)"
-        [[ -n "$entry_pu" ]] || continue
+
+        if [[ -z "$entry_pu" ]]; then
+            entry_luks="$(awk '
+                /^options/ {
+                    for (i=1; i<=NF; i++) {
+                        if (match($i, /^rd\.luks\.uuid=/)) {
+                            sub(/^rd\.luks\.uuid=/, "", $i)
+                            print tolower($i); exit
+                        }
+                    }
+                }' "$conf" 2>/dev/null)"
+            if [[ -n "$entry_luks" && -n "${luks_uuid_to_pu[$entry_luks]:-}" ]]; then
+                entry_pu="${luks_uuid_to_pu[$entry_luks]}"
+            fi
+        fi
+
+        # Defensive: if we still couldn't pin this entry to a slot but
+        # it's the entry we just wrote, keep it anyway. Better to leave
+        # one un-classifiable entry behind than to brick the boot we
+        # just produced.
+        if [[ -z "$entry_pu" ]]; then
+            if [[ "$conf" == "$current_entry_file" ]]; then
+                winner_per_pu["__current__"]="$conf"
+                winner_mtime["__current__"]=9999999999
+            fi
+            continue
+        fi
+
         # Drop entries whose PARTUUID no longer exists on the disk.
         [[ "${valid_pus_glob}|" == *"|${entry_pu}|"* ]] || continue
 
