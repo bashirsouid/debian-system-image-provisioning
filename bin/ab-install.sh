@@ -596,7 +596,11 @@ on a USB exercises the same code that runs an internal-disk install.
 
 Options:
   --target PATH         removable USB / SD device, fixed internal disk, or
-                        raw disk image file
+                        raw disk image file. Optional when the running
+                        system is already on an A/B layout — the boot
+                        disk is auto-detected and its inactive slot is
+                        flashed (pass --target to override or to flash
+                        a different disk).
   --build-dir PATH      specific build folder under mkosi.output/builds/ to
                         flash. Takes precedence over --host / --profile.
                         On a booted live USB, this auto-detects to the
@@ -1111,6 +1115,47 @@ select_root_slot_for_seed() {
 }
 
 # --reflash helpers ---------------------------------------------------------
+
+# Resolve the whole-disk device the running system booted from, by
+# walking from / up through any LUKS / device-mapper layers to the
+# underlying partition, and then to its parent disk. Prints the disk
+# path on stdout (e.g. /dev/sda or /dev/nvme0n1) and returns 0; returns
+# non-zero with no output when the chain can't be resolved (no
+# findmnt, no lsblk, weird mount source, etc.).
+#
+# Used by the no-flag auto-target path: when a user runs ab-install
+# from inside a booted A/B system without --target, the only sensible
+# answer is "the disk you booted from" — the *other* slot of which is
+# what they want to flash. Auto-detection is gated on the boot disk
+# already having an A/B layout (see the call site) so we don't
+# silently pick the wrong device when running from a non-A/B installer
+# environment (e.g. a plain rescue ISO).
+detect_boot_disk() {
+  local root_src dm_name slave_dir slave parent_disk
+  command -v findmnt >/dev/null 2>&1 || return 1
+  command -v lsblk   >/dev/null 2>&1 || return 1
+
+  root_src="$(findmnt -no SOURCE / 2>/dev/null || true)"
+  [[ -n "$root_src" ]] || return 1
+
+  # Unwrap LUKS / dm layers. /dev/mapper/luks-XXX -> underlying part
+  # via /sys/class/block/<dm>/slaves/. Loop in case of stacked dm
+  # (e.g. LUKS-on-LVM-on-part).
+  local guard=0
+  while [[ "$root_src" == /dev/mapper/* || "$root_src" == /dev/dm-* ]]; do
+    (( guard++ < 8 )) || return 1
+    dm_name="$(basename "$(readlink -f "$root_src" 2>/dev/null || echo "$root_src")")"
+    slave_dir="/sys/class/block/$dm_name/slaves"
+    [[ -d "$slave_dir" ]] || return 1
+    slave="$(ls "$slave_dir" 2>/dev/null | head -n1)"
+    [[ -n "$slave" ]] || return 1
+    root_src="/dev/$slave"
+  done
+
+  parent_disk="$(lsblk -no PKNAME "$root_src" 2>/dev/null | awk 'NF{print;exit}')"
+  [[ -n "$parent_disk" ]] || return 1
+  printf '/dev/%s\n' "$parent_disk"
+}
 
 # Non-destructive "is there already an A/B layout here?" probe. Used by
 # the auto-mode dispatcher to decide between reflash and repartition.
@@ -2263,6 +2308,31 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ $EUID -eq 0 ]] || die "ab-install.sh must run as root"
+
+# No --target given: try the boot disk. If the running system already
+# lives on an A/B layout, the only meaningful target is "the disk we
+# booted from" — auto-mode will then pick the inactive slot via
+# select_inactive_root_slot_for_reseed. Detection is gated on the boot
+# disk having an existing A/B layout so this does not silently pick
+# the wrong device when running from a plain rescue / installer
+# environment that happens to have / mounted somewhere.
+if [[ -z "$TARGET" ]]; then
+  _candidate_target="$(detect_boot_disk 2>/dev/null || true)"
+  if [[ -n "$_candidate_target" && -b "$_candidate_target" ]]; then
+    TARGET="$_candidate_target"
+    if detect_existing_ab_layout; then
+      echo "==> Auto-detected target: $TARGET (boot disk; has an existing A/B layout)"
+      echo "    Will write to the inactive root slot. Pass --target to override."
+    else
+      echo "==> Boot disk $TARGET has no A/B layout; auto-detection skipped." >&2
+      echo "    Pass --target explicitly to flash a different disk, or run on" >&2
+      echo "    a system that is already A/B-installed." >&2
+      TARGET=""
+    fi
+  fi
+  unset _candidate_target
+fi
+
 [[ -n "$TARGET" ]] || die "--target is required"
 
 # validate_layout_tokens enforces "at most one of HOME/DATA is 'rest'"
