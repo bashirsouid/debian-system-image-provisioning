@@ -1,2 +1,2 @@
-description="Microsoft VSCode. TODO(phase-3): add packages.microsoft.com apt source + key, then add 'code' package."
+description="Microsoft VSCode. Installs the 'code' package from packages.microsoft.com (apt source + pinned signing key shipped with the profile)."
 uses_secrets=""

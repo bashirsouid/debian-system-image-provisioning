@@ -309,3 +309,22 @@ if [[ -f "$LOGIN_DEFS" ]]; then
     printf '\n# AB image: restrict default home-dir perms to owner only\nHOME_MODE\t0700\n' >> "$LOGIN_DEFS"
   fi
 fi
+
+# Lock /root to 0700.
+#
+# Why: mkosi.extra/root/ ships a few helper scripts (diagnose-boot.sh,
+# ab-enroll-tpm, ab-verify) and mkosi creates the destination /root
+# in the image with the *source* directory's perms — which on the
+# build host is 0755 because git does not track 0700 directory modes
+# reliably. The result is /root readable by every user on the image,
+# which is wrong: ab-install.sh later drops build artifacts and
+# (optionally) install bundles under /root/, and we don't want a
+# regular login user to be able to ls those.
+#
+# Same defense-in-depth posture as the /etc/skel and HOME_MODE blocks
+# above: enforce the mode in finalize so it is correct on every build,
+# regardless of what perms the source tree happens to have.
+if [[ -d "$ROOT/root" ]]; then
+  echo "==> [FINALIZE] locking /root to 0700"
+  chmod 0700 "$ROOT/root"
+fi

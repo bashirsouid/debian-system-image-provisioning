@@ -50,21 +50,26 @@ ab_buildmeta_builds_dir() {
   printf '%s\n' "$project_root/mkosi.output/builds"
 }
 
-# Compose the per-build folder name. Profile is always included so that two
-# builds of the same host with different profiles never collide. Host is
-# omitted when empty (QEMU smoke tests).
+# Compose the per-build folder name. When --host is set, the folder is
+# just <ts>__<host>: a host's profile.default can be a dozen profiles
+# long, and joining them all into the folder name produced unwieldy
+# paths like 20260501T123456Z__macbook_awesomewm_wifi_..._vscode__macbookpro13.
+# The build.env inside the folder still records AB_LAST_BUILD_PROFILE
+# verbatim, so the picker and downstream tools can show the full
+# profile list without it leaking into the path. When no host is set
+# (QEMU smoke tests), profile is the only identity available, so the
+# folder falls back to <ts>__<profile>.
 ab_buildmeta_folder_name() {
   local timestamp="$1"
-  local profile safe_profile safe_host host
-  profile="${2:-}"
-  host="${3:-}"
-  safe_profile="$(ab_buildmeta_safe_component "$profile")"
+  local profile="${2:-}"
+  local host="${3:-}"
+  local safe
   if [[ -n "$host" ]]; then
-    safe_host="$(ab_buildmeta_safe_component "$host")"
-    printf '%s__%s__%s\n' "$timestamp" "$safe_profile" "$safe_host"
+    safe="$(ab_buildmeta_safe_component "$host")"
   else
-    printf '%s__%s\n' "$timestamp" "$safe_profile"
+    safe="$(ab_buildmeta_safe_component "$profile")"
   fi
+  printf '%s__%s\n' "$timestamp" "$safe"
 }
 
 ab_buildmeta_stage_dir() {

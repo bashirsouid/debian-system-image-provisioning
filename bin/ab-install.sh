@@ -522,6 +522,13 @@ HOST=""
 ASSUME_YES=false
 LOADER_TIMEOUT=3
 EMBED_FULL_IMAGE=false
+# Whether to copy the heavy install bundle (.root.raw + .efi) into
+# /root/ on the seeded disk. The bundle exists so the seeded disk can
+# re-flash other targets without the project clone — useful for
+# removable USB sticks, useless on a workstation that already has the
+# repo. "auto" picks: yes for removable targets, no for fixed disks.
+# Override with --copy-install-bundle / --no-copy-install-bundle.
+COPY_INSTALL_BUNDLE="auto"
 USB_ESP_SIZE=""
 USB_ROOT_SIZE=""
 IMAGE_ID=""
@@ -630,6 +637,19 @@ Options:
                         when re-imaging an internal drive from a USB whose
                         bundle includes the full image but you do not want
                         to copy it again.
+  --copy-install-bundle, --no-copy-install-bundle
+                        copy the heavy install bundle (the .root.raw and
+                        .efi files used to re-flash other disks) into
+                        /root/ on the seeded disk, alongside the script
+                        itself. Default: AUTO — yes for removable targets
+                        (USB sticks need to be self-sufficient), no for
+                        fixed disks (your workstation has the project
+                        clone, no reason to burn ~3-4G of root space on
+                        a duplicate of the .root.raw). The lightweight
+                        identity files (build.env, SHA256SUMS, .conf,
+                        .artifacts.env, ab-install.sh, README) are
+                        always copied so /root/ stays a self-describing
+                        record of what is installed.
   --allow-fixed-disk    permit writing to a non-removable (internal) disk;
                         the default refuses such targets to prevent the
                         "I flashed my laptop's SSD by accident" case
@@ -1662,16 +1682,38 @@ seed_first_root_slot() {
     fi
 }
 
+# Resolve COPY_INSTALL_BUNDLE=auto into yes/no based on whether the
+# target is a removable device. Idempotent: when the user already
+# passed --copy-install-bundle / --no-copy-install-bundle the global
+# is already yes/no and this function is a no-op. Falls back to "yes"
+# (current behavior, copy everything) when removable status can't be
+# determined — better to over-copy and leave a working re-flash kit
+# than to silently strip artifacts the operator might have expected.
+resolve_copy_install_bundle() {
+  [[ "$COPY_INSTALL_BUNDLE" == "auto" ]] || return 0
+  local removable
+  removable="$(ab_confirm_removable_flag "$TARGET")"
+  case "$removable" in
+    1) COPY_INSTALL_BUNDLE=yes ;;
+    0) COPY_INSTALL_BUNDLE=no ;;
+    *) COPY_INSTALL_BUNDLE=yes ;;
+  esac
+}
+
 required_bundle_files() {
   local prefix="$ARTIFACT_PREFIX"
   printf '%s\n' \
     "$SCRIPT_PATH" \
-    "$SOURCE_DIR/${prefix}.root.raw" \
-    "$SOURCE_DIR/${prefix}.efi" \
     "$SOURCE_DIR/${prefix}.conf" \
     "$SOURCE_DIR/${prefix}.artifacts.env" \
     "$SOURCE_DIR/SHA256SUMS" \
     "$SOURCE_DIR/build.env"
+
+  if [[ "$COPY_INSTALL_BUNDLE" == "yes" ]]; then
+    printf '%s\n' \
+      "$SOURCE_DIR/${prefix}.root.raw" \
+      "$SOURCE_DIR/${prefix}.efi"
+  fi
 
   if [[ "$EMBED_FULL_IMAGE" == true ]]; then
     printf '%s\n' "$SOURCE_DIR/$IMAGE_BASENAME"
@@ -1939,15 +1981,28 @@ copy_bundle() {
   echo "==> Copying ab-install.sh into $out"
   install -m 0755 "$SCRIPT_PATH" "$out/ab-install.sh"
 
-  # Image artifacts.
+  # Lightweight identity artifacts (always copied — these total a few
+  # tens of KB and serve as a self-describing "what is installed here"
+  # record that survives even when the heavy bundle is skipped).
   local prefix="$ARTIFACT_PREFIX"
-  echo "==> Copying image artifacts into $out"
-  install -m 0644 "$SOURCE_DIR/${prefix}.root.raw"      "$out/${prefix}.root.raw"
-  install -m 0644 "$SOURCE_DIR/${prefix}.efi"           "$out/${prefix}.efi"
+  echo "==> Copying image identity files into $out"
   install -m 0644 "$SOURCE_DIR/${prefix}.conf"          "$out/${prefix}.conf"
   install -m 0644 "$SOURCE_DIR/${prefix}.artifacts.env" "$out/${prefix}.artifacts.env"
   install -m 0644 "$SOURCE_DIR/SHA256SUMS"              "$out/SHA256SUMS"
   install -m 0644 "$SOURCE_DIR/build.env"               "$out/build.env"
+
+  # Heavy artifacts. Skipped when COPY_INSTALL_BUNDLE=no (the auto
+  # default for fixed-disk targets), because a workstation has the
+  # project clone and burning 3-4 GiB of root space on a duplicate
+  # of the .root.raw + UKI is just dead weight.
+  if [[ "$COPY_INSTALL_BUNDLE" == "yes" ]]; then
+    echo "==> Copying re-flash bundle into $out (.root.raw, .efi)"
+    install -m 0644 "$SOURCE_DIR/${prefix}.root.raw"    "$out/${prefix}.root.raw"
+    install -m 0644 "$SOURCE_DIR/${prefix}.efi"         "$out/${prefix}.efi"
+  else
+    echo "==> Skipping re-flash bundle (.root.raw, .efi) — fixed-disk target"
+    echo "    Pass --copy-install-bundle to force-include them."
+  fi
 
   if [[ "$EMBED_FULL_IMAGE" == true ]]; then
     [[ -f "$SOURCE_DIR/$IMAGE_BASENAME" ]] \
@@ -1955,16 +2010,21 @@ copy_bundle() {
     install -m 0644 "$SOURCE_DIR/$IMAGE_BASENAME"       "$out/$IMAGE_BASENAME"
   fi
 
-  # Muscle-memory alias. Operators have been typing this path since
-  # the first version of the bundle layout; keeping it as a thin exec
-  # stub means the change-of-bundle-shape is invisible at the prompt.
-  cat > "$out/INSTALL-TO-INTERNAL-DISK.sh" <<'LAUNCHER'
+  # Muscle-memory alias. Only useful when the heavy bundle is also
+  # present, since the script needs *.root.raw next to itself to do
+  # any work. Skip it on fixed-disk installs to avoid leaving a
+  # launcher that just dies with "no *.root.raw" the moment someone
+  # runs it.
+  if [[ "$COPY_INSTALL_BUNDLE" == "yes" ]]; then
+    cat > "$out/INSTALL-TO-INTERNAL-DISK.sh" <<'LAUNCHER'
 #!/usr/bin/env bash
 exec /root/ab-install.sh "$@"
 LAUNCHER
-  chmod 0755 "$out/INSTALL-TO-INTERNAL-DISK.sh"
+    chmod 0755 "$out/INSTALL-TO-INTERNAL-DISK.sh"
+  fi
 
-  cat > "$out/README.txt" <<EOF
+  if [[ "$COPY_INSTALL_BUNDLE" == "yes" ]]; then
+    cat > "$out/README.txt" <<EOF
 Install payload (laid down by bin/ab-install.sh)
 ================================================
 
@@ -1997,6 +2057,34 @@ through systemd-sysupdate (./bin/sysupdate-local-update.sh on the
 build host or its bundled copy when shipped) and only ever rewrite
 the inactive root slot; HOME / DATA / ESP partition data is preserved.
 EOF
+  else
+    cat > "$out/README.txt" <<EOF
+Install identity (laid down by bin/ab-install.sh)
+=================================================
+
+This disk was bootstrapped from build:
+  image id:      $IMAGE_ID
+  image version: $IMAGE_VERSION
+  arch:          $IMAGE_ARCH
+
+Only the lightweight identity files were copied here (build.env,
+SHA256SUMS, ${ARTIFACT_PREFIX}.conf, ${ARTIFACT_PREFIX}.artifacts.env,
+ab-install.sh). The heavy install bundle (.root.raw, .efi) was NOT
+copied, because this is a fixed-disk install where you operate from
+the project clone instead. To re-flash:
+
+  cd /path/to/debian-system-image-provisioning
+  sudo ./bin/ab-install.sh --host <hostname> --reflash --yes
+
+Subsequent in-place updates go through systemd-sysupdate
+(./bin/sysupdate-local-update.sh) and only ever rewrite the inactive
+root slot; HOME / DATA / ESP partition data is preserved.
+
+If you want the full re-flash kit on the disk anyway (so this machine
+can re-image other targets without the project clone), re-run the
+install with --copy-install-bundle.
+EOF
+  fi
   chmod 0644 "$out/README.txt"
 
   # Drop the identity file that the NEXT flash's
@@ -2130,6 +2218,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-embed-full-image)
       EMBED_FULL_IMAGE=false
+      shift
+      ;;
+    --copy-install-bundle)
+      COPY_INSTALL_BUNDLE=yes
+      shift
+      ;;
+    --no-copy-install-bundle)
+      COPY_INSTALL_BUNDLE=no
       shift
       ;;
     --allow-fixed-disk)
@@ -2268,6 +2364,11 @@ fi
 # freshly-repartitioned, still-empty disks.
 seed_first_root_slot
 
+# Resolve COPY_INSTALL_BUNDLE=auto now that TARGET is known. Done
+# here (rather than during arg parsing) so the resolved value reflects
+# the actual target the user is writing to.
+resolve_copy_install_bundle
+
 # With ROOT_MOUNT set by seed_first_root_slot(), copy the installer
 # bundle onto the seeded root filesystem.
 copy_bundle
@@ -2278,7 +2379,11 @@ sync
 echo "==> Install ready on $TARGET"
 echo " Seeded root: $ROOT_PART"
 echo " Layout:      home=${HOME_SIZE_TOKEN} data=${DATA_SIZE_TOKEN}"
-echo " Installer entry: /root/ab-install.sh (alias /root/INSTALL-TO-INTERNAL-DISK.sh)"
+if [[ "$COPY_INSTALL_BUNDLE" == "yes" ]]; then
+    echo " Installer entry: /root/ab-install.sh (alias /root/INSTALL-TO-INTERNAL-DISK.sh)"
+else
+    echo " Installer entry: not bundled (fixed-disk default; see /root/README.txt)"
+fi
 if [[ "$EMBED_FULL_IMAGE" == true ]]; then
     echo " Full raw image: copied into /root/"
 fi
