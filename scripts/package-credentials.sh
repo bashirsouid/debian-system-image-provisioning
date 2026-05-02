@@ -92,6 +92,7 @@ resolve_secret() {
 CREDSTORE="${EXTRA_DIR}/etc/credstore"
 AUTHKEYS_D="${EXTRA_DIR}/etc/ssh/authorized_keys.d"
 SSHD_D="${EXTRA_DIR}/etc/ssh/sshd_config.d"
+NM_SYSCON_D="${EXTRA_DIR}/etc/NetworkManager/system-connections"
 
 # Create the target directory structure in the extra-tree with correct perms
 install -d -m 0755 "${CREDSTORE}"
@@ -132,6 +133,60 @@ if profile_selected cloudflare-tunnel; then
     fi
 else
     log "cloudflare-tunnel profile not selected; skipping cloudflared-token packaging"
+fi
+
+# --- OPTIONAL: wifi pre-seeded NetworkManager connection ----------------
+# Writes /etc/NetworkManager/system-connections/<safe-ssid>.nmconnection
+# at mode 0600 (NM refuses anything more permissive). Only emitted when
+# both wifi-ssid and wifi-psk are present in .mkosi-secrets/. The file
+# uses key-mgmt=wpa-psk; open networks aren't supported here on
+# purpose — anyone wanting an open SSID can drop a hand-written
+# .nmconnection into mkosi.profiles/wifi/mkosi.extra/ instead.
+if profile_selected wifi; then
+    if ws_path="$(resolve_secret wifi-ssid)" && wp_path="$(resolve_secret wifi-psk)"; then
+        ssid="$(<"${ws_path}")"; ssid="${ssid%$'\n'}"
+        psk="$(<"${wp_path}")"; psk="${psk%$'\n'}"
+        if [[ -n "${ssid}" && -n "${psk}" ]]; then
+            install -d -m 0700 "${NM_SYSCON_D}"
+            # Sanitize the SSID for the filename (NM only requires the
+            # extension match; the [connection] id= is the human-visible
+            # name and stays the original SSID).
+            safe_ssid="$(printf '%s' "${ssid}" | tr -c 'A-Za-z0-9._-' '_')"
+            nm_path="${NM_SYSCON_D}/${safe_ssid}.nmconnection"
+            log "writing pre-seeded wifi connection -> ${nm_path}"
+            # uuid is deterministic-per-SSID so rebuilding the image
+            # doesn't churn NM state on the booted system.
+            uuid="$(printf '%s' "${ssid}" | sha256sum | head -c32 \
+                | sed -E 's/(........)(....)(....)(....)(.{12})/\1-\2-\3-\4-\5/')"
+            cat >"${nm_path}" <<EOF
+[connection]
+id=${ssid}
+uuid=${uuid}
+type=wifi
+autoconnect=true
+
+[wifi]
+ssid=${ssid}
+mode=infrastructure
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=${psk}
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+EOF
+            chmod 0600 "${nm_path}"
+        else
+            warn "wifi-ssid or wifi-psk is empty; skipping NM connection"
+        fi
+        unset ssid psk safe_ssid nm_path uuid
+    else
+        log "wifi profile selected but wifi-ssid+wifi-psk not both present; skipping NM connection"
+    fi
 fi
 
 # --- Template sshd_config hardening file --------------------------------

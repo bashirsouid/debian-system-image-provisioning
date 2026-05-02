@@ -1,0 +1,28 @@
+[Unit]
+Description=Install k3s via get.k3s.io (first-boot, idempotent)
+Documentation=https://docs.k3s.io/quick-start
+After=network-online.target
+Wants=network-online.target
+# Don't re-run after the install marker is dropped. The k3s.service
+# unit that the installer writes is what keeps k3s running afterwards.
+ConditionPathExists=!/var/lib/ab-k3s-installed
+# Don't run if k3s is already installed by some other means.
+ConditionPathExists=!/usr/local/bin/k3s
+
+[Service]
+Type=oneshot
+# get.k3s.io is curl-piped-to-sh, but with INSTALL_K3S_VERSION=
+# pinning the user can force a specific release once they've decided
+# on one (drop a /etc/default/ab-k3s-install file with overrides).
+EnvironmentFile=-/etc/default/ab-k3s-install
+ExecStart=/bin/sh -c '/usr/bin/curl -sfL https://get.k3s.io | sh -'
+ExecStartPost=/bin/sh -c 'install -m 0644 /dev/null /var/lib/ab-k3s-installed'
+# Best-effort. If the install fails (offline first boot, github outage),
+# the next boot tries again. Don't bake retries into this unit because
+# k3s.service that the installer writes will start k3s itself once
+# present; this oneshot's job is "make /usr/local/bin/k3s exist".
+Restart=no
+TimeoutStartSec=10min
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Resolve and run Google Antigravity. Looks for the binary in the
+# canonical drop locations; if none is present, prints a clear hint
+# instead of just dying with "command not found".
+set -euo pipefail
+
+CANDIDATES=(
+    /opt/antigravity/Antigravity.AppImage
+    /opt/antigravity/antigravity.AppImage
+    /opt/antigravity/antigravity
+    /opt/antigravity/bin/antigravity
+)
+
+for c in "${CANDIDATES[@]}"; do
+    if [[ -x "$c" ]]; then
+        exec "$c" "$@"
+    fi
+done
+
+cat >&2 <<EOF
+antigravity: no Antigravity binary found.
+
+Drop an AppImage at one of:
+$(printf '  - %s\n' "${CANDIDATES[@]}")
+
+and chmod +x it. (Or rebuild with the binary baked in via
+mkosi.profiles/antigravity/mkosi.extra/opt/antigravity/.)
+EOF
+exit 127

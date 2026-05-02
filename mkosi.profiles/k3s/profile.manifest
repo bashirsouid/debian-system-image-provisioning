@@ -1,2 +1,2 @@
-description="k3s single-node Kubernetes. TODO(phase-3): pick bundled-binary vs first-boot-install approach."
+description="k3s single-node Kubernetes via get.k3s.io. Installed by a first-boot oneshot (network required); pin a version in /etc/default/ab-k3s-install with INSTALL_K3S_VERSION=vX.Y.Z."
 uses_secrets=""

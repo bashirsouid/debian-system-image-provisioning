@@ -1,2 +1,2 @@
-description="Steam client. TODO(phase-3): wire up i386 multilib + non-free, then add steam-installer + i386 GL libs."
+description="Steam client (Debian steam-installer + i386 GL/Vulkan stack). The profile's mkosi.prepare enables i386 multilib in the build chroot before apt-get install resolves :i386 deps."
 uses_secrets=""

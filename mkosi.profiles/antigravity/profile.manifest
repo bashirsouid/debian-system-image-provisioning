@@ -1,2 +1,2 @@
-description="Google Antigravity (agentic IDE). TODO(phase-3): decide AppImage vs Flatpak install path."
+description="Google Antigravity (agentic IDE). Ships AppImage runtime deps (libfuse2t64, zenity), a /usr/local/bin/antigravity launcher, and a desktop entry; the user drops the AppImage at /opt/antigravity/Antigravity.AppImage (no apt/Flathub package available yet)."
 uses_secrets=""

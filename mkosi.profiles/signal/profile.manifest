@@ -1,2 +1,2 @@
-description="Signal Desktop. TODO(phase-3): add updates.signal.org/desktop/apt source + key, then add 'signal-desktop'."
+description="Signal Desktop messenger from updates.signal.org (apt source + pinned signing key shipped with the profile)."
 uses_secrets=""

@@ -50,7 +50,7 @@ source "${REPO_ROOT}/scripts/lib/profile-resolver.sh"
 # Every known secret category. Order matters for the summary table.
 # ssh is special: always required (no bootable image is useful without
 # it). The rest are optional unless a selected profile declares them.
-ALL_FEATURES=(ssh tailscale cloudflared sendgrid pagerduty healthchecks)
+ALL_FEATURES=(ssh tailscale cloudflared sendgrid pagerduty healthchecks wifi)
 
 declare -A STATUS
 declare -A DETAIL
@@ -268,6 +268,45 @@ if [[ -n "${NEEDED[healthchecks]+x}" ]]; then
         unset hc
     else
         warn "healthchecks-ping-url absent — healthchecksio profile selected but dead-man's-switch disabled"
+    fi
+fi
+
+# --- OPTIONAL: wifi-ssid + wifi-psk -------------------------------------
+# Two separate one-line files (the existing pattern is "one secret per
+# file"). When both are present we pre-seed a NetworkManager system
+# connection at build time so a freshly-installed laptop joins the
+# network on first boot without anyone having to type credentials at
+# the console.
+
+if [[ -n "${NEEDED[wifi]+x}" ]]; then
+    ws_path="$(resolve_secret wifi-ssid 2>/dev/null || true)"
+    wp_path="$(resolve_secret wifi-psk 2>/dev/null || true)"
+    if [[ -n "${ws_path}" || -n "${wp_path}" ]]; then
+        # If either file is present, both must be present and well-formed.
+        if [[ -z "${ws_path}" ]]; then
+            fail_soft wifi "wifi-psk present but wifi-ssid is missing"
+        elif [[ -z "${wp_path}" ]]; then
+            fail_soft wifi "wifi-ssid present but wifi-psk is missing"
+        else
+            check_file_perms "${ws_path}" || true
+            check_file_perms "${wp_path}" || true
+            ssid_val="$(<"${ws_path}")"; ssid_val="${ssid_val%$'\n'}"
+            psk_val="$(<"${wp_path}")"; psk_val="${psk_val%$'\n'}"
+            if [[ -z "${ssid_val}" ]]; then
+                fail_soft wifi "wifi-ssid is empty"
+            elif [[ "${#ssid_val}" -gt 32 ]]; then
+                fail_soft wifi "wifi-ssid is longer than 32 bytes (got ${#ssid_val})"
+            elif [[ "${#psk_val}" -lt 8 ]]; then
+                fail_soft wifi "wifi-psk is shorter than the WPA2 minimum of 8 chars"
+            elif [[ "${#psk_val}" -gt 63 ]]; then
+                fail_soft wifi "wifi-psk is longer than the WPA2 maximum of 63 chars"
+            else
+                ok wifi "ssid='${ssid_val}', ${#psk_val}-char psk"
+            fi
+            unset ssid_val psk_val
+        fi
+    else
+        warn "wifi-ssid + wifi-psk absent — wifi profile selected but no pre-seeded SSID; you'll set one up at first login"
     fi
 fi
 

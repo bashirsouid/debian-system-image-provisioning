@@ -522,6 +522,12 @@ HOST=""
 ASSUME_YES=false
 LOADER_TIMEOUT=3
 EMBED_FULL_IMAGE=false
+# Set when --target was inferred from the boot disk via detect_boot_disk.
+# Causes the destructive-confirmation step to skip the typed-path
+# gate: the user did not pick the disk by name, so making them type
+# it back is just friction. The other safety checks (banner, identity
+# panel, removable refusal) still run.
+TARGET_AUTO_DETECTED=false
 # Whether to copy the heavy install bundle (.root.raw + .efi) into
 # /root/ on the seeded disk. The bundle exists so the seeded disk can
 # re-flash other targets without the project clone — useful for
@@ -979,7 +985,13 @@ confirm_usb_write_or_abort() {
   fi
 
   ab_confirm_require_removable "$TARGET" "$ALLOW_FIXED_DISK" || exit 1
-  ab_confirm_typed_path "$TARGET" || exit 1
+  if [[ "$TARGET_AUTO_DETECTED" == true ]]; then
+    echo "==> Target was auto-detected from the boot disk; skipping typed-path gate."
+    echo "    Pass --target to force a different disk; pass --yes to also skip"
+    echo "    the slot picker if both slots are populated."
+  else
+    ab_confirm_typed_path "$TARGET" || exit 1
+  fi
 }
 
 resolve_disk_device() {
@@ -1112,6 +1124,132 @@ select_root_slot_for_seed() {
     ROOT_PART="${candidates[$best_idx]}"
     echo "==> Selected root slot for seed (auto --yes): $ROOT_PART (PARTLABEL=${labels[$best_idx]})"
     return 0
+}
+
+# Prune accumulated systemd-boot Type 1 BLS entries (and their
+# referenced kernel/initrd files in /EFI/Linux) so the menu only ever
+# shows up-to-date entries for the disk's CURRENT root slots.
+#
+# Strategy: keep at most one entry per current root slot — the
+# just-written entry for the active slot, plus the newest existing
+# entry pointing at any other current PARTUUID (the fallback to the
+# previously-booted slot). Entries that:
+#   * reference a PARTUUID that isn't on the disk anymore
+#     (e.g. left over from a prior repartition)
+#   * duplicate an already-kept slot with an older mtime / version
+#   * couldn't have their PARTUUID parsed
+# all get removed. /EFI/Linux/*.{linux,initrd,efi} files that no kept
+# entry references are then cleaned up too.
+#
+# Safe by construction: the just-written entry is always preserved,
+# and the most-recent fallback per slot is preserved, so a user can
+# still rescue-boot a known-good slot. Bash 4+ associative arrays
+# are used; the rest of this file already requires bash 4 (see the
+# existing `declare -A seen` in ab_hostdeps_dedup_packages).
+prune_old_boot_entries() {
+    local esp_mount="$1"
+    local current_entry_file="$2"
+    local entries_dir="$esp_mount/loader/entries"
+    local linux_dir="$esp_mount/EFI/Linux"
+
+    [[ -d "$entries_dir" ]] || return 0
+
+    # PARTUUIDs of every current root-shaped slot on the target disk.
+    local valid_pus_glob=""
+    local line NAME PARTLABEL FSTYPE TYPE pu
+    while read -r line; do
+        eval "$line"
+        [[ "$TYPE" == "part" ]] || continue
+        case "$PARTLABEL" in
+            ESP|HOME|DATA) continue ;;
+        esac
+        [[ "$FSTYPE" == "ext4" || "$FSTYPE" == "crypto_LUKS" || -z "$FSTYPE" ]] || continue
+        pu="$(blkid -s PARTUUID -o value "$NAME" 2>/dev/null || true)"
+        [[ -n "$pu" ]] && valid_pus_glob="${valid_pus_glob}|${pu^^}"
+    done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
+
+    # Phase 1: pick a single winner per PARTUUID. The just-written
+    # entry always wins for its slot; otherwise newest mtime wins.
+    declare -A winner_per_pu=()
+    declare -A winner_mtime=()
+
+    local conf entry_pu mt
+    shopt -s nullglob
+    for conf in "$entries_dir"/*.conf; do
+        [[ -f "$conf" ]] || continue
+        entry_pu="$(awk '
+            /^options/ {
+                for (i=1; i<=NF; i++) {
+                    if (match($i, /^root=PARTUUID=/)) {
+                        sub(/^root=PARTUUID=/, "", $i)
+                        print toupper($i); exit
+                    }
+                }
+            }' "$conf" 2>/dev/null)"
+        [[ -n "$entry_pu" ]] || continue
+        # Drop entries whose PARTUUID no longer exists on the disk.
+        [[ "${valid_pus_glob}|" == *"|${entry_pu}|"* ]] || continue
+
+        if [[ "$conf" == "$current_entry_file" ]]; then
+            winner_per_pu[$entry_pu]="$conf"
+            winner_mtime[$entry_pu]=9999999999
+            continue
+        fi
+
+        mt="$(stat -c '%Y' "$conf" 2>/dev/null || echo 0)"
+        if [[ -z "${winner_per_pu[$entry_pu]:-}" ]] || (( mt > ${winner_mtime[$entry_pu]:-0} )); then
+            winner_per_pu[$entry_pu]="$conf"
+            winner_mtime[$entry_pu]="$mt"
+        fi
+    done
+    shopt -u nullglob
+
+    # Phase 2: keep winners; collect their referenced kernel/initrd
+    # files; delete losers.
+    declare -A kept_files=()
+    local removed_count=0 is_winner pu f
+    shopt -s nullglob
+    for conf in "$entries_dir"/*.conf; do
+        [[ -f "$conf" ]] || continue
+        is_winner=no
+        for pu in "${!winner_per_pu[@]}"; do
+            if [[ "${winner_per_pu[$pu]}" == "$conf" ]]; then
+                is_winner=yes
+                break
+            fi
+        done
+        if [[ "$is_winner" == "yes" ]]; then
+            while IFS= read -r f; do
+                [[ -n "$f" ]] && kept_files[$f]=1
+            done < <(awk '/^linux[[:space:]]/ { print $2 } /^initrd[[:space:]]/ { print $2 }' "$conf")
+        else
+            echo "    - pruning stale boot entry: $(basename "$conf")"
+            rm -f "$conf"
+            removed_count=$((removed_count + 1))
+        fi
+    done
+    shopt -u nullglob
+    (( removed_count > 0 )) \
+        && echo "==> Pruned $removed_count stale boot entry(ies) from /loader/entries/"
+
+    # Phase 3: orphan kernel / initrd / standalone-UKI files in
+    # /EFI/Linux that no kept entry references.
+    if [[ -d "$linux_dir" ]]; then
+        local lf rel orphans=0
+        shopt -s nullglob
+        for lf in "$linux_dir"/*.linux "$linux_dir"/*.initrd "$linux_dir"/*.efi; do
+            [[ -f "$lf" ]] || continue
+            rel="/EFI/Linux/$(basename "$lf")"
+            if [[ -z "${kept_files[$rel]:-}" ]]; then
+                echo "    - pruning orphan: $(basename "$lf")"
+                rm -f "$lf"
+                orphans=$((orphans + 1))
+            fi
+        done
+        shopt -u nullglob
+        (( orphans > 0 )) \
+            && echo "==> Pruned $orphans orphan kernel/initrd file(s) from /EFI/Linux/"
+    fi
 }
 
 # --reflash helpers ---------------------------------------------------------
@@ -1342,6 +1480,27 @@ select_inactive_root_slot_for_reseed() {
         done
     fi
 
+    # 2.5) loader.conf told us nothing useful — most commonly a LUKS
+    # root, where the cmdline uses `rd.luks.uuid=...` and `root=/dev/mapper/...`
+    # (no PARTUUID), so step 2 returned an empty string. When ab-install
+    # is being run from a booted A/B system, the kernel itself knows
+    # which partition `/` is mounted from; walk through any LUKS / dm
+    # layers to find that partition's PARTUUID and match it.
+    if (( active_idx < 0 )); then
+        local mounted_pu
+        mounted_pu="$(detect_active_root_partuuid 2>/dev/null || true)"
+        if [[ -n "$mounted_pu" ]]; then
+            for i in "${!candidates[@]}"; do
+                if [[ "${partuuids[$i]^^}" == "${mounted_pu^^}" ]]; then
+                    active_idx="$i"
+                    active_partuuid="$mounted_pu"
+                    echo "==> --reflash: matched active slot via mounted root: ${candidates[$i]}"
+                    break
+                fi
+            done
+        fi
+    fi
+
     if (( active_idx >= 0 )); then
         for i in "${!candidates[@]}"; do
             if (( i != active_idx )); then
@@ -1356,7 +1515,7 @@ select_inactive_root_slot_for_reseed() {
     # 3) Couldn't identify the active slot. With --yes pick the first
     # non-_empty candidate deterministically. Otherwise fall through
     # to the existing interactive picker.
-    echo "==> --reflash: could not determine the active slot from loader.conf"
+    echo "==> --reflash: could not determine the active slot from loader.conf or live root"
     echo "    (loader.conf default=$(read_default_entry_root_partuuid || echo none))"
     if [[ "$ASSUME_YES" == true ]]; then
         ROOT_PART="${candidates[0]}"
@@ -1364,6 +1523,34 @@ select_inactive_root_slot_for_reseed() {
         return 0
     fi
     select_root_slot_for_seed
+}
+
+# Walk from / through any LUKS / device-mapper layers to the underlying
+# partition and return its GPT PARTUUID. This is the right answer for
+# "which root slot is the running system booted from?" when the system
+# is actually live (e.g. ab-install run from inside an A/B install),
+# even when the boot cmdline uses rd.luks.uuid= rather than
+# root=PARTUUID= and so loader.conf parsing alone can't tell the
+# slots apart.
+detect_active_root_partuuid() {
+    local root_src dm_name slave_dir slave guard=0
+    command -v findmnt >/dev/null 2>&1 || return 1
+    command -v blkid   >/dev/null 2>&1 || return 1
+
+    root_src="$(findmnt -no SOURCE / 2>/dev/null || true)"
+    [[ -n "$root_src" ]] || return 1
+
+    while [[ "$root_src" == /dev/mapper/* || "$root_src" == /dev/dm-* ]]; do
+        (( guard++ < 8 )) || return 1
+        dm_name="$(basename "$(readlink -f "$root_src" 2>/dev/null || echo "$root_src")")"
+        slave_dir="/sys/class/block/$dm_name/slaves"
+        [[ -d "$slave_dir" ]] || return 1
+        slave="$(ls "$slave_dir" 2>/dev/null | head -n1)"
+        [[ -n "$slave" ]] || return 1
+        root_src="/dev/$slave"
+    done
+
+    blkid -s PARTUUID -o value "$root_src" 2>/dev/null
 }
 
 # --- end --reflash helpers -------------------------------------------------
@@ -1569,6 +1756,15 @@ seed_first_root_slot() {
             entry_basename="${prefix}"
             echo "==> Wiping old boot entries from USB ESP"
             rm -f "$esp_mount/loader/entries/"*.conf
+            # Bootstrap repartitions the disk, so any old kernel /
+            # initrd / standalone UKI in /EFI/Linux belongs to a slot
+            # that no longer exists. Clear them out so the menu and
+            # the ESP free space match the freshly-written layout.
+            if [[ -d "$esp_mount/EFI/Linux" ]]; then
+                rm -f "$esp_mount/EFI/Linux/"*.linux \
+                      "$esp_mount/EFI/Linux/"*.initrd \
+                      "$esp_mount/EFI/Linux/"*.efi
+            fi
         fi
 
         # Set the new entry as the explicit default in loader.conf so
@@ -1718,8 +1914,15 @@ seed_first_root_slot() {
 
             echo "==> Wrote Type 1 BLS boot entry: $conf_dest"
             echo "    cmdline: ${_src_options}"
+
+            # Now that the new entry is in place, prune anything that
+            # has been left behind from prior reflashes / image
+            # versions / re-bootstraps. The user reported boot menus
+            # accumulating dozens of stale entries; this cap brings
+            # it back to "one entry per current root slot".
+            prune_old_boot_entries "$esp_mount" "$conf_dest"
         fi
-        
+
         umount "$esp_mount"
         rmdir "$esp_mount"
     else
@@ -2019,6 +2222,13 @@ copy_bundle() {
   fi
 
   install -d -m 0700 "$out"
+  # `install -d -m MODE` only sets the mode on directories it CREATES;
+  # an existing /root from the dd'd .root.raw keeps whatever mode it
+  # was built with. Force 0700 explicitly so a pre-existing 0755 from
+  # the source image is corrected here too. (mkosi.finalize also
+  # locks /root at build time, but defense-in-depth: re-running the
+  # installer over an older image needs the same lock applied.)
+  chmod 0700 "$out"
 
   # The script itself. This is the SAME file you ran to create this
   # disk; copying it verbatim guarantees /root/ab-install.sh on the
@@ -2321,6 +2531,7 @@ if [[ -z "$TARGET" ]]; then
   if [[ -n "$_candidate_target" && -b "$_candidate_target" ]]; then
     TARGET="$_candidate_target"
     if detect_existing_ab_layout; then
+      TARGET_AUTO_DETECTED=true
       echo "==> Auto-detected target: $TARGET (boot disk; has an existing A/B layout)"
       echo "    Will write to the inactive root slot. Pass --target to override."
     else

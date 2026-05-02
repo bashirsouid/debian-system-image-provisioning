@@ -1,2 +1,2 @@
-description="Kopia backup. TODO(phase-3): add kopia.io apt source + signing key, then add 'kopia' package."
+description="Kopia backup CLI from kopia.io (apt source + pinned signing key shipped with the profile)."
 uses_secrets=""

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Antigravity
+GenericName=Agentic IDE
+Comment=Google Antigravity (drop the AppImage at /opt/antigravity/)
+Exec=/usr/local/bin/antigravity %F
+Icon=applications-development
+Terminal=false
+Categories=Development;IDE;
+StartupNotify=true
