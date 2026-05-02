@@ -1,1 +1,1 @@
-quiet intel_iommu=on iommu=pt pcie_ports=compat pm_async=off mem_sleep_default=deep hid_apple.fnmode=1
+quiet intel_iommu=on iommu=pt pcie_ports=compat pm_async=off mem_sleep_default=s2idle hid_apple.fnmode=1

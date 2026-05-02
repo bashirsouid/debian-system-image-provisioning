@@ -4,10 +4,19 @@ Before=sleep.target
 StopWhenUnneeded=yes
 
 [Service]
+User=root
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/libexec/t2-suspend-workaround pre
-ExecStop=/usr/local/libexec/t2-suspend-workaround post
+# Unload in reverse dependency order: thunderbolt must go before apple-bce
+# because the T2's internal xHCI controller (0000:07:00.0) lives behind the
+# Thunderbolt PCIe bridge. If thunderbolt is still active when apple-bce is
+# removed, the xHCI controller loses its parent at resume and comes back
+# with -ENODEV (-19), causing a resume error. Unloading thunderbolt first
+# ensures the xHCI controller is cleanly parked before BCE disappears.
+ExecStart=/usr/sbin/modprobe -r thunderbolt
+ExecStart=/usr/sbin/rmmod -f apple-bce
+ExecStop=/usr/sbin/modprobe apple-bce
+ExecStop=/usr/sbin/modprobe thunderbolt
 
 [Install]
 WantedBy=sleep.target

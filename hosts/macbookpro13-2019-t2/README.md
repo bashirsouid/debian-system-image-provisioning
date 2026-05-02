@@ -19,7 +19,7 @@ What it does:
 - uses NetworkManager with Debian's `network-manager-iwd` integration
 - keeps the t2linux/Apple-Firmware APT repos in the image so matching headers can still be installed later if you rerun the audio fix manually
 - loads `apple-bce` automatically for the rest of the T2 bridge devices
-- adds T2-oriented kernel args: `intel_iommu=on iommu=pt pcie_ports=compat pm_async=off mem_sleep_default=deep`
+- adds T2-oriented kernel args: `intel_iommu=on iommu=pt pcie_ports=compat pm_async=off mem_sleep_default=s2idle`
 - enables a suspend workaround service that reloads the T2 and Broadcom modules across suspend/resume
 - ships a manual fallback helper at `/usr/local/sbin/macbook-audio-fix`
 

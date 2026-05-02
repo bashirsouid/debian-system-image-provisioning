@@ -137,29 +137,76 @@ if chroot "$ROOT" command -v update-initramfs >/dev/null 2>&1; then
     shopt -u nullglob
   fi
 fi
-# Bypass apt for t2fanrd: the upstream Debian package's postinst runs
-#
-#   systemctl enable --now t2fanrd.service
-#
-# The `--now` half attempts an immediate `start` of the unit, which
-# fails inside mkosi's build sandbox because there is no real PID1 /
-# dbus to talk to. The postinst then exits non-zero and dpkg aborts
-# the whole apt-get install with "Errors were encountered while
-# processing: t2fanrd". Because dpkg/apt have no option to ignore
-# postinst failures, the only fix is to never let dpkg run that
-# postinst — install the package's files directly via `dpkg-deb -x`
-# and create the unit-enable symlink ourselves.
-#
-# Gated on the presence of a linux-t2 kernel module directory so
-# non-macbook builds skip this step entirely. dpkg won't track t2fanrd
-# as installed, but in this A/B-image model that's fine: each new
-# build is a from-scratch image (no in-place apt-upgrade), and the
-# binary + .service + multi-user.target.wants symlink is everything
-# the booted system needs.
+# Install versioned T2 kernel headers and build the CS8409 DKMS module.
+# The t2linux repo provides headers as linux-headers-<kver>, not a
+# linux-headers-t2 metapackage, so this must be resolved dynamically after
+# the kernel is already present in the chroot.
 shopt -s nullglob
 _t2_module_dirs=("$ROOT"/usr/lib/modules/*-t2-*)
 shopt -u nullglob
 if (( ${#_t2_module_dirs[@]} > 0 )); then
+    _t2_kver="$(basename "${_t2_module_dirs[0]}")"
+    _t2_headers_pkg="linux-headers-${_t2_kver}"
+
+    echo "==> [FINALIZE] installing T2 kernel headers: $_t2_headers_pkg"
+    if ! chroot "$ROOT" env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            -o Acquire::Check-Valid-Until=false "$_t2_headers_pkg"; then
+        echo "ERROR: [FINALIZE] failed to install $_t2_headers_pkg — DKMS build will fail" >&2
+        exit 1
+    fi
+
+    # Prepare the kernel build directory for DKMS module compilation. Debian's linux-headers
+    # package provides source files but does NOT include a prepared kernel build directory.
+    # The `make modules_prepare` step generates necessary artifacts (config, generated headers)
+    # in /lib/modules/{kver}/build that are required for DKMS to build modules.
+    echo "==> [FINALIZE] preparing kernel build directory for DKMS: $_t2_kver"
+    if ! chroot "$ROOT" sh -c "make -C /lib/modules/$_t2_kver/build -j\$(nproc) modules_prepare" 2>&1 | head -50; then
+        echo "ERROR: [FINALIZE] failed to prepare kernel build directory for $_t2_kver" >&2
+        exit 1
+    fi
+
+    _dkms_src="$ROOT/usr/local/src/snd_hda_macbookpro"
+    if [[ ! -d "$_dkms_src" || ! -f "$_dkms_src/install.cirrus.driver.sh" ]]; then
+        _dkms_src="$(find "$ROOT/usr/src" -maxdepth 1 -type d -name 'snd_hda_macbookpro*' | head -n1 || true)"
+    fi
+    if [[ -z "$_dkms_src" || ! -f "$_dkms_src/install.cirrus.driver.sh" ]]; then
+        echo "ERROR: [FINALIZE] no snd_hda_macbookpro source found in /usr/local/src or /usr/src" >&2
+        echo "       Add snd-hda-macbookpro-dkms (or equivalent source overlay) to Packages= / extra tree." >&2
+        exit 1
+    fi
+
+    _dkms_ver="$(grep -E '^PACKAGE_VERSION=' "$_dkms_src/dkms.conf" | cut -d'=' -f2 | tr -d '"')"
+    if [[ -z "$_dkms_ver" ]]; then
+        echo "ERROR: [FINALIZE] could not determine snd_hda_macbookpro DKMS version from $_dkms_src/dkms.conf" >&2
+        exit 1
+    fi
+
+    _dkms_dst="$ROOT/usr/src/snd_hda_macbookpro-${_dkms_ver}"
+    rm -rf "$_dkms_dst"
+    mkdir -p "$_dkms_dst"
+    cp -a "$_dkms_src/." "$_dkms_dst/"
+
+    echo "==> [FINALIZE] building snd_hda_macbookpro-${_dkms_ver} for kernel ${_t2_kver}"
+    chroot "$ROOT" dkms remove -m snd_hda_macbookpro -v "$_dkms_ver" --all >/dev/null 2>&1 || true
+    chroot "$ROOT" dkms add -m snd_hda_macbookpro -v "$_dkms_ver"
+    chroot "$ROOT" dkms build -m snd_hda_macbookpro -v "$_dkms_ver" -k "$_t2_kver" --force
+    chroot "$ROOT" dkms install -m snd_hda_macbookpro -v "$_dkms_ver" -k "$_t2_kver" --force
+
+    echo "==> [FINALIZE] removing T2 kernel headers after DKMS build"
+    chroot "$ROOT" env DEBIAN_FRONTEND=noninteractive apt-get purge -y --auto-remove \
+            -o Acquire::Check-Valid-Until=false "$_t2_headers_pkg" || true
+
+    _cs8409_ko="$(find "$ROOT/usr/lib/modules/$_t2_kver/updates" -name 'snd-hda-codec-cs8409.ko*' 2>/dev/null | head -1)"
+    if [[ -z "$_cs8409_ko" ]]; then
+        echo "ERROR: [FINALIZE] CS8409 DKMS module missing from /updates/ after install" >&2
+        exit 1
+    fi
+    echo "==> [FINALIZE] CS8409 DKMS module verified at: ${_cs8409_ko#$ROOT}"
+
+    unset _t2_kver _t2_headers_pkg _dkms_src _dkms_ver _dkms_dst _cs8409_ko
+
+    # Fall through into the existing t2fanrd / t2-better-audio section.
+# Bypass apt for t2fanrd: the upstream Debian package's postinst runs
   echo "==> [FINALIZE] T2 kernel detected; installing t2fanrd via dpkg-deb -x (postinst bypass)"
   _t2_repo="https://adityagarg8.github.io/t2-ubuntu-repo"
   _t2_tmp="$(mktemp -d)"
@@ -192,9 +239,41 @@ if (( ${#_t2_module_dirs[@]} > 0 )); then
     fi
   fi
   rm -rf "$_t2_tmp"
-fi
-unset _t2_module_dirs _t2_repo _t2_tmp _t2fanrd_filename
 
+    # ── T2 audio DSP config: kekrby/t2-better-audio ──────────────────────────
+    # The CS8409 DKMS driver (snd_hda_macbookpro) makes the audio hardware
+    # visible to ALSA, but without UCM2 profiles and PipeWire filter-chain
+    # configs, all output is silently mis-routed. kekrby/t2-better-audio
+    # provides:
+    #   - UCM2 configs → /usr/share/alsa/ucm2/  (tells ALSA the codec topology
+    #     for the non-standard CS8409 HDA layout Apple uses on T2 MacBooks)
+    #   - PipeWire filter-chain configs → /usr/share/pipewire/filter-chain.conf.d/
+    #     (DSP EQ + routing so audio reaches the built-in speakers and the
+    #     3.5mm headphone jack, not just a silent dummy sink)
+    #
+    # DESTDIR= is critical: install.sh must not try to restart dbus/pipewire
+    # inside the mkosi build sandbox. The script respects DESTDIR and only
+    # copies files — no chroot or service invocation is needed.
+    #
+    # Gated inside the T2 module check: only runs when linux-t2 module dirs
+    # are present, i.e. only for T2 MacBook builds.
+    # Source: https://wiki.t2linux.org/guides/audio-config/
+    _t2_audio_tmp="$(mktemp -d)"
+    if git clone --depth=1 \
+            https://github.com/kekrby/t2-better-audio.git \
+            "$_t2_audio_tmp/t2-better-audio" 2>&1; then
+        if DESTDIR="$ROOT" bash "$_t2_audio_tmp/t2-better-audio/install.sh"; then
+            echo "==> [FINALIZE] kekrby/t2-better-audio UCM2 + PipeWire DSP configs installed"
+        else
+            echo "WARNING: [FINALIZE] t2-better-audio install.sh failed; speaker routing may be wrong" >&2
+        fi
+    else
+        echo "WARNING: [FINALIZE] could not clone kekrby/t2-better-audio; speaker routing may be wrong" >&2
+    fi
+    rm -rf "$_t2_audio_tmp"
+
+fi
+unset _t2_module_dirs _t2_repo _t2_tmp _t2fanrd_filename _t2_audio_tmp
 if [[ -n "${AB_IMAGE_ID:-}" ]]; then
   echo "==> [FINALIZE] setting IMAGE_ID=$AB_IMAGE_ID in /usr/lib/os-release"
   append_or_replace_os_release_key IMAGE_ID "$AB_IMAGE_ID"
