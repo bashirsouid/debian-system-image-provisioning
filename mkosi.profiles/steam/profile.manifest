@@ -1,2 +1,2 @@
-description="Steam client (Debian steam-installer + i386 GL/Vulkan stack). The profile's mkosi.prepare enables i386 multilib in the build chroot before apt-get install resolves :i386 deps."
+description="Steam client (Debian steam-installer + i386 GL/Vulkan stack). The profile's mkosi.postinst enables i386 multilib in the build chroot and installs steam-installer + :i386 deps after mkosi's main package step (mkosi pins that step to amd64-only)."
 uses_secrets=""
