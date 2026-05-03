@@ -155,55 +155,48 @@ if (( ${#_t2_module_dirs[@]} > 0 )); then
         exit 1
     fi
 
-    # Prepare the kernel build directory for DKMS module compilation. Debian's linux-headers
-    # package provides source files but does NOT include a prepared kernel build directory.
-    # The `make modules_prepare` step generates necessary artifacts (config, generated headers)
-    # in /lib/modules/{kver}/build that are required for DKMS to build modules.
-    echo "==> [FINALIZE] preparing kernel build directory for DKMS: $_t2_kver"
-    if ! chroot "$ROOT" sh -c "make -C /lib/modules/$_t2_kver/build -j\$(nproc) modules_prepare" 2>&1 | head -50; then
-        echo "ERROR: [FINALIZE] failed to prepare kernel build directory for $_t2_kver" >&2
+    # Clone snd_hda_macbookpro and call install.cirrus.driver.sh directly.
+    # DKMS is intentionally bypassed: its pre_build hook calls `uname -r`
+    # internally, which returns the HOST kernel inside mkosi's sandbox —
+    # not the T2 kernel. Passing -k explicitly bypasses uname -r.
+    _t2_snd_tmp="$(mktemp -d)"
+    if git clone --depth=1 \
+            https://github.com/davidjo/snd_hda_macbookpro.git \
+            "$_t2_snd_tmp/snd_hda_macbookpro" 2>&1; then
+        echo "==> [FINALIZE] building CS8409 via install.cirrus.driver.sh -k $_t2_kver"
+        if ! chroot "$ROOT" env DEBIAN_FRONTEND=noninteractive \
+                bash "/proc/self/fd/0" -k "$_t2_kver" \
+                < "$_t2_snd_tmp/snd_hda_macbookpro/install.cirrus.driver.sh"; then
+            _cs8409_ko="$(find "$ROOT/usr/lib/modules/$_t2_kver" \
+                -name 'snd-hda-codec-cs8409.ko*' 2>/dev/null | head -1)"
+            if [[ -z "$_cs8409_ko" ]]; then
+                echo "ERROR: [FINALIZE] install.cirrus.driver.sh failed and CS8409 module is missing" >&2
+                rm -rf "$_t2_snd_tmp"
+                exit 1
+            fi
+            echo "WARNING: [FINALIZE] install.cirrus.driver.sh exited non-zero but module present; continuing" >&2
+        fi
+    else
+        echo "ERROR: [FINALIZE] could not clone davidjo/snd_hda_macbookpro" >&2
+        rm -rf "$_t2_snd_tmp"
         exit 1
     fi
+    rm -rf "$_t2_snd_tmp"
 
-    _dkms_src="$ROOT/usr/local/src/snd_hda_macbookpro"
-    if [[ ! -d "$_dkms_src" || ! -f "$_dkms_src/install.cirrus.driver.sh" ]]; then
-        _dkms_src="$(find "$ROOT/usr/src" -maxdepth 1 -type d -name 'snd_hda_macbookpro*' | head -n1 || true)"
-    fi
-    if [[ -z "$_dkms_src" || ! -f "$_dkms_src/install.cirrus.driver.sh" ]]; then
-        echo "ERROR: [FINALIZE] no snd_hda_macbookpro source found in /usr/local/src or /usr/src" >&2
-        echo "       Add snd-hda-macbookpro-dkms (or equivalent source overlay) to Packages= / extra tree." >&2
-        exit 1
-    fi
-
-    _dkms_ver="$(grep -E '^PACKAGE_VERSION=' "$_dkms_src/dkms.conf" | cut -d'=' -f2 | tr -d '"')"
-    if [[ -z "$_dkms_ver" ]]; then
-        echo "ERROR: [FINALIZE] could not determine snd_hda_macbookpro DKMS version from $_dkms_src/dkms.conf" >&2
-        exit 1
-    fi
-
-    _dkms_dst="$ROOT/usr/src/snd_hda_macbookpro-${_dkms_ver}"
-    rm -rf "$_dkms_dst"
-    mkdir -p "$_dkms_dst"
-    cp -a "$_dkms_src/." "$_dkms_dst/"
-
-    echo "==> [FINALIZE] building snd_hda_macbookpro-${_dkms_ver} for kernel ${_t2_kver}"
-    chroot "$ROOT" dkms remove -m snd_hda_macbookpro -v "$_dkms_ver" --all >/dev/null 2>&1 || true
-    chroot "$ROOT" dkms add -m snd_hda_macbookpro -v "$_dkms_ver"
-    chroot "$ROOT" dkms build -m snd_hda_macbookpro -v "$_dkms_ver" -k "$_t2_kver" --force
-    chroot "$ROOT" dkms install -m snd_hda_macbookpro -v "$_dkms_ver" -k "$_t2_kver" --force
-
-    echo "==> [FINALIZE] removing T2 kernel headers after DKMS build"
-    chroot "$ROOT" env DEBIAN_FRONTEND=noninteractive apt-get purge -y --auto-remove \
-            -o Acquire::Check-Valid-Until=false "$_t2_headers_pkg" || true
-
-    _cs8409_ko="$(find "$ROOT/usr/lib/modules/$_t2_kver/updates" -name 'snd-hda-codec-cs8409.ko*' 2>/dev/null | head -1)"
+    _cs8409_ko="$(find "$ROOT/usr/lib/modules/$_t2_kver" \
+        -name 'snd-hda-codec-cs8409.ko*' 2>/dev/null | head -1)"
     if [[ -z "$_cs8409_ko" ]]; then
-        echo "ERROR: [FINALIZE] CS8409 DKMS module missing from /updates/ after install" >&2
+        echo "ERROR: [FINALIZE] CS8409 module missing after install" >&2
         exit 1
     fi
-    echo "==> [FINALIZE] CS8409 DKMS module verified at: ${_cs8409_ko#$ROOT}"
+    echo "==> [FINALIZE] CS8409 module verified: ${_cs8409_ko#"$ROOT"}"
+    chroot "$ROOT" depmod -a "$_t2_kver"
 
-    unset _t2_kver _t2_headers_pkg _dkms_src _dkms_ver _dkms_dst _cs8409_ko
+    echo "==> [FINALIZE] removing T2 kernel headers after CS8409 build"
+    chroot "$ROOT" env DEBIAN_FRONTEND=noninteractive apt-get purge -y \
+        -o Acquire::Check-Valid-Until=false "$_t2_headers_pkg" || true
+
+    unset _t2_kver _t2_headers_pkg _t2_snd_tmp _cs8409_ko
 
     # Fall through into the existing t2fanrd / t2-better-audio section.
 # Bypass apt for t2fanrd: the upstream Debian package's postinst runs

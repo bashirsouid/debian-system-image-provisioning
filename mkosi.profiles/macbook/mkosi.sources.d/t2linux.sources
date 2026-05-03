@@ -1,0 +1,3 @@
+[Config]
+Repositories=https://adityagarg8.github.io/t2-ubuntu-repo trixie main
+RepositoryKeyUrls=https://adityagarg8.github.io/t2-ubuntu-repo/key.gpg
