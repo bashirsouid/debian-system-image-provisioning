@@ -36,6 +36,7 @@ Profile directories currently in the tree:
 | `antigravity` | *(stub)* Google Antigravity IDE |
 | `audio-pipewire` | PipeWire + bluez audio stack |
 | `awesomewm` | awesome window manager + xorg (with xorg-legacy) |
+| `bluetooth` | Bluetooth support with bluez stack |
 | `cloudflare-tunnel` | cloudflared connector for backup SSH |
 | `devbox` | Liquorix kernel + spice-vdagent (QEMU/virt guest) |
 | `dev-tools` | Baseline CLI: git, curl, vim, htop, tmux, rsync, less, jq |
