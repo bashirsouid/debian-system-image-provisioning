@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The BUILDROOT environment variable is provided by mkosi
+ROOT="${BUILDROOT:?BUILDROOT is required}"
+
+# Same for ssh.socket — Debian ships both ssh.service and ssh.socket enabled
+# by default and they fight over :22. The preset disables ssh.socket for new
+# enables, but if the package's postinst already wrote the wants-symlink,
+# preset-all leaves it. Removing the symlink directly is what actually
+# stops it from racing ssh.service into the failed state we saw in the
+# journal.
+if [[ -L "$ROOT/etc/systemd/system/sockets.target.wants/ssh.socket" ]]; then
+  echo "==> [FINALIZE] removing leftover sockets.target.wants/ssh.socket symlink"
+  rm -f "$ROOT/etc/systemd/system/sockets.target.wants/ssh.socket"
+fi
