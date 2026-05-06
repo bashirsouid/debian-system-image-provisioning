@@ -1,0 +1,3 @@
+[Profile]
+Name=display-manager-gdm3
+Description=GNOME Display Manager (GDM3) for graphical login supporting both X11 and Wayland sessions

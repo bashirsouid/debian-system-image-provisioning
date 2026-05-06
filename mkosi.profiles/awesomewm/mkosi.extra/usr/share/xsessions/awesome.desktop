@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Awesome
+Comment=Highly configurable framework window manager
+Exec=awesome
+TryExec=awesome
+Type=Application
+Keywords=wm;windowmanager;
