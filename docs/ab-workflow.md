@@ -19,6 +19,52 @@ This repository now uses the modern retained-version flow as its design center:
 - in-place later updates with `systemd-sysupdate`
 - boot health gating before `boot-complete.target`
 - ARM64 `cloudbox` server builds and automation
+- dual-boot install alongside existing OSes (`--preserve` mode)
+- optional persistent storage symlinks for Docker/K3s (`symlink-docker`, `symlink-k3s` profiles)
+
+## Dual-boot / preserve mode
+
+If you want to keep an existing OS (e.g. Windows) and add Linux A/B root
+partitions in the free space, run the installer from a live USB:
+
+```bash
+sudo ./bin/ab-install.sh \
+  --target /dev/nvme0n1 \
+  --preserve \
+  --home-size 64G \
+  --data-size rest \
+  --yes
+```
+
+`--preserve` changes the behaviour of `systemd-repart` from `--empty=force`
+(wipe everything) to `--empty=allow` (add new partitions alongside existing
+ones). Existing partitions are left untouched; new ESP, root-A, root-B,
+HOME and DATA partitions are created in the available free space.
+
+All new partitions are automatically aligned to 4K boundaries for optimal
+SSD/NVMe performance. After repartitioning, a post-install check verifies
+alignment of every partition on the target.
+
+## Persistent container storage symlinks
+
+By default Docker and K3s store their data under `/var/lib/`, which lives
+inside the A/B root partition and gets replaced on each update. Two optional
+profiles create first-boot systemd oneshot services that symlink these
+directories to the persistent DATA partition:
+
+| Profile | What it does |
+|---------|--------------|
+| `symlink-docker` | `/var/lib/docker -> /mnt/data/docker` |
+| `symlink-k3s` | `/var/lib/rancher/k3s -> /mnt/data/k3s`, `/var/lib/containers -> /mnt/data/containers` |
+
+Both are idempotent (gated by `ConditionPathExists=!.../done`), require no
+packages, and are composed into the image at build time:
+
+```bash
+./build.sh --profile "devbox symlink-docker symlink-k3s" --host mylaptop
+# or using the convenience role:
+./build.sh --profile "devbox symlinks" --host mylaptop
+```
 
 ## What still remains out of scope
 

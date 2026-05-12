@@ -1,0 +1,16 @@
+[Unit]
+Description=Symlink K3s and container storage to persistent DATA partition
+Documentation=file:///usr/local/libexec/ab-symlink-k3s
+After=local-fs.target
+ConditionPathExists=!/var/lib/ab-symlink-k3s/done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'test -d /mnt/data && mkdir -p /mnt/data/k3s /mnt/data/containers && ln -sf /mnt/data/k3s /var/lib/rancher/k3s && ln -sf /mnt/data/containers /var/lib/containers || true'
+ExecStartPost=/bin/sh -c 'install -d -m 0700 /var/lib/ab-symlink-k3s && date -u +%Y-%m-%dT%H:%M:%SZ > /var/lib/ab-symlink-k3s/done'
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

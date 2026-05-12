@@ -1,0 +1,2 @@
+description="Symlink /var/lib/rancher/k3s and /var/lib/containers -> DATA partition for persistent K8s storage across A/B swaps."
+uses_secrets=""

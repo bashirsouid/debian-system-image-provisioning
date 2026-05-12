@@ -1,0 +1,2 @@
+description="Symlink /var/lib/docker -> /mnt/data/docker for persistent container storage across A/B swaps."
+uses_secrets=""

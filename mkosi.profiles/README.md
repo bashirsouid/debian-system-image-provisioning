@@ -52,6 +52,8 @@ Profile directories currently in the tree:
 | `signal` | *(apt-source wired)* Signal Desktop — uncomment Packages= to enable |
 | `ssh-server` | openssh-server + hardening drop-ins |
 | `steam` | *(stub)* Steam client |
+| `symlink-docker` | Symlink `/var/lib/docker` -> `/mnt/data/docker` for persistent container storage |
+| `symlink-k3s` | Symlink K3s + container storage to `/mnt/data/` for persistent K8s state |
 | `tailscale` | Tailscale mesh VPN |
 | `telegraf` | *(apt-source wired)* InfluxData Telegraf — uncomment Packages= to enable |
 | `vscode` | *(apt-source wired)* Microsoft VSCode — uncomment Packages= to enable |
@@ -162,6 +164,7 @@ Pre-defined roles:
 | `group_dev` | `dev-tools vscode antigravity incus k3s` |
 | `group_photo` | `digikam kopia` |
 | `group_game` | `flatpak steam` |
+| `symlinks` | `symlink-docker symlink-k3s` |
 
 You can use role names anywhere a profile name is accepted:
 `--profile "macbook awesomewm group_dev wifi ssh-server"` or in

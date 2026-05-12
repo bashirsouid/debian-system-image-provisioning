@@ -568,6 +568,7 @@ actually runs them. Each of those directories also has its own short
 
 Other directories worth knowing about:
 
+* `mkosi.profiles/` — composable image profiles (see `mkosi.profiles/README.md` for the full table)
 * `mkosi.sysupdate/` — sysupdate transfer definitions baked into the image
 * `deploy.repart/` — one-time disk layout used during bootstrap
 * `mkosi.extra/usr/local/` — code that actually ends up running on the

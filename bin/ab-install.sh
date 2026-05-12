@@ -583,6 +583,7 @@ REFLASH=false
 LUKS_PASSPHRASE=""    # passphrase for LUKS-encrypted roots (--luks-passphrase)
 LUKS_MAP=""           # mapper name opened by seed_first_root_slot; closed by cleanup()
 LUKS_PASS_FILE=""     # tmpfile holding passphrase; shredded by cleanup()
+PRESERVE_MODE=false   # --preserve: keep existing partitions, add new ones in free space
 
 usage() {
   cat <<'USAGE'
@@ -665,11 +666,15 @@ Options:
                         "I flashed my laptop's SSD by accident" case
   --yes                 skip destructive confirmation prompts
   --diagnostic-mode     append initrd debug params to the boot entry
-  --luks-passphrase PASSPHRASE
-                        passphrase for a LUKS-encrypted root partition. Required
-                        when *.root.raw uses LUKS (auto-detected after dd). The
-                        passphrase is fed to cryptsetup via stdin and is not
-                        stored anywhere on the disk.
+--luks-passphrase PASSPHRASE
+                         passphrase for a LUKS-encrypted root partition. Required
+                         when *.root.raw uses LUKS (auto-detected after dd). The
+                         passphrase is fed to cryptsetup via stdin and is not
+                         stored anywhere on the disk.
+  --preserve             Preserve existing partitions on the target disk. Only
+                         creates new partitions (ESP + A/B roots + optional
+                         HOME/DATA) in free space. Does NOT wipe the disk.
+                         Implies --allow-fixed-disk.
   --reflash             FORCE reflash mode: do NOT repartition. Detect the
                         existing A/B layout, write the new image into the
                         *inactive* root slot, and leave the active slot +
@@ -938,6 +943,11 @@ confirm_usb_write_or_abort() {
     echo "===================================================================="
     echo "RE-FLASH (non-destructive): writes to the *inactive* root slot only;"
     echo "the active slot, HOME / DATA partitions, and ESP fallback entries are kept."
+    echo "===================================================================="
+  elif [[ "$PRESERVE_MODE" == true ]]; then
+    echo "===================================================================="
+    echo "PRESERVE MODE: existing partitions on the target will be kept."
+    echo "New partitions (ESP + A/B roots + DATA) will be added in free space."
     echo "===================================================================="
   else
     echo "===================================================================="
@@ -1595,6 +1605,93 @@ detect_active_root_partuuid() {
 
 # --- end --reflash helpers -------------------------------------------------
 
+# Check that the target disk has enough unpartitioned space for the
+# requested layout in preserve mode. We need room for ESP + root slots
+# + DATA (or HOME + DATA).  This avoids a confusing systemd-repart
+# failure mid-operation.
+check_free_space_for_preserve() {
+  local target_real total_bytes used_bytes free_bytes min_needed
+  target_real="$(readlink -f "$TARGET")"
+
+  # Total disk size in bytes
+  total_bytes="$(lsblk -b -ndno SIZE "$target_real" 2>/dev/null || echo 0)"
+  (( total_bytes > 0 )) || die "cannot determine size of $TARGET"
+
+  # Sum sizes of all existing partitions (lsblk reports in 512-byte sectors)
+  used_bytes=0
+  while read -r size; do
+    used_bytes=$((used_bytes + size * 512))
+  done < <(lsblk -nro SIZE "$target_real" 2>/dev/null | grep -v '^0$')
+
+  # GPT metadata (primary + backup GPT headers)
+  used_bytes=$((used_bytes + 2 * 1044 * 1024))
+
+  free_bytes=$((total_bytes - used_bytes))
+
+  # Estimate minimum: ESP (1G) + 2× root (8G default) + DATA min (2G)
+  # Apply user overrides if given.
+  local esp_min root_min data_min
+  esp_min="${USB_ESP_SIZE:-1G}"
+  root_min="${USB_ROOT_SIZE:-8G}"
+  data_min=2G
+  if [[ "$HOME_SIZE_TOKEN" != "none" ]]; then
+    data_min=512M  # smaller DATA minimum when HOME is separate
+  fi
+
+  # Convert human sizes to bytes for comparison (supports K/M/G/T suffixes)
+to_bytes() {
+  local val="${1}"
+  local num="${val%[KMGTP]}"
+  local suffix="${val:${#num}}"
+  local multiplier=1
+  case "$suffix" in
+    T|Ti)  multiplier=$((1024*1024*1024*1024)) ;;
+    G|Gi)  multiplier=$((1024*1024*1024)) ;;
+    M|Mi)  multiplier=$((1024*1024)) ;;
+    K|Ki)  multiplier=1024 ;;
+  esac
+  echo $((num * multiplier))
+}
+
+  min_needed=$(( $(to_bytes "$esp_min") + 2 * $(to_bytes "$root_min") + $(to_bytes "$data_min") ))
+
+  if (( free_bytes < min_needed )); then
+    echo "ERROR: Insufficient free space on $TARGET." >&2
+    echo "  Available: $((free_bytes / 1024 / 1024 / 1024))G" >&2
+    echo "  Minimum needed: ~$((min_needed / 1024 / 1024 / 1024))G" >&2
+    echo "  (ESP ${esp_min} + 2×root ${root_min} + DATA ${data_min})" >&2
+    die "Free space check failed for preserve mode"
+  fi
+
+  echo "==> Free space check: $((free_bytes / 1024 / 1024 / 1024))G available (need ≥~$((min_needed / 1024 / 1024 / 1024))G)"
+}
+
+# Verify that all partition start offsets on the target are 4K-aligned,
+# which is critical for SSD/NVMe performance.
+verify_partition_alignment() {
+  local target_real line name start_bytes
+  target_real="$(readlink -f "$TARGET")"
+  local misaligned=0
+
+  while IFS= read -r line; do
+    name="$(echo "$line" | awk '{print $1}')"
+    start_bytes="$(echo "$line" | awk '{print $2 * 512}')"
+    # Skip the whole-disk device itself
+    [[ "$name" == "$(basename "$target_real")" ]] && continue
+    if (( start_bytes % 4096 != 0 )); then
+      echo "WARNING: partition $name starts at byte $start_bytes (NOT 4K-aligned!)" >&2
+      misaligned=1
+    fi
+  done < <(lsblk -nro NAME,START "$target_real" 2>/dev/null)
+
+  if (( misaligned == 0 )); then
+    echo "==> All partitions are 4K-aligned ✓"
+  else
+    echo "WARNING: one or more partitions are not 4K-aligned." >&2
+    echo "         Performance may be degraded on NVMe/SSD devices." >&2
+  fi
+}
+
 # Seed the chosen ROOT_PART with ${prefix}.root.raw and relabel it to
 # ${IMAGE_ID}_${IMAGE_VERSION}. This replaces the previous
 # systemd-sysupdate --image seeding flow.
@@ -2083,7 +2180,24 @@ prepare_bootstrap_repart_dir() {
   fi
   : "${USB_ESP_SIZE:=1G}"
   : "${USB_ROOT_SIZE:=8G}"
-  write_fixed_partition_conf "$TEMP_REPART_DIR/00-esp.conf" esp ESP "$USB_ESP_SIZE" vfat
+
+  if [[ "$PRESERVE_MODE" == true ]]; then
+    # In preserve mode, reuse an existing ESP if one is present on the
+    # target disk.  systemd-repart with --empty=allow will match it by
+    # type UUID and leave it untouched (Format= has no effect on
+    # existing partitions).  If an existing ESP is found we skip our
+    # definition so it is never resized or overwritten.
+    local existing_esp=""
+    if existing_esp="$(find_esp_partition 2>/dev/null || true)" && [[ -n "$existing_esp" ]]; then
+      echo "==> Preserving existing ESP: $existing_esp"
+    fi
+    if [[ -z "$existing_esp" ]]; then
+      write_fixed_partition_conf "$TEMP_REPART_DIR/00-esp.conf" esp ESP "$USB_ESP_SIZE" vfat
+    fi
+  else
+    write_fixed_partition_conf "$TEMP_REPART_DIR/00-esp.conf" esp ESP "$USB_ESP_SIZE" vfat
+  fi
+
   write_fixed_partition_conf "$TEMP_REPART_DIR/10-root-a.conf" root _empty "$USB_ROOT_SIZE" ext4
   write_fixed_partition_conf "$TEMP_REPART_DIR/11-root-b.conf" root _empty "$USB_ROOT_SIZE" ext4
 
@@ -2183,8 +2297,15 @@ EOF
 # systemd-boot via bootctl, writes loader.conf, and releases the ESP
 # so the seed step that follows has a clean view of the disk.
 bootstrap_disk() {
-  echo "==> Repartitioning $TARGET with systemd-repart"
-  systemd-repart --dry-run=no --empty=force \
+  # Determine empty mode: --empty=allow in preserve mode so systemd-repart
+  # adds new partitions alongside existing ones without wiping the disk.
+  local empty_mode="--empty=force"
+  if [[ "$PRESERVE_MODE" == true ]]; then
+    empty_mode="--empty=allow"
+  fi
+
+  echo "==> Repartitioning $TARGET with systemd-repart ($empty_mode)"
+  systemd-repart --dry-run=no "$empty_mode" \
     --definitions="$BOOTSTRAP_REPART_DIR" "$TARGET_FOR_SYSUPDATE"
 
   # Refresh the loop attach so DISK_DEVICE points at the new partition
@@ -2539,6 +2660,11 @@ while [[ $# -gt 0 ]]; do
       LUKS_PASSPHRASE="${2:?missing passphrase}"
       shift 2
       ;;
+    --preserve)
+      PRESERVE_MODE=true
+      ALLOW_FIXED_DISK=yes
+      shift
+      ;;
     --reflash)
       MODE="reflash"
       shift
@@ -2585,6 +2711,11 @@ if [[ -z "$TARGET" ]]; then
 fi
 
 [[ -n "$TARGET" ]] || die "--target is required"
+
+# In preserve mode, verify sufficient free space before anything else.
+if [[ "$PRESERVE_MODE" == true ]]; then
+  check_free_space_for_preserve
+fi
 
 # validate_layout_tokens enforces "at most one of HOME/DATA is 'rest'"
 # before we tell systemd-repart, so a typo at the prompt or in a flag
@@ -2640,7 +2771,10 @@ case "$MODE" in
     echo "==> Mode: --repartition (forced); will WIPE and re-bootstrap the target"
     ;;
   auto)
-    if detect_existing_ab_layout; then
+    if [[ "$PRESERVE_MODE" == true ]]; then
+      REFLASH=false
+      echo "==> Mode: --preserve; will add new partitions in free space without wiping"
+    elif detect_existing_ab_layout; then
       REFLASH=true
       echo "==> Mode: auto-detected existing A/B layout on $TARGET → using --reflash (non-destructive)"
       echo "    (pass --repartition to force a destructive re-bootstrap instead)"
@@ -2697,9 +2831,19 @@ copy_bundle
 echo "==> Syncing data to disk (this may take several minutes)..."
 sync
 
+# Verify partition alignment on the target disk. This is critical for
+# SSD/NVMe performance — misaligned partitions cause extra I/O on every
+# read/write.
+if [[ "$PRESERVE_MODE" == true ]]; then
+  verify_partition_alignment
+fi
+
 echo "==> Install ready on $TARGET"
 echo " Seeded root: $ROOT_PART"
 echo " Layout:      home=${HOME_SIZE_TOKEN} data=${DATA_SIZE_TOKEN}"
+if [[ "$PRESERVE_MODE" == true ]]; then
+  echo " Mode:        PRESERVE (existing partitions kept)"
+fi
 if [[ "$COPY_INSTALL_BUNDLE" == "yes" ]]; then
     echo " Installer entry: /root/ab-install.sh (alias /root/INSTALL-TO-INTERNAL-DISK.sh)"
 else

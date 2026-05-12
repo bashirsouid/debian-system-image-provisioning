@@ -1,0 +1,16 @@
+[Unit]
+Description=Symlink Docker storage to persistent DATA partition
+Documentation=file:///usr/local/libexec/ab-symlink-docker
+After=local-fs.target
+ConditionPathExists=!/var/lib/ab-symlink-docker/done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'test -d /mnt/data && mkdir -p /mnt/data/docker && ln -sf /mnt/data/docker /var/lib/docker || true'
+ExecStartPost=/bin/sh -c 'install -d -m 0700 /var/lib/ab-symlink-docker && date -u +%Y-%m-%dT%H:%M:%SZ > /var/lib/ab-symlink-docker/done'
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

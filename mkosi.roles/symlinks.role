@@ -1,0 +1,5 @@
+# symlinks role — includes all storage symlink profiles for easy composition.
+# Add "symlinks" to your --profile list to include all of them.
+# Edit freely. Keep one profile per line (# for comments) or space-separated.
+symlink-docker
+symlink-k3s
