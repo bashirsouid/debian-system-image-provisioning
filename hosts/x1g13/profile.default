@@ -1,1 +1,18 @@
-devbox awesomewm dev-tools wifi tailscale ssh-server thinkpad
+kernel-amd64
+thinkpad-g13
+display-manager-gdm3
+awesomewm
+dev-tools
+devbox
+audio-pipewire
+wifi
+ssh-server
+tailscale
+cloudflare-tunnel
+healthchecksio
+ab-diagnostics
+signal
+vscode
+antigravity
+bluetooth
+brother-printer

@@ -17,8 +17,7 @@ AB_HEALTH_HOOK_DIR=/usr/local/libexec/ab-health-check.d
 AB_REBOOT_ON_HEALTH_FAILURE=no
 AB_HEALTH_FAILURE_REBOOT_DELAY=5
 
-# Replace the amdgpu.gttsize value with the exact value you want for this host.
-EXTRA_KERNEL_ARGS="quiet amdgpu.gttsize=3072"
+EXTRA_KERNEL_ARGS="quiet"
 
 PRESERVE_PATHS=(
   /etc/fstab
