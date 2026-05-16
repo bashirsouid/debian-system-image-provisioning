@@ -59,7 +59,7 @@ echo "==> Cleaning build artifacts..."
 if $ALL; then
   echo "==> Thorough cleanup (--all)..."
   mkosi -f -f clean
-  rm -rf mkosi.cache mkosi.builddir mkosi.output .mkosi-secrets .mkosi-thirdparty .config-checksum image image.*
+  rm -rf mkosi.cache mkosi.builddir mkosi.output mkosi.tmp .mkosi-secrets .mkosi-thirdparty .config-checksum image image.*
   rm -rf -- mkosi.extra/etc/credstore.encrypted
   rm -f  -- mkosi.extra/var/lib/systemd/credential.secret
   rm -rf -- mkosi.extra/etc/ssh/authorized_keys.d

@@ -6,6 +6,11 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Export so scripts/lib/profile-resolver.sh can find mkosi.profiles/ and
 # mkosi.roles/ without every caller repeating the wiring.
 export AB_PROJECT_ROOT="$PROJECT_ROOT"
+# mkosi uses TMPDIR for temporary build space. Default /var/tmp is often a
+# small tmpfs (2G on this system). Point it to the project directory where
+# there's more space available.
+export TMPDIR="${PROJECT_ROOT}/mkosi.tmp"
+mkdir -p "$TMPDIR"
 SECRETS_DIR="$PROJECT_ROOT/.mkosi-secrets"
 THIRD_PARTY_DIR="$PROJECT_ROOT/.mkosi-thirdparty"
 USERS_FILE="$PROJECT_ROOT/.users.json"
@@ -1586,7 +1591,8 @@ fi
 
 # Securely pass the passphrase to mkosi using a tmpfs file
 PASSPHRASE_FILE="/dev/shm/mkosi-luks-passphrase-$$"
-trap 'rm -f "$PASSPHRASE_FILE"' EXIT
+# Clean up temp directory and passphrase file on exit
+trap 'rm -rf "$TMPDIR"; rm -f "$PASSPHRASE_FILE"' EXIT
 echo -n "$LUKS_PASSPHRASE" > "$PASSPHRASE_FILE"
 chmod 600 "$PASSPHRASE_FILE"
 AB_LUKS_PASSPHRASE_FILE="$PASSPHRASE_FILE"
