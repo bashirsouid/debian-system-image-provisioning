@@ -2325,6 +2325,21 @@ bootstrap_disk() {
 
   echo "==> Installing systemd-boot into target ESP"
   bootctl --esp-path="$esp_mount" --no-variables install
+
+  # --- Secure Boot: sign the bootloader binaries on the ESP ---
+  SB_KEY="${SCRIPT_DIR}/../.secureboot/db.key"
+  SB_CRT="${SCRIPT_DIR}/../.secureboot/db.crt"
+  if [[ -f "$SB_KEY" ]] && [[ -f "$SB_CRT" ]]; then
+      echo "==> Signing systemd-boot binaries on ESP..."
+      sbsign --key "$SB_KEY" --cert "$SB_CRT" \
+            --output "$esp_mount/EFI/BOOT/BOOTX64.EFI" \
+            "$esp_mount/EFI/BOOT/BOOTX64.EFI"
+      sbsign --key "$SB_KEY" --cert "$SB_CRT" \
+            --output "$esp_mount/EFI/systemd/systemd-bootx64.efi" \
+            "$esp_mount/EFI/systemd/systemd-bootx64.efi"
+  fi
+  # -----------------------------------------------------------
+
   write_loader_conf "$esp_mount/loader/loader.conf"
 
   umount "$esp_mount"

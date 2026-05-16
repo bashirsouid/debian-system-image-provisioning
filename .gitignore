@@ -20,6 +20,8 @@
 mkosi.cache/
 mkosi.pkgcache/
 mkosi.builddir/
+mkosi.workspace/
+mkosi.tmp/
 mkosi.output/
 image
 image.*

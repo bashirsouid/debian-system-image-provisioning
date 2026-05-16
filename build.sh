@@ -811,6 +811,62 @@ ensure_profile_hostdeps() {
   fi
 }
 
+ensure_secureboot_hostdeps() {
+  # Secure Boot signing requires sbsign (from sbsigntool package)
+  # efitools is useful for manual UEFI key management but not required for mkosi signing
+  if ! ab_hostdeps_have_all_commands sbsign; then
+    ab_hostdeps_ensure_packages "Secure Boot signing tools" sbsigntool || exit 1
+  fi
+  ab_hostdeps_ensure_commands "Secure Boot signing tools" sbsign || exit 1
+}
+
+verify_secureboot_signature() {
+  local uki_path="$1"
+  local host="$2"
+  
+  if [[ ! -f "$uki_path" ]]; then
+    echo "ERROR: UKI file not found: $uki_path" >&2
+    return 1
+  fi
+  
+  local sb_drop_in="$PROJECT_ROOT/hosts/$host/mkosi.conf.d/30-secure-boot.conf"
+  local sb_disabled="$PROJECT_ROOT/hosts/$host/secure-boot.disabled"
+  
+  # Check if Secure Boot is enabled for this host
+  if [[ -f "$sb_disabled" ]]; then
+    # Secure Boot explicitly disabled, no verification needed
+    return 0
+  elif [[ -f "$sb_drop_in" ]]; then
+    # Secure Boot enabled, UKI MUST be signed
+    if ! sbverify --list "$uki_path" >/dev/null 2>&1; then
+      cat >&2 <<EOF
+ERROR: Secure Boot is enabled for host $host (see $sb_drop_in)
+but the built UKI is NOT signed: $uki_path
+
+This is a critical failure. The image cannot boot on this host.
+
+Possible causes:
+  1. mkosi failed to call sbsign during the build (check build output above)
+  2. The signing key or certificate is corrupted
+  3. mkosi configuration did not include UKI signing settings
+
+Verify that:
+  - .secureboot/db.key and .secureboot/db.crt exist and are valid
+  - sbsign is in PATH and executable
+  - mkosi config includes [Validation] section with SecureBoot=yes
+
+Run ./build.sh --profile <profile> --host $host again with full output
+to debug the signing failure.
+EOF
+      return 1
+    fi
+    return 0
+  else
+    # No host, no verification needed (QEMU test)
+    return 0
+  fi
+}
+
 # Walk every selected profile's apt-keys.conf and report 0 if every
 # declared key (KEY_n_OUT) already exists on disk under the profile's
 # mkosi.extra/etc/apt/keyrings/. Used to skip a fetch round-trip when
@@ -1006,6 +1062,7 @@ orphans every machine already enrolled with it.
 EOF
         exit 1
       fi
+      ensure_secureboot_hostdeps
       echo "==> Secure Boot: enabled. UKI will be signed with .secureboot/db.key"
     else
       cat >&2 <<EOF
@@ -1163,6 +1220,21 @@ EOF
   if [[ -n "${AB_LUKS_PASSPHRASE_FILE:-}" ]]; then
     mkosi_args+=("--passphrase=$AB_LUKS_PASSPHRASE_FILE")
   fi
+  
+  # Link host-specific mkosi config drop-ins into the main mkosi.conf.d/
+  # so they get merged with the base config
+  local host_config_links=()
+  if [[ -n "$HOST" && -d "$PROJECT_ROOT/hosts/$HOST/mkosi.conf.d" ]]; then
+    for host_conf in "$PROJECT_ROOT/hosts/$HOST/mkosi.conf.d"/*.conf; do
+      if [[ -f "$host_conf" ]]; then
+        local conf_name="$(basename "$host_conf")"
+        local link_target="$PROJECT_ROOT/mkosi.conf.d/${HOST}-${conf_name}"
+        ln -sf "$host_conf" "$link_target"
+        host_config_links+=("$link_target")
+      fi
+    done
+  fi
+  
   for p in $PROFILE; do
     mkosi_args+=("--profile=$p")
   done
@@ -1242,6 +1314,15 @@ EOF
     echo "ERROR: expected built disk image at $built_image_path after staging" >&2
     exit 1
   }
+
+  # Verify Secure Boot signature if applicable
+  if [[ -n "$HOST" ]]; then
+    local uki_file
+    uki_file=$(find "$build_dir" -name "${target_image_id}_${IMAGE_VERSION}_*.efi" -print -quit)
+    if [[ -n "$uki_file" ]]; then
+      verify_secureboot_signature "$uki_file" "$HOST" || exit 1
+    fi
+  fi
 
   echo "==> Exporting sysupdate artifacts for $target_image_id into $build_dir"
   "$PROJECT_ROOT/scripts/export-sysupdate-artifacts.sh" \
