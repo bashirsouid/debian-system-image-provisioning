@@ -90,6 +90,92 @@ if dmsetup ls | grep -q "$(basename $ROOTPART)"; then
 fi
 ###############################
 
+# ── close_stale_luks_on_target ────────────────────────────────────────────────
+# Find every open dm-crypt device whose underlying slave lives on DISK_DEVICE,
+# unmount any filesystems on those mappers, then close them.
+# With --yes: runs silently. Without: prints what it would do and asks once.
+close_stale_luks_on_target() {
+    local disk_dev="$1"
+    local assume_yes="${2:-false}"
+    [[ -b "$disk_dev" ]] || return 0
+
+    local disk_name
+    disk_name="$(basename "$(readlink -f "$disk_dev")")"
+
+    # Collect mapper names whose dm slaves are partitions of disk_dev.
+    # /sys/class/block/dm-*/slaves/ contains one symlink per underlying device.
+    local stale_mappers=()
+    local dm_dev slave_path slave_disk mapper_name
+    for dm_dev in /sys/class/block/dm-*/; do
+        [[ -d "$dm_dev/slaves" ]] || continue
+        for slave_path in "$dm_dev/slaves"/*/; do
+            [[ -d "$slave_path" ]] || continue
+            slave_disk="$(basename "$(readlink -f "$slave_path/../..")" 2>/dev/null || true)"
+            if [[ "$slave_disk" == "$disk_name" ]]; then
+                mapper_name="$(cat "$dm_dev/dm/name" 2>/dev/null || true)"
+                [[ -n "$mapper_name" ]] && stale_mappers+=("$mapper_name")
+                break
+            fi
+        done
+    done
+
+    [[ ${#stale_mappers[@]} -gt 0 ]] || return 0
+
+    # For each stale mapper, find filesystems mounted on /dev/mapper/<name>
+    local stale_mounts=()
+    local m mnt
+    for m in "${stale_mappers[@]}"; do
+        while IFS= read -r mnt; do
+            [[ -n "$mnt" ]] && stale_mounts+=("$mnt")
+        done < <(findmnt -nro TARGET "/dev/mapper/$m" 2>/dev/null || true)
+    done
+
+    if [[ "$assume_yes" == true ]]; then
+        for mnt in "${stale_mounts[@]}"; do
+            echo "==> Unmounting stale mount on target disk: $mnt"
+            umount "$mnt" || true
+        done
+        for m in "${stale_mappers[@]}"; do
+            echo "==> Closing stale LUKS mapper on target disk: /dev/mapper/$m"
+            cryptsetup luksClose "$m" 2>/dev/null || true
+        done
+    else
+        echo
+        echo "WARNING: the following LUKS mappers are open on target disk $disk_dev"
+        echo "and must be closed before flashing:"
+        echo
+        for m in "${stale_mappers[@]}"; do
+            printf "  mapper: /dev/mapper/%s\n" "$m"
+        done
+        if [[ ${#stale_mounts[@]} -gt 0 ]]; then
+            echo "  with active mounts:"
+            for mnt in "${stale_mounts[@]}"; do
+                printf "    %s\n" "$mnt"
+            done
+        fi
+        echo
+        echo "Commands that will be run:"
+        for mnt in "${stale_mounts[@]}"; do
+            printf "  umount %s\n" "$mnt"
+        done
+        for m in "${stale_mappers[@]}"; do
+            printf "  cryptsetup luksClose %s\n" "$m"
+        done
+        echo
+        echo "Press Enter to proceed or Ctrl-C to abort."
+        read -r </dev/tty || true
+        for mnt in "${stale_mounts[@]}"; do
+            echo "==> Unmounting $mnt"
+            umount "$mnt" || true
+        done
+        for m in "${stale_mappers[@]}"; do
+            echo "==> Closing /dev/mapper/$m"
+            cryptsetup luksClose "$m" 2>/dev/null || true
+        done
+    fi
+}
+# ─────────────────────────────────────────────────────────────────────────────
+
 # ──────────────────────────────────────────────────────────────────────
 # Inlined helper library
 #
@@ -1734,6 +1820,7 @@ seed_first_root_slot() {
     # Grow the ext4 filesystem to fill the partition (best-effort).
     # Skip entirely for LUKS: e2fsck misreads the LUKS header as a corrupt
     # ext4 superblock and irrecoverably overwrites LUKS metadata.
+    close_stale_luks_on_target "$DISK_DEVICE" "$ASSUME_YES"
     if [[ "$root_fstype" == "crypto_LUKS" ]]; then
         echo "==> Root is LUKS-encrypted; skipping e2fsck/resize2fs"
     elif command -v e2fsck >/dev/null 2>&1 && command -v resize2fs >/dev/null 2>&1; then
