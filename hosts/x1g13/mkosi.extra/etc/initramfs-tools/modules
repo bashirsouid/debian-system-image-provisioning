@@ -1,2 +1,8 @@
 # Load Intel xe GPU driver early for Lunar Lake display
 xe
+# Include Wi-Fi 7 BE201 (bz-b0-fm-c0) firmware in the initramfs so that the
+# device can initialise before the encrypted root volume is unlocked.
+iwlwifi
+iwlmvm
+# Include Intel Bluetooth CNVi IML firmware for the same reason.
+btintel

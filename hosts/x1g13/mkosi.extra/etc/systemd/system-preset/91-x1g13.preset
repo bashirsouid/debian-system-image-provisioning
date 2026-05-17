@@ -1,0 +1,4 @@
+# thinkfan requires a hand-written config before it can manage the fan curve.
+# Disable it here so the service does not fail on first boot.
+# To enable: configure /etc/thinkfan.yaml, then `systemctl enable --now thinkfan`.
+disable thinkfan.service

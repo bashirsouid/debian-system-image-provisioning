@@ -1204,7 +1204,13 @@ EOF
     host_dir="hosts/$HOST"
     echo "==> Including host-specific config for: $HOST"
     [[ -d "$host_dir/mkosi.conf.d" ]] && extra_args+=("--include=$host_dir/mkosi.conf.d")
-    [[ -d "$host_dir/mkosi.extra" ]] && extra_args+=("--extra-tree=$host_dir/mkosi.extra:/")
+    if [[ -d "$host_dir/mkosi.extra" ]]; then
+      # Mirror host extra as sandbox-tree so host-specific apt sources and
+      # keyrings (e.g. trixie-backports) are visible to apt during package
+      # install — same pattern used for profile mkosi.extra/ dirs above.
+      extra_args+=("--sandbox-tree=$host_dir/mkosi.extra:/")
+      extra_args+=("--extra-tree=$host_dir/mkosi.extra:/")
+    fi
   fi
 
   checksum_file="$PROJECT_ROOT/.config-checksum"

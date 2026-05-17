@@ -1,0 +1,14 @@
+# Pull Lunar Lake firmware packages from trixie-backports.
+#
+# Trixie stable's firmware-nonfree snapshot predates the Intel Lunar Lake
+# launch (September 2024), so it lacks:
+#   - iwlwifi-bz-b0-fm-c0-*.ucode   (Wi-Fi 7 BE201 / bz-series)
+#   - intel/ibt-0190-0291-iml.sfi   (Bluetooth CNVi IML format)
+#   - intel/vpu/vpu_40xx_v1.bin     (NPU / VPU)
+#   - intel/sof-ipc4/lnl/sof-lnl.ri (audio DSP)
+#
+# TODO: remove this file (and trixie-backports.sources) once trixie stable
+# ships firmware-nonfree >= 20241210.
+Package: firmware-iwlwifi firmware-misc-nonfree firmware-sof-signed
+Pin: release a=trixie-backports
+Pin-Priority: 600
