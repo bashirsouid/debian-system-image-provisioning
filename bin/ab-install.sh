@@ -80,6 +80,16 @@ SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
 [[ -n "$PROJECT_ROOT" ]] || PROJECT_ROOT="$SCRIPT_DIR"
 
+##############################
+# TODO: Move elsewhere and make more resilient. This is to warn you to unmount any mounted volumes (or crypt unlocked volumes before flashing)
+# If you dont do this, it may silently fail to update ESP or other devices.
+# Before opening LUKS, close any stale mapping on the same device
+if dmsetup ls | grep -q "$(basename $ROOTPART)"; then
+    echo "Stale LUKS mapping found, closing..."
+    cryptsetup luksClose "$(dmsetup ls | grep "$(basename $ROOTPART)" | awk '{print $1}')" || true
+fi
+###############################
+
 # ──────────────────────────────────────────────────────────────────────
 # Inlined helper library
 #

@@ -42,4 +42,7 @@
 #   UUID=<uuid>          /home  ext4   nofail,x-systemd.device-timeout=2s  0  2
 #   PARTUUID=<partuuid>  /home  ext4   nofail,x-systemd.device-timeout=2s  0  2
 #   LABEL=HOME           /home  btrfs  subvol=@home,compress=zstd,nofail,x-systemd.device-timeout=2s  0  0
-LABEL=HOME /home ext4 nofail,x-systemd.device-timeout=2s 0 2
+
+# TODO: This is the permanent one, but I need the below one to hide some live USB errors.
+# LABEL=HOME /home ext4 nofail,x-systemd.device-timeout=2s 0 2
+LABEL=HOME  /home  ext4  defaults,nofail,x-systemd.device-timeout=1s  0  2
