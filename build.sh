@@ -1204,7 +1204,7 @@ EOF
     host_dir="hosts/$HOST"
     echo "==> Including host-specific config for: $HOST"
     [[ -d "$host_dir/mkosi.conf.d" ]] && extra_args+=("--include=$host_dir/mkosi.conf.d")
-    [[ -d "$host_dir/mkosi.extra" ]] && extra_args+=("--extra-tree=$host_dir/mkosi.extra:/")
+    [[ -d "$host_dir/mkosi.extra" ]] && extra_args+=("--sandbox-tree=$host_dir/mkosi.extra:/") && extra_args+=("--extra-tree=$host_dir/mkosi.extra:/")
   fi
 
   checksum_file="$PROJECT_ROOT/.config-checksum"
