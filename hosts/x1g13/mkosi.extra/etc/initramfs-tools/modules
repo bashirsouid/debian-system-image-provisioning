@@ -1,0 +1,2 @@
+# Load Intel xe GPU driver early for Lunar Lake display
+xe
