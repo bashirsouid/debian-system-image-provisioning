@@ -11,7 +11,7 @@
 set -euo pipefail
 
 # Only regenerate if an initramfs-tools config exists in the image.
-if [[ ! -f "$ROOT/etc/initramfs-tools/initramfs.conf" ]]; then
+if [[ ! -f "$BUILDROOT/etc/initramfs-tools/initramfs.conf" ]]; then
     exit 0
 fi
 
@@ -20,11 +20,11 @@ echo "==> [FINALIZE] regenerating initramfs with current firmware..."
 # update-initramfs needs /proc for uname(1) used by some hooks, and /dev
 # for mknod calls.  Mount them, clean up on exit.
 for mp in proc dev; do
-    mount --bind "/$mp" "$ROOT/$mp" 2>/dev/null || true
+    mount --bind "/$mp" "$BUILDROOT/$mp" 2>/dev/null || true
 done
-cleanup() { for mp in dev proc; do umount "$ROOT/$mp" 2>/dev/null || true; done; }
+cleanup() { for mp in dev proc; do umount "$BUILDROOT/$mp" 2>/dev/null || true; done; }
 trap cleanup EXIT
 
-chroot "$ROOT" update-initramfs -u -k all
+chroot "$BUILDROOT" update-initramfs -u -k all
 
 echo "==> [FINALIZE] initramfs regenerated."
