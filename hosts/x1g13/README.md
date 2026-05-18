@@ -8,28 +8,51 @@ Use it with:
 ./build.sh --profile devbox --host x1g13
 ```
 
+## First-time setup: stage Lunar Lake firmware
+
+Trixie stable's `firmware-nonfree` snapshot predates the Lunar Lake launch and
+is missing WiFi, Bluetooth, NPU, and audio firmware for this machine.  Run this
+once on the build machine (evox2) **before** the first build:
+
+```bash
+# Install backports firmware onto evox2 so the script can copy from it
+sudo apt-get install -t trixie-backports \
+    firmware-iwlwifi firmware-misc-nonfree firmware-sof-signed
+
+# Stage the Lunar Lake blobs directly into the extra tree
+bash scripts/fetch-lnl-firmware.sh
+
+# Commit the resulting binary files and rebuild
+git add hosts/x1g13/mkosi.extra/usr/lib/firmware/
+./build.sh x1g13
+```
+
+The script copies the blobs from the local system into
+`hosts/x1g13/mkosi.extra/usr/lib/firmware/` so they are checked into git and
+the image build never depends on APT timing or incremental-cache state.
+
 ## Hardware status
 
 | Component | Driver | Status | Notes |
 |-----------|--------|--------|-------|
-| GPU (Arc / Xe LPG) | `xe` | ✓ Working | i915 blacklisted; xe firmware shipped in extra tree |
-| Display (1920×1200 IPS) | `xe` / KMS | ✓ Working | `video=eDP-1:1920x1200@60` forces correct console res |
-| Wi-Fi (BE201 / WiFi 7) | `iwlwifi` + `iwlmvm` | ✓ Working | Needs `firmware-iwlwifi` from trixie-backports (bz-b0-fm-c0 series) |
-| Bluetooth (CNVi IML) | `btintel` | ✓ Working | Needs `ibt-0190-0291-iml.sfi` from backports `firmware-iwlwifi` |
-| Audio (SOF / HDA) | `snd-sof-pci-intel-lnl` | ✓ Working | Needs `firmware-sof-signed` (in `thinkpad-g13` profile) |
-| NPU (VPU 40xx) | `intel_npu` | ✓ Working | Needs `firmware-misc-nonfree` from backports; module auto-loaded |
+| GPU (Arc / Xe LPG) | `xe` | ✓ Working | i915 blacklisted; xe firmware in extra tree |
+| Display (1920×1200 IPS) | `xe` / KMS | ✓ Working | `video=eDP-1:1920x1200@60` sets KMS console res |
+| Wi-Fi (BE201 / WiFi 7) | `iwlwifi` + `iwlmvm` | ⚠ Needs setup | Run `scripts/fetch-lnl-firmware.sh` to stage bz-b0-fm-c0 blobs |
+| Bluetooth (CNVi IML) | `btintel` | ⚠ Needs setup | Same script stages `ibt-0190-0291-iml.sfi` |
+| Audio (SOF / HDA) | `snd-sof-pci-intel-lnl` | ⚠ Needs setup | Same script stages `sof-lnl.ri` IPC4 blob |
+| NPU (VPU 40xx) | `intel_npu` | ⚠ Needs setup | Same script stages `vpu_40xx_v1.bin` |
 | TrackPoint | `psmouse` | ✓ Working | Detected as Elan TrackPoint |
 | Keyboard / Fn keys | `thinkpad_acpi` | ✓ Working | rfkill, backlight brightness, battery status all exposed |
 | ThinkPad power mgmt | `tlp` | ✓ Working | Configured via `etc/tlp.conf` |
-| Fan control | `thinkfan` | ⚠ Disabled | Installed but disabled; needs `/etc/thinkfan.yaml` before use |
+| Fan control | `thinkfan` | ⚠ Disabled | Needs `/etc/thinkfan.yaml` before enabling |
 
 ## What this overlay provides
 
-- Backports apt source + pin for Lunar Lake firmware packages (`trixie-backports`)
-- xe firmware shipped as binaries in `mkosi.extra/usr/lib/firmware/xe/` and `i915/`
+- Lunar Lake firmware shipped as binaries in `mkosi.extra/usr/lib/firmware/`
+  (xe GPU blobs pre-staged; WiFi/BT/NPU/audio populated by `fetch-lnl-firmware.sh`)
 - i915 blacklisted system-wide (modprobe.d + kernel cmdline) so xe driver wins
 - Wi-Fi power-save enabled; `11n_disable` removed (was limiting 5 GHz on WiFi 7)
-- Wi-Fi / Bluetooth / NPU modules added to initramfs so firmware loads before LUKS unlock
+- Wi-Fi / Bluetooth / NPU modules in initramfs so firmware loads before LUKS unlock
 - TLP ThinkPad power management with SSD write-back caching
 - Intel NPU kernel module (`intel_npu`) auto-loaded at boot
 - Display resolution forced to 1920×1200 at KMS layer
@@ -53,14 +76,15 @@ Then: `systemctl enable --now thinkfan`
 
 ## TODOs / known workarounds
 
-- **Firmware backports** (`etc/apt/preferences.d/firmware-from-backports`,
-  `etc/apt/sources.list.d/trixie-backports.sources`): Trixie stable's
-  `firmware-nonfree` snapshot predates Lunar Lake launch and lacks the BE201
-  WiFi, CNVi BT IML, NPU VPU, and SOF LNL firmware blobs.  Remove both files
-  once trixie stable ships `firmware-nonfree >= 20241210`.
+- **All Lunar Lake firmware in tree** (`mkosi.extra/usr/lib/firmware/`):
+  All Lunar Lake firmware blobs (xe GPU, WiFi bz-b0, BT IML, NPU VPU, SOF LNL)
+  are shipped as binaries in the extra tree because Trixie stable's
+  `firmware-nonfree` snapshot predates the Lunar Lake launch (September 2024)
+  and does not include them.  Once Trixie stable ships `firmware-nonfree >=
+  20241210`, the blobs staged by `fetch-lnl-firmware.sh` can be removed and the
+  backports pin in `etc/apt/preferences.d/firmware-from-backports` and source
+  in `etc/apt/sources.list.d/trixie-backports.sources` can be deleted.
 
-- **xe firmware in tree** (`mkosi.extra/usr/lib/firmware/xe/`, `i915/`):
-  xe GuC/HuC/GSC and i915/xe2lpd DMC firmware are shipped as binary blobs
-  because at time of writing the Trixie `firmware-misc-nonfree` snapshot may
-  not include the exact Lunar Lake versions.  Remove these blobs once the
-  package ships matching or newer versions and is stable.
+- **Enabling fan control**: thinkfan is installed but disabled.  Create
+  `/etc/thinkfan.yaml` with correct sensor/fan paths then run
+  `systemctl enable --now thinkfan`.

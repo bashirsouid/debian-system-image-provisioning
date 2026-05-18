@@ -1,0 +1,26 @@
+#!/bin/sh
+# Explicitly copy all Lunar Lake firmware blobs into the initramfs.
+# mkinitramfs discovers firmware via `modinfo -F firmware` but some drivers
+# (sof-audio-pci-intel-lnl, intel_vpu) do not list their firmware there.
+# Udev probes these devices inside the initrd before switch_root, so the
+# firmware must be present in the initrd for the probe to succeed.
+
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+    prereqs) prereqs; exit 0 ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+for fw in \
+    iwlwifi-bz-b0-fm-c0-90.ucode \
+    iwlwifi-bz-b0-fm-c0-91.ucode \
+    iwlwifi-bz-b0-fm-c0-92.ucode \
+    iwlwifi-bz-b0-fm-c0-93.ucode \
+    intel/ibt-0190-0291-iml.sfi \
+    intel/ibt-0190-0291-iml.ddc \
+    intel/vpu/vpu_40xx_v1.bin \
+    intel/sof-ipc4/lnl/sof-lnl.ri; do
+    [ -e "/usr/lib/firmware/${fw}" ] && copy_firmware "${fw}"
+done
