@@ -1007,6 +1007,13 @@ preview_current_and_planned_layout() {
   echo
 
   echo "Planned layout after repart (AFTER):"
+
+  # Choose empty mode to match what bootstrap_disk() will actually use
+  local preview_empty_mode="--empty=force"
+  if [[ "$PRESERVE_MODE" == true ]]; then
+    preview_empty_mode="--empty=allow"
+  fi
+
   # Redirect stderr to stdout so the layout table lands in the panel
   # rather than interleaving with the prompt. Filter out the
   # "Refusing to repartition, please re-run with --dry-run=no." line
@@ -1016,7 +1023,7 @@ preview_current_and_planned_layout() {
   # because a dry-run failure (e.g. image too small for the roots)
   # should still let the prompt proceed; the real run will fail
   # loudly and the user has already been warned.
-  systemd-repart --dry-run=yes --empty=force \
+  systemd-repart --dry-run=yes "$preview_empty_mode" \
     --definitions="$BOOTSTRAP_REPART_DIR" \
     "$target_real" 2>&1 \
     | grep -v '^Refusing to repartition' \
@@ -1716,8 +1723,8 @@ check_free_space_for_preserve() {
   # Sum sizes of all existing partitions (lsblk reports in 512-byte sectors)
   used_bytes=0
   while read -r size; do
-    used_bytes=$((used_bytes + size * 512))
-  done < <(lsblk -nro SIZE "$target_real" 2>/dev/null | grep -v '^0$')
+      used_bytes=$((used_bytes + size))
+  done < <(lsblk -b -nro SIZE "$target_real" 2>/dev/null | grep -v '^0$')
 
   # GPT metadata (primary + backup GPT headers)
   used_bytes=$((used_bytes + 2 * 1044 * 1024))

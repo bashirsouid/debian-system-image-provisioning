@@ -10,21 +10,28 @@
 
 set -euo pipefail
 
-# Only regenerate if an initramfs-tools config exists in the image.
-if [[ ! -f "$BUILDROOT/etc/initramfs-tools/initramfs.conf" ]]; then
+# Support mkosi naming across versions: $BUILDROOT (newer) or $ROOT (older).
+ROOTDIR="${BUILDROOT:-${ROOT:-}}"
+if [[ -z "$ROOTDIR" ]]; then
+    echo "==> [FINALIZE] WARNING: neither \$BUILDROOT nor \$ROOT set; skipping initramfs regeneration" >&2
     exit 0
 fi
 
-echo "==> [FINALIZE] regenerating initramfs with current firmware..."
+# Only regenerate if an initramfs-tools config exists in the image.
+if [[ ! -f "$ROOTDIR/etc/initramfs-tools/initramfs.conf" ]]; then
+    exit 0
+fi
+
+echo "==> [FINALIZE] regenerating initramfs with current firmware (root: $ROOTDIR)..."
 
 # update-initramfs needs /proc for uname(1) used by some hooks, and /dev
 # for mknod calls.  Mount them, clean up on exit.
 for mp in proc dev; do
-    mount --bind "/$mp" "$BUILDROOT/$mp" 2>/dev/null || true
+    mount --bind "/$mp" "$ROOTDIR/$mp" 2>/dev/null || true
 done
-cleanup() { for mp in dev proc; do umount "$BUILDROOT/$mp" 2>/dev/null || true; done; }
+cleanup() { for mp in dev proc; do umount "$ROOTDIR/$mp" 2>/dev/null || true; done; }
 trap cleanup EXIT
 
-chroot "$BUILDROOT" update-initramfs -u -k all
+chroot "$ROOTDIR" update-initramfs -u -k all
 
 echo "==> [FINALIZE] initramfs regenerated."
