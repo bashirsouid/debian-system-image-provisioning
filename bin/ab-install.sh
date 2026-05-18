@@ -2330,6 +2330,7 @@ wait_for_esp_partition() {
     sleep 0.5
   done
   return 1
+}
 
 find_xbootldr_partition() {
   local part parttype
