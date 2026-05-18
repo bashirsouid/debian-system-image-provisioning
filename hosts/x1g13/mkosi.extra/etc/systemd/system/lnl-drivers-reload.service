@@ -1,0 +1,13 @@
+[Unit]
+Description=Reload Lunar Lake firmware-dependent drivers
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/lnl-drivers-reload
+
+[Install]
+WantedBy=sysinit.target

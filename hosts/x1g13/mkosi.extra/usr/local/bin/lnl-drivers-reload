@@ -1,0 +1,30 @@
+#!/bin/bash
+# Reload Lunar Lake firmware-dependent drivers that may have failed in initrd.
+# Runs after local-fs.target so /usr/lib/firmware is accessible from rootfs.
+# Safe to run repeatedly — checks for the interface/device before reloading.
+
+wifi_up() { ls /sys/class/net/wl* >/dev/null 2>&1; }
+snd_up()  { ls /sys/class/sound/card* >/dev/null 2>&1; }
+npu_up()  { [ -e /dev/accel/accel0 ]; }
+
+# WiFi + Bluetooth: Intel BE201 (iwlwifi bz-b0-fm-c0) + CNVi IML (ibt-0190-0291-iml)
+if ! wifi_up; then
+    echo "lnl-reload: no WiFi interface — reloading iwlwifi"
+    modprobe -r iwlmvm 2>/dev/null || true
+    modprobe -r iwlwifi 2>/dev/null || true
+    modprobe iwlwifi || true
+fi
+
+# SOF audio: sof-audio-pci-intel-lnl (sof-lnl.ri IPC4)
+if ! snd_up; then
+    echo "lnl-reload: no sound card — reloading snd_sof_pci_intel_lnl"
+    modprobe -r snd_sof_pci_intel_lnl 2>/dev/null || true
+    modprobe snd_sof_pci_intel_lnl || true
+fi
+
+# NPU: intel_vpu (vpu_40xx_v1.bin)
+if ! npu_up; then
+    echo "lnl-reload: no NPU device — reloading intel_vpu"
+    modprobe -r intel_vpu 2>/dev/null || true
+    modprobe intel_vpu || true
+fi
