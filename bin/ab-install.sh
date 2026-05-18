@@ -709,6 +709,8 @@ LUKS_PASSPHRASE=""    # passphrase for LUKS-encrypted roots (--luks-passphrase)
 LUKS_MAP=""           # mapper name opened by seed_first_root_slot; closed by cleanup()
 LUKS_PASS_FILE=""     # tmpfile holding passphrase; shredded by cleanup()
 PRESERVE_MODE=false   # --preserve: keep existing partitions, add new ones in free space
+XBOOTLDR_SIZE="2G"    # size of XBOOTLDR partition when ESP too small in --preserve mode
+XBOOTLDR_PART=""      # populated by find_xbootldr_partition / wait_for_xbootldr_partition
 
 usage() {
   cat <<'USAGE'
@@ -800,6 +802,8 @@ Options:
                          creates new partitions (ESP + A/B roots + optional
                          HOME/DATA) in free space. Does NOT wipe the disk.
                          Implies --allow-fixed-disk.
+    --xbootldr-size SIZE   size of the XBOOTLDR partition when the ESP is too small
+                           to hold all boot entries in --preserve mode. Default: 2G
   --reflash             FORCE reflash mode: do NOT repartition. Detect the
                         existing A/B layout, write the new image into the
                         *inactive* root slot, and leave the active slot +
@@ -1843,20 +1847,14 @@ seed_first_root_slot() {
     else
         select_root_slot_for_seed
     fi
-    
-    # Write the filesystem image into the chosen partition
+
     echo "==> Writing root filesystem image into $ROOT_PART from ${prefix}.root.raw"
     dd if="$SOURCE_DIR/${prefix}.root.raw" of="$ROOT_PART" bs=4M status=progress conv=fsync
-    
-    # Detect the root filesystem type so LUKS-specific paths skip steps
-    # that only apply to plain ext4 roots.
+
     local root_fstype
     root_fstype="$(blkid -s TYPE -o value "$ROOT_PART" 2>/dev/null || true)"
     echo "==> Detected root partition type: ${root_fstype:-unknown}"
 
-    # Grow the ext4 filesystem to fill the partition (best-effort).
-    # Skip entirely for LUKS: e2fsck misreads the LUKS header as a corrupt
-    # ext4 superblock and irrecoverably overwrites LUKS metadata.
     close_stale_luks_on_target "$DISK_DEVICE" "$ASSUME_YES"
     if [[ "$root_fstype" == "crypto_LUKS" ]]; then
         echo "==> Root is LUKS-encrypted; skipping e2fsck/resize2fs"
@@ -1867,9 +1865,7 @@ seed_first_root_slot() {
     else
         echo "WARNING: e2fsck/resize2fs not available; skipping filesystem grow step" >&2
     fi
-    
-    # Update the GPT PARTLABEL for this partition so it encodes
-    # IMAGE_ID + IMAGE_VERSION. We assume util-linux (sfdisk) is present.
+
     new_label="${IMAGE_ID}_${IMAGE_VERSION}"
     partnum="${ROOT_PART##*[!0-9]}"
     if command -v sfdisk >/dev/null 2>&1; then
@@ -1883,36 +1879,25 @@ seed_first_root_slot() {
     else
         echo "WARNING: sfdisk not available; leaving PARTLABEL for $ROOT_PART unchanged" >&2
     fi
-    
-    # Wait for block devices to reappear after sfdisk altered the partition table
+
     if command -v udevadm >/dev/null 2>&1; then
         udevadm settle --timeout=10 >/dev/null 2>&1 || true
     fi
-    
-    # A tiny sleep ensures that even if udevadm returns instantly, the kernel has 
-    # definitely finished recreating the /dev/sdaX nodes before mount fires.
     sleep 2
-    
-    # Mount the seeded root for bundle copy
+
     ROOT_MOUNT="$(mktemp -d /tmp/ab-live-root.XXXXXX)"
     echo "==> Mounting seeded root $ROOT_PART on $ROOT_MOUNT"
     if [[ "$root_fstype" == "crypto_LUKS" ]]; then
         command -v cryptsetup >/dev/null 2>&1 \
             || die "cryptsetup is required to mount a LUKS-encrypted root; install cryptsetup on the build host"
-        # ── Passphrase handling ───────────────────────────────────────────
-        # Write passphrase to a chmod-600 tmpfile so luksOpen and resize
-        # both use --key-file= (no pipe/stdin races). Loop on empty input
-        # or wrong passphrase so a stray Enter from a previous step does
-        # not silently abort the flash.
         local _luks_pass_file
         _luks_pass_file="$(mktemp /tmp/ab-luks-pass.XXXXXX)"
         chmod 600 "$_luks_pass_file"
-        LUKS_PASS_FILE="$_luks_pass_file"   # registered for cleanup
+        LUKS_PASS_FILE="$_luks_pass_file"
 
         local luks_map="ab-live-root-luks-$$"
 
         if [[ -n "${LUKS_PASSPHRASE:-}" ]]; then
-            # Passphrase already supplied externally (e.g. by a parent script).
             printf '%s' "$LUKS_PASSPHRASE" > "$_luks_pass_file"
             echo "==> Opening LUKS container $ROOT_PART -> /dev/mapper/$luks_map"
             cryptsetup luksOpen "$ROOT_PART" "$luks_map" --key-file="$_luks_pass_file"
@@ -1924,7 +1909,7 @@ seed_first_root_slot() {
                 LUKS_PASSPHRASE=""
                 read -rsp "    Enter LUKS passphrase (input hidden, not saved to history): " \
                     LUKS_PASSPHRASE </dev/tty
-                echo >&2   # newline after hidden input
+                echo >&2
                 if [[ -z "$LUKS_PASSPHRASE" ]]; then
                     echo "    (empty passphrase — please try again)" >&2
                     continue
@@ -1933,9 +1918,8 @@ seed_first_root_slot() {
                 echo "==> Opening LUKS container $ROOT_PART -> /dev/mapper/$luks_map"
                 if cryptsetup luksOpen "$ROOT_PART" "$luks_map" \
                         --key-file="$_luks_pass_file" 2>/dev/null; then
-                    break   # success
+                    break
                 fi
-                # Wrong passphrase — clear file and retry
                 printf '%s' "" > "$_luks_pass_file"
                 if (( _luks_attempts >= 5 )); then
                     die "Failed to open LUKS container $ROOT_PART after 5 attempts"
@@ -1944,18 +1928,11 @@ seed_first_root_slot() {
             done
         fi
         LUKS_MAP="$luks_map"
-        # The .root.raw image is smaller than the allocated partition.
-        # Expand the LUKS container to fill the full partition, then grow
-        # the inner filesystem to match — otherwise the root has no free
-        # space for the installer bundle.
         echo "==> Expanding LUKS container $luks_map to fill partition $ROOT_PART"
         cryptsetup resize "$luks_map" --key-file="$_luks_pass_file"
         if command -v e2fsck >/dev/null 2>&1 && command -v resize2fs >/dev/null 2>&1; then
             echo "==> Running e2fsck + resize2fs on /dev/mapper/$luks_map"
-            e2fsck -f -y "/dev/mapper/$luks_map" || {
-                ec=$?
-                echo "==> WARNING: e2fsck exited with code $ec (non-zero is normal for repaired filesystems)" >&2
-            }
+            e2fsck -f -y "/dev/mapper/$luks_map" || true
             resize2fs "/dev/mapper/$luks_map" || true
         else
             echo "WARNING: e2fsck/resize2fs not available; inner filesystem not grown" >&2
@@ -1965,7 +1942,6 @@ seed_first_root_slot() {
         mount "$ROOT_PART" "$ROOT_MOUNT"
     fi
 
-    # Determine PARTUUID of the seeded root partition for boot entry
     local root_partuuid="" luks_uuid=""
     if command -v blkid >/dev/null 2>&1; then
         root_partuuid="$(blkid -s PARTUUID -o value "$ROOT_PART" 2>/dev/null || true)"
@@ -1974,9 +1950,6 @@ seed_first_root_slot() {
         else
             echo "==> Seeded root PARTUUID: $root_partuuid"
         fi
-        # For LUKS roots, also capture the LUKS header UUID (different from PARTUUID).
-        # blkid -s UUID on a LUKS partition returns the UUID stored inside the LUKS
-        # header, which is what rd.luks.uuid= / cryptdevice=UUID= must reference.
         if [[ "$root_fstype" == "crypto_LUKS" ]]; then
             luks_uuid="$(blkid -s UUID -o value "$ROOT_PART" 2>/dev/null || true)"
             [[ -n "$luks_uuid" ]] && echo "==> LUKS container UUID: $luks_uuid"
@@ -1985,18 +1958,13 @@ seed_first_root_slot() {
         echo "WARNING: blkid not available; boot entry will not be patched with PARTUUID." >&2
     fi
 
-    # --- Seed the ESP ---
-    # We also need to copy the UKI (.efi) and bootloader entry (.conf) to the ESP,
-    # because we skipped systemd-sysupdate which normally handles this step.
-    
-    # Wait for udev to see the new partitions from systemd-repart
     if command -v udevadm >/dev/null 2>&1; then
         udevadm settle --timeout=5 >/dev/null 2>&1 || true
     fi
     if command -v blockdev >/dev/null 2>&1; then
         blockdev --rereadpt "$DISK_DEVICE" >/dev/null 2>&1 || true
     fi
-    
+
     local esp_part="" line NAME PARTLABEL FSTYPE TYPE
     while read -r line; do
         eval "$line"
@@ -2006,67 +1974,47 @@ seed_first_root_slot() {
             break
         fi
     done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
+
     if [[ -n "$esp_part" ]]; then
         local esp_mount
         esp_mount="$(mktemp -d /tmp/ab-live-esp.XXXXXX)"
         echo "==> Mounting ESP $esp_part to seed bootloader files"
         mount "$esp_part" "$esp_mount"
-        
-        install -d -m 0755 "$esp_mount/EFI/Linux" "$esp_mount/loader/entries"
 
-        # In --reflash mode the entry filename is suffixed with the
-        # target slot's basename so both A and B slots can coexist as
-        # named entries in /loader/entries/. The previously-default
-        # entry stays in place as a known-good fallback you can pick
-        # from the systemd-boot menu if the new one fails to come up.
-        # In fresh-write mode the entry file is just ${prefix}.conf
-        # and any stale entries from a previous flash get wiped, since
-        # the rest of the disk has already been repartitioned anyway.
+        local bls_mount="$esp_mount"
+        local using_xbootldr=false
+        if [[ -n "${XBOOTLDR_PART:-}" ]]; then
+            bls_mount="$(mktemp -d /tmp/ab-xbootldr.XXXXXX)"
+            mount "$XBOOTLDR_PART" "$bls_mount"
+            using_xbootldr=true
+            echo "==> Mounted XBOOTLDR $XBOOTLDR_PART for kernels/initrds/BLS entries"
+        fi
+
+        install -d -m 0755 "$esp_mount/EFI" "$esp_mount/loader"
+        install -d -m 0755 "$bls_mount/EFI/Linux" "$bls_mount/loader/entries"
+
         local entry_basename
         if [[ "$REFLASH" == true ]]; then
             entry_basename="${prefix}_$(basename "$ROOT_PART")"
             echo "==> --reflash: keeping previously-installed boot entries as fallback"
         else
             entry_basename="${prefix}"
-            echo "==> Wiping old boot entries from USB ESP"
-            rm -f "$esp_mount/loader/entries/"*.conf
-            # Bootstrap repartitions the disk, so any old kernel /
-            # initrd / standalone UKI in /EFI/Linux belongs to a slot
-            # that no longer exists. Clear them out so the menu and
-            # the ESP free space match the freshly-written layout.
-            if [[ -d "$esp_mount/EFI/Linux" ]]; then
-                rm -f "$esp_mount/EFI/Linux/"*.linux \
-                      "$esp_mount/EFI/Linux/"*.initrd \
-                      "$esp_mount/EFI/Linux/"*.efi
+            echo "==> Wiping old boot entries from boot partition"
+            rm -f "$bls_mount/loader/entries/"*.conf
+            if [[ -d "$bls_mount/EFI/Linux" ]]; then
+                rm -f "$bls_mount/EFI/Linux/"*.linux \
+                      "$bls_mount/EFI/Linux/"*.initrd \
+                      "$bls_mount/EFI/Linux/"*.efi
             fi
         fi
 
-        # Set the new entry as the explicit default in loader.conf so
-        # systemd-boot picks the freshly-flashed slot on next boot.
         echo "==> Setting ${entry_basename}.conf as the default boot entry"
         if [[ -f "$esp_mount/loader/loader.conf" ]]; then
             sed -i -E "s/^default .*/default ${entry_basename}.conf/" "$esp_mount/loader/loader.conf"
         else
             printf "default %s.conf\ntimeout 5\nconsole-mode keep\n" "${entry_basename}" > "$esp_mount/loader/loader.conf"
         fi
-        
-        # ── Extract kernel + initrd from the UKI for Type 1 BLS booting ──────────
-        # Why not boot the UKI as Type 2: systemd-stub bakes its cmdline into the
-        # .cmdline PE section at UKI build time. For Type 2 entries the .conf's
-        # `options` line is treated inconsistently across systemd-boot versions
-        # (sometimes appended, sometimes ignored), and the previous fix that
-        # patched the UKI's .cmdline section in-place via `objcopy --update-section`
-        # is fragile: PE section sizes are fixed at build, and growing the cmdline
-        # past the existing pad shifts later sections, corrupting the UKI and
-        # producing exactly the "boot failure with no useful message" symptom.
-        #
-        # Type 1 BLS sidesteps the whole problem: kernel and initrd are loaded
-        # directly from named files on the ESP, and `options` in the .conf is
-        # the authoritative cmdline. No post-build rewriting required.
-        #
-        # `objcopy -O binary --only-section=` is a *read* operation that emits a
-        # fresh file — it does not mutate the UKI, so the PE-vs-ELF target
-        # ambiguity that broke `--update-section` does not apply here.
+
         local _uki_src=""
         if [[ -f "$SOURCE_DIR/${prefix}.efi" ]]; then
             _uki_src="$SOURCE_DIR/${prefix}.efi"
@@ -2077,15 +2025,8 @@ seed_first_root_slot() {
                 die "objcopy is required to extract kernel/initrd from the UKI; install binutils on the build host"
             fi
 
-            local _kernel_dst="$esp_mount/EFI/Linux/${prefix}.linux"
-            local _initrd_dst="$esp_mount/EFI/Linux/${prefix}.initrd"
-
-            # We deliberately do NOT auto-delete other *.linux / *.initrd
-            # pairs from /EFI/Linux. In --reflash mode the OTHER slot's
-            # BLS entry references its own .linux/.initrd — deleting that
-            # would brick the still-bootable fallback slot. Old versions
-            # accumulate slowly (one extra pair per distinct version
-            # reflashed); the 1G ESP is sized to absorb that.
+            local _kernel_dst="$bls_mount/EFI/Linux/${prefix}.linux"
+            local _initrd_dst="$bls_mount/EFI/Linux/${prefix}.initrd"
 
             echo "==> Extracting .linux from UKI -> $(basename "$_kernel_dst")"
             objcopy -O binary --only-section=.linux "$_uki_src" "$_kernel_dst"
@@ -2097,9 +2038,6 @@ seed_first_root_slot() {
 
             chmod 0644 "$_kernel_dst" "$_initrd_dst"
 
-            # Diagnostic: confirm the T2 keyboard/touchbar modules actually made
-            # it into the initrd. Without these the built-in keyboard is dead
-            # before the real root is up, so Ctrl+Alt+F<n> can't switch tty.
             if command -v lsinitramfs >/dev/null 2>&1; then
                 if lsinitramfs "$_initrd_dst" 2>/dev/null | grep -qE 'apple_bce|apple-bce|apple_ib|apple-ib|appletb'; then
                     echo "==> Initrd contains Apple T2 keyboard/touchbar modules"
@@ -2116,25 +2054,13 @@ seed_first_root_slot() {
         fi
 
         if [[ -f "$SOURCE_DIR/${prefix}.conf" ]]; then
-            # entry_basename is set above; in --reflash mode it's
-            # ${prefix}_<root-slot-basename>, otherwise ${prefix}.
-            local conf_dest="$esp_mount/loader/entries/${entry_basename}.conf"
-
-            # Read source options (everything after the leading "options ").
+            local conf_dest="$bls_mount/loader/entries/${entry_basename}.conf"
             local _src_options
             _src_options="$(grep '^options ' "$SOURCE_DIR/${prefix}.conf" | sed 's/^options //')"
 
-            # Replace any baked-in root= (the build-time value uses PARTLABEL,
-            # but PARTUUID is what we just learned from the actual seeded slot).
             if [[ -n "$root_partuuid" ]]; then
                 _src_options="$(echo "$_src_options" | sed -E 's#root=[^ ]*##g')"
                 if [[ "$root_fstype" == "crypto_LUKS" && -n "$luks_uuid" ]]; then
-                    # LUKS root: the initrd must unlock the LUKS container before it
-                    # can mount /sysroot. rd.luks.uuid tells systemd-cryptsetup (or
-                    # cryptsetup-initramfs) which container to unlock; the mapper
-                    # device is then available as /dev/mapper/luks-<UUID>.
-                    # Note: luks_uuid is the UUID from the LUKS header (blkid UUID),
-                    # NOT the GPT PARTUUID — they are different values.
                     _src_options="rd.luks.uuid=$luks_uuid root=/dev/mapper/luks-$luks_uuid rootwait $_src_options"
                     echo "==> Setting rd.luks.uuid=$luks_uuid root=/dev/mapper/luks-$luks_uuid in boot entry"
                 elif [[ "$root_fstype" == "crypto_LUKS" ]]; then
@@ -2152,9 +2078,6 @@ seed_first_root_slot() {
             if [[ "$DIAGNOSTIC_MODE" == true ]]; then
                 echo "==> Diagnostic mode: appending initrd debug params to boot entry"
                 _src_options="${_src_options//quiet/}"
-                # initramfs-tools-only flags (no rd.break, no
-                # systemd.unit=debug-shell.service — both have caused boot
-                # regressions before and neither helps here).
                 local _diag_extras="break=mount break=bottom panic=0 loglevel=7 earlyprintk=vga systemd.log_level=debug systemd.log_target=console systemd.journald.forward_to_console=1 console=tty0 systemd.show_status=1 systemd.setenv=SYSTEMD_SULOGIN_FORCE=1 systemd.debug-shell=1"
                 for p in $_diag_extras; do
                     if ! grep -qw "$p" <<<"$_src_options"; then
@@ -2163,22 +2086,11 @@ seed_first_root_slot() {
                 done
             fi
 
-            # Collapse whitespace so the final cmdline is tidy in logs.
             _src_options="$(echo "$_src_options" | tr -s ' ' | sed -E 's#^ +##; s# +$##')"
-
-            # Write a Type 1 BLS entry. Crucially: NO `uki` line, so systemd-boot
-            # uses linux=/initrd=/options= directly and does not look for an
-            # embedded cmdline.
-            local _slot_tag=""
-            [[ "$REFLASH" == true ]] && _slot_tag=" [slot=$(basename "$ROOT_PART")]"
 
             {
                 echo "# Generated by bin/ab-install.sh (Type 1 BLS for live-test USB)"
-                echo "title Debian TEST BOOT (${IMAGE_ID}) ${IMAGE_VERSION}${_slot_tag}"
-                # sort-key includes slot basename so multiple coexisting
-                # entries (one per slot) sort deterministically in the
-                # systemd-boot menu instead of all collapsing on top of
-                # each other and confusing the user about which is which.
+                echo "title Debian TEST BOOT (${IMAGE_ID}) ${IMAGE_VERSION}${REFLASH:+ [slot=$(basename "$ROOT_PART")]}"
                 echo "sort-key ${IMAGE_ID}_$(basename "$ROOT_PART")"
                 echo "version ${IMAGE_VERSION}"
                 echo "linux /EFI/Linux/${prefix}.linux"
@@ -2189,30 +2101,30 @@ seed_first_root_slot() {
             echo "==> Wrote Type 1 BLS boot entry: $conf_dest"
             echo "    cmdline: ${_src_options}"
 
-            # Now that the new entry is in place, prune anything that
-            # has been left behind from prior reflashes / image
-            # versions / re-bootstraps. The user reported boot menus
-            # accumulating dozens of stale entries; this cap brings
-            # it back to "one entry per current root slot".
-            prune_old_boot_entries "$esp_mount" "$conf_dest"
+            prune_old_boot_entries "$bls_mount" "$conf_dest"
         fi
 
-        # Disconnect ESP before rebooting into the new root so the firmware re-reads the updated
         sync
-        local _esp_unmounted=false
-        local _esp_attempt
-        for _esp_attempt in 1 2 3 4 5; do
+
+        if [[ "$using_xbootldr" == true ]]; then
+            umount "$bls_mount"
+            rmdir "$bls_mount"
+        fi
+
+        local esp_unmounted=false
+        local esp_attempt
+        for esp_attempt in 1 2 3 4 5; do
             if umount "$esp_mount" 2>/dev/null; then
-                _esp_unmounted=true
+                esp_unmounted=true
                 break
             fi
-            echo "==> WARNING: umount ESP ($esp_part) failed (attempt $_esp_attempt/5), retrying..." >&2
+            echo "WARNING: umount ESP $esp_part failed (attempt $esp_attempt/5), retrying..." >&2
             sleep 2
             sync
         done
-        if [[ "$_esp_unmounted" != true ]]; then
+        if [[ "$esp_unmounted" != true ]]; then
             echo "ERROR: Could not unmount ESP $esp_mount after 5 attempts" >&2
-            umount "$esp_mount"  # let it fail loudly
+            umount "$esp_mount"
         fi
         rmdir "$esp_mount"
     else
@@ -2297,16 +2209,6 @@ prepare_bootstrap_repart_dir() {
   TEMP_REPART_DIR="$(mktemp -d /tmp/ab-usb-repart.XXXXXX)"
   BOOTSTRAP_REPART_DIR="$TEMP_REPART_DIR"
 
-  # Auto-size root slots from the .root.raw image size when the user has not
-  # given an explicit --root-size. Each slot gets 3× the raw image size,
-  # rounded up to the next whole GiB, so the slot comfortably holds:
-  #   (1) the dd'd OS image itself
-  #   (2) the full installer bundle (includes another copy of .root.raw)
-  #   (3) headroom for the image to grow over many A/B reflash cycles
-  #
-  # Example: 6 GiB raw → 18 GiB per slot → 36 GiB total (A+B).
-  # On a 64 GiB disk: 1 GiB ESP + 36 GiB roots + ~27 GiB DATA.
-  # Pass --root-size explicitly to override.
   if [[ -z "$USB_ROOT_SIZE" && -n "${ARTIFACT_PREFIX:-}" ]]; then
     local _raw_path="$SOURCE_DIR/${ARTIFACT_PREFIX}.root.raw"
     if [[ -f "$_raw_path" ]]; then
@@ -2317,34 +2219,40 @@ prepare_bootstrap_repart_dir() {
         local _target_gib=$(( (_target_bytes + _gib - 1) / _gib ))
         local _raw_gib=$(( (_raw_bytes + _gib - 1) / _gib ))
         USB_ROOT_SIZE="${_target_gib}G"
-        echo "==> Auto-sized root slots: ${_target_gib}G each"              "(3× ~${_raw_gib}G raw; ${_target_gib}G × 2 = $(( _target_gib * 2 ))G total for A+B)"
+        echo "==> Auto-sized root slots: ${_target_gib}G each (3× ~${_raw_gib}G raw; ${_target_gib}G × 2 = $(( _target_gib * 2 ))G total for A+B)"
       fi
     fi
   fi
 
-  # Base ESP + A/B layout. Inlined defaults so the script does not
-  # depend on deploy.repart/*.conf existing on disk — the on-target
-  # invocation runs from /root/ where there is no repo. --repart-dir
-  # still exists as an escape hatch for advanced users who want to
-  # supply their own confs (any *.conf in the directory is copied
-  # in before the size overrides below).
   if [[ -n "$REPART_DIR" && -d "$REPART_DIR" ]] && compgen -G "$REPART_DIR/*.conf" >/dev/null 2>&1; then
     cp "$REPART_DIR"/*.conf "$TEMP_REPART_DIR/"
   fi
+
   : "${USB_ESP_SIZE:=1G}"
   : "${USB_ROOT_SIZE:=8G}"
 
+  rm -f \
+    "$TEMP_REPART_DIR/00-esp.conf" \
+    "$TEMP_REPART_DIR/05-xbootldr.conf" \
+    "$TEMP_REPART_DIR/10-root-a.conf" \
+    "$TEMP_REPART_DIR/11-root-b.conf" \
+    "$TEMP_REPART_DIR/20-home.conf" \
+    "$TEMP_REPART_DIR/30-data.conf"
+
   if [[ "$PRESERVE_MODE" == true ]]; then
-    # In preserve mode, reuse an existing ESP if one is present on the
-    # target disk.  systemd-repart with --empty=allow will match it by
-    # type UUID and leave it untouched (Format= has no effect on
-    # existing partitions).  If an existing ESP is found we skip our
-    # definition so it is never resized or overwritten.
-    local existing_esp=""
-    if existing_esp="$(find_esp_partition 2>/dev/null || true)" && [[ -n "$existing_esp" ]]; then
-      echo "==> Preserving existing ESP: $existing_esp"
-    fi
-    if [[ -z "$existing_esp" ]]; then
+    local existing_esp="" existing_esp_bytes=0 esp_min_bytes=0
+    existing_esp="$(find_esp_partition 2>/dev/null || true)"
+
+    if [[ -n "$existing_esp" ]]; then
+      existing_esp_bytes="$(get_part_size_bytes "$existing_esp")"
+      esp_min_bytes="$(to_bytes "${USB_ESP_SIZE:-1G}")"
+      echo "==> Preserving existing ESP: $existing_esp ($(( existing_esp_bytes / 1024 / 1024 )) MiB)"
+
+      if (( existing_esp_bytes < esp_min_bytes )) && [[ "${XBOOTLDR_SIZE:-2G}" != "none" ]]; then
+        echo "==> Existing ESP is smaller than requested ${USB_ESP_SIZE:-1G}; adding XBOOTLDR (${XBOOTLDR_SIZE}) in free space"
+        write_xbootldr_conf "$TEMP_REPART_DIR/05-xbootldr.conf" "$XBOOTLDR_SIZE"
+      fi
+    else
       write_fixed_partition_conf "$TEMP_REPART_DIR/00-esp.conf" esp ESP "$USB_ESP_SIZE" vfat
     fi
   else
@@ -2353,14 +2261,6 @@ prepare_bootstrap_repart_dir() {
 
   write_fixed_partition_conf "$TEMP_REPART_DIR/10-root-a.conf" root _empty "$USB_ROOT_SIZE" ext4
   write_fixed_partition_conf "$TEMP_REPART_DIR/11-root-b.conf" root _empty "$USB_ROOT_SIZE" ext4
-
-  # HOME / DATA partitions are part of the unified layout model. Each
-  # token can be 'none' (skip), 'rest' (no Size*Bytes so systemd-repart
-  # grows it into whatever's left), or an explicit size.
-  # validate_layout_tokens has already made sure at most one of the
-  # two asked for 'rest'.
-  rm -f "$TEMP_REPART_DIR/20-home.conf" \
-        "$TEMP_REPART_DIR/30-data.conf"
 
   case "$HOME_SIZE_TOKEN" in
     none)
@@ -2430,6 +2330,55 @@ wait_for_esp_partition() {
     sleep 0.5
   done
   return 1
+
+find_xbootldr_partition() {
+  local part parttype
+  while read -r part parttype; do
+    [[ -n "$part" ]] || continue
+    # XBOOTLDR GPT type GUID
+    if [[ "${parttype,,}" == "bc13c2ff-59e6-4262-a352-b275fd6f7172" ]]; then
+      printf '%s\n' "$part"
+      return 0
+    fi
+  done < <(lsblk -nrpo NAME,PARTTYPE "$DISK_DEVICE" 2>/dev/null)
+  return 1
+}
+
+wait_for_xbootldr_partition() {
+  local part="" i
+  command -v udevadm >/dev/null 2>&1 && udevadm settle >/dev/null 2>&1 || true
+  command -v partprobe >/dev/null 2>&1 && partprobe "$DISK_DEVICE" >/dev/null 2>&1 || true
+  command -v blockdev >/dev/null 2>&1 && blockdev --rereadpt "$DISK_DEVICE" >/dev/null 2>&1 || true
+  for i in $(seq 1 20); do
+    part="$(find_xbootldr_partition || true)"
+    if [[ -n "$part" ]]; then
+       printf '%s\n' "$part"
+      return 0
+    fi
+    command -v udevadm >/dev/null 2>&1 && udevadm settle --timeout=5 >/dev/null 2>&1 || true
+    sleep 0.5
+  done
+  return 1
+}
+
+get_part_size_bytes() {
+  local part="$1"
+  local size
+  size="$(cat "/sys/block/$(lsblk -no PKNAME "$part" 2>/dev/null)/device/block/${part##*/}/size" 2>/dev/null || echo 0)"
+  # size is in 512-byte sectors; convert to bytes
+   printf '%s\n' "$((size * 512))"
+}
+
+write_xbootldr_conf() {
+  local path="$1"
+  install -d -m 0755 "$(dirname "$path")"
+  cat > "$path" <<EOF
+# Managed by bin/ab-install.sh
+default *@saved
+editor yes
+timeout $LOADER_TIMEOUT
+console-mode keep
+EOF
 }
 
 write_loader_conf() {
@@ -2450,8 +2399,6 @@ EOF
 # systemd-boot via bootctl, writes loader.conf, and releases the ESP
 # so the seed step that follows has a clean view of the disk.
 bootstrap_disk() {
-  # Determine empty mode: --empty=allow in preserve mode so systemd-repart
-  # adds new partitions alongside existing ones without wiping the disk.
   local empty_mode="--empty=force"
   if [[ "$PRESERVE_MODE" == true ]]; then
     empty_mode="--empty=allow"
@@ -2461,9 +2408,6 @@ bootstrap_disk() {
   systemd-repart --dry-run=no "$empty_mode" \
     --definitions="$BOOTSTRAP_REPART_DIR" "$TARGET_FOR_SYSUPDATE"
 
-  # Refresh the loop attach so DISK_DEVICE points at the new partition
-  # layout. Block-device targets don't need this because the kernel
-  # rescans automatically.
   if [[ -n "${LOOPDEV:-}" ]]; then
     losetup -d "$LOOPDEV" >/dev/null 2>&1 || true
     LOOPDEV="$(losetup --find --show --partscan "$TARGET_FOR_SYSUPDATE")"
@@ -2479,7 +2423,6 @@ bootstrap_disk() {
   echo "==> Installing systemd-boot into target ESP"
   bootctl --esp-path="$esp_mount" --no-variables install
 
-  # --- Secure Boot: sign the bootloader binaries on the ESP ---
   SB_KEY="${SCRIPT_DIR}/../.secureboot/db.key"
   SB_CRT="${SCRIPT_DIR}/../.secureboot/db.crt"
   if [[ -f "$SB_KEY" ]] && [[ -f "$SB_CRT" ]]; then
@@ -2491,14 +2434,20 @@ bootstrap_disk() {
             --output "$esp_mount/EFI/systemd/systemd-bootx64.efi" \
             "$esp_mount/EFI/systemd/systemd-bootx64.efi"
   fi
-  # -----------------------------------------------------------
 
   write_loader_conf "$esp_mount/loader/loader.conf"
 
-  safe_umount "$esp_mount" "ESP ($esp_part)"
+  umount "$esp_mount"
   rmdir "$esp_mount"
   sync
   command -v udevadm >/dev/null 2>&1 && udevadm settle --timeout=10 >/dev/null 2>&1 || true
+
+  XBOOTLDR_PART="$(wait_for_xbootldr_partition 2>/dev/null || true)"
+  if [[ -n "$XBOOTLDR_PART" ]]; then
+    echo "==> Found XBOOTLDR partition: $XBOOTLDR_PART"
+  else
+    XBOOTLDR_PART=""
+  fi
 }
 
 wait_for_seeded_root_partition() {
@@ -2832,6 +2781,10 @@ while [[ $# -gt 0 ]]; do
       PRESERVE_MODE=true
       ALLOW_FIXED_DISK=yes
       shift
+      ;;
+    --xbootldr-size)
+      XBOOTLDR_SIZE="${2:?missing size}"
+      shift 2
       ;;
     --reflash)
       MODE="reflash"
