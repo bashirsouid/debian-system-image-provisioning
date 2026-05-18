@@ -1,6 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'echo >&2 ""; echo >&2 "╔══ FATAL: build.sh died at line $LINENO (exit $?) ══╗"; echo >&2 "║  Command: ${BASH_COMMAND}"; echo >&2 "╚══ Target disk may be in partial/unbootable state ═══╝"' ERR
 
+# ── Loud failure trap ─────────────────────────────────────────────────────────
+# Fires on ANY non-zero exit when set -e is active. Prints the failing
+# line number and the command that failed so silent exits become obvious.
+_die_on_error() {
+    local exit_code=$? lineno="${1:-?}" cmd="${BASH_COMMAND:-?}"
+    echo >&2
+    echo >&2 "╔══════════════════════════════════════════════════════════════════╗"
+    echo >&2 "║  ✗  ab-install.sh FAILED — INSTALLATION INCOMPLETE               ║"
+    echo >&2 "╠══════════════════════════════════════════════════════════════════╣"
+    printf >&2 "║  Exit code : %-51s ║\n" "$exit_code"
+    printf >&2 "║  Line      : %-51s ║\n" "$lineno"
+    printf >&2 "║  Command   : %-51s ║\n" "${cmd:0:51}"
+    echo >&2 "╠══════════════════════════════════════════════════════════════════╣"
+    echo >&2 "║  The target disk may be in a PARTIAL / UNBOOTABLE state.         ║"
+    echo >&2 "║  Do NOT reboot from this disk until you re-run ab-install.sh.    ║"
+    echo >&2 "╚══════════════════════════════════════════════════════════════════╝"
+    echo >&2
+}
+trap '_die_on_error $LINENO' ERR
+# ─────────────────────────────────────────────────────────────────────────────
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Export so scripts/lib/profile-resolver.sh can find mkosi.profiles/ and
@@ -1129,6 +1150,7 @@ EOF
     echo "==> Using per-host users file: hosts/$HOST/users.json"
   fi
   render_users_conf "$METADATA_DIR/usr/local/etc/users.conf"
+  install -m 0600 "$USERS_FILE" "$METADATA_DIR/etc/ab-users.json"
   chmod 0600 "$METADATA_DIR/usr/local/etc/users.conf"
   if [[ "$SKIP_DOTFILES" == true ]]; then
     echo "==> [DOTFILES] --skip-dotfiles set; skipping dotfiles staging"

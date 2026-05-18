@@ -1,5 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'echo >&2 ""; echo >&2 "╔══ FATAL: ab-install.sh died at line $LINENO (exit $?) ══╗"; echo >&2 "║  Command: ${BASH_COMMAND}"; echo >&2 "╚══ Target disk may be in partial/unbootable state ═══╝"' ERR
+
+# ── Loud failure trap ─────────────────────────────────────────────────────────
+# Fires on ANY non-zero exit when set -e is active. Prints the failing
+# line number and the command that failed so silent exits become obvious.
+_die_on_error() {
+    local exit_code=$? lineno="${1:-?}" cmd="${BASH_COMMAND:-?}"
+    echo >&2
+    echo >&2 "╔══════════════════════════════════════════════════════════════════╗"
+    echo >&2 "║  ✗  ab-install.sh FAILED — INSTALLATION INCOMPLETE               ║"
+    echo >&2 "╠══════════════════════════════════════════════════════════════════╣"
+    printf >&2 "║  Exit code : %-51s ║\n" "$exit_code"
+    printf >&2 "║  Line      : %-51s ║\n" "$lineno"
+    printf >&2 "║  Command   : %-51s ║\n" "${cmd:0:51}"
+    echo >&2 "╠══════════════════════════════════════════════════════════════════╣"
+    echo >&2 "║  The target disk may be in a PARTIAL / UNBOOTABLE state.         ║"
+    echo >&2 "║  Do NOT reboot from this disk until you re-run ab-install.sh.    ║"
+    echo >&2 "╚══════════════════════════════════════════════════════════════════╝"
+    echo >&2
+}
+trap '_die_on_error $LINENO' ERR
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ab-install.sh
 #
@@ -80,15 +102,22 @@ SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
 [[ -n "$PROJECT_ROOT" ]] || PROJECT_ROOT="$SCRIPT_DIR"
 
-##############################
-# TODO: Move elsewhere and make more resilient. This is to warn you to unmount any mounted volumes (or crypt unlocked volumes before flashing)
-# If you dont do this, it may silently fail to update ESP or other devices.
-# Before opening LUKS, close any stale mapping on the same device
-if dmsetup ls | grep -q "$(basename $ROOTPART)"; then
-    echo "Stale LUKS mapping found, closing..."
-    cryptsetup luksClose "$(dmsetup ls | grep "$(basename $ROOTPART)" | awk '{print $1}')" || true
-fi
-###############################
+# Safe unmount with retries — never silently fails.
+# Usage: safe_umount "/path" "description"
+safe_umount() {
+    local mnt="$1" desc="${2:-$1}" attempt
+    for attempt in 1 2 3; do
+        if umount "$mnt" 2>/dev/null; then
+            return 0
+        fi
+        echo "==> WARNING: umount $desc failed (attempt $attempt/3), waiting..." >&2
+        sleep 2
+        sync
+    done
+    # Last attempt — let it fail loudly and let set -e + ERR trap fire
+    echo "==> ERROR: Could not unmount $desc after 3 attempts. Forcing error." >&2
+    umount "$mnt"   # will fail and trigger the ERR trap
+}
 
 # ── close_stale_luks_on_target ────────────────────────────────────────────────
 # Find every open dm-crypt device whose underlying slave lives on DISK_DEVICE,
@@ -858,7 +887,7 @@ validate_layout_tokens() {
 
 cleanup() {
     set +e
-    [[ -n "${ROOT_MOUNT:-}" ]] && mountpoint -q "$ROOT_MOUNT" && umount "$ROOT_MOUNT"
+    [[ -n "${ROOT_MOUNT:-}" ]] && mountpoint -q "$ROOT_MOUNT" && safe_umount "$ROOT_MOUNT" "Root ($ROOT_MOUNT)"
     [[ -n "${ROOT_MOUNT:-}" && -d "$ROOT_MOUNT" ]] && rmdir "$ROOT_MOUNT"
     if [[ -n "${LUKS_PASS_FILE:-}" && -f "${LUKS_PASS_FILE}" ]]; then
         shred -u "$LUKS_PASS_FILE" 2>/dev/null || rm -f "$LUKS_PASS_FILE"
@@ -1575,7 +1604,7 @@ read_default_entry_root_partuuid() {
         fi
     fi
 
-    umount "$esp_mount" 2>/dev/null || true
+    safe_umount "$esp_mount" "ESP ($esp_part)"
     rmdir "$esp_mount" 2>/dev/null || true
     printf '%s' "$result"
 }
@@ -1716,17 +1745,18 @@ check_free_space_for_preserve() {
   local target_real total_bytes used_bytes free_bytes min_needed
   target_real="$(readlink -f "$TARGET")"
 
-  # Total disk size in bytes
   total_bytes="$(lsblk -b -ndno SIZE "$target_real" 2>/dev/null || echo 0)"
   (( total_bytes > 0 )) || die "cannot determine size of $TARGET"
 
-  # Sum sizes of all existing partitions (lsblk reports in 512-byte sectors)
   used_bytes=0
-  while read -r size; do
-      used_bytes=$((used_bytes + size))
-  done < <(lsblk -b -nro SIZE "$target_real" 2>/dev/null | grep -v '^0$')
+  # Use -p (pairs) and TYPE=part to sum ONLY partition sizes, not the disk itself
+  while IFS= read -r line; do
+    eval "$line"
+    [[ "$TYPE" == "part" ]] || continue
+    used_bytes=$((used_bytes + SIZE))
+  done < <(lsblk -b -nPpo NAME,SIZE,TYPE "$target_real" 2>/dev/null)
 
-  # GPT metadata (primary + backup GPT headers)
+  # GPT metadata overhead
   used_bytes=$((used_bytes + 2 * 1044 * 1024))
 
   free_bytes=$((total_bytes - used_bytes))
@@ -1922,7 +1952,10 @@ seed_first_root_slot() {
         cryptsetup resize "$luks_map" --key-file="$_luks_pass_file"
         if command -v e2fsck >/dev/null 2>&1 && command -v resize2fs >/dev/null 2>&1; then
             echo "==> Running e2fsck + resize2fs on /dev/mapper/$luks_map"
-            e2fsck -f -y "/dev/mapper/$luks_map" || true
+            e2fsck -f -y "/dev/mapper/$luks_map" || {
+                ec=$?
+                echo "==> WARNING: e2fsck exited with code $ec (non-zero is normal for repaired filesystems)" >&2
+            }
             resize2fs "/dev/mapper/$luks_map" || true
         else
             echo "WARNING: e2fsck/resize2fs not available; inner filesystem not grown" >&2
@@ -2164,7 +2197,23 @@ seed_first_root_slot() {
             prune_old_boot_entries "$esp_mount" "$conf_dest"
         fi
 
-        umount "$esp_mount"
+        # Disconnect ESP before rebooting into the new root so the firmware re-reads the updated
+        sync
+        local _esp_unmounted=false
+        local _esp_attempt
+        for _esp_attempt in 1 2 3 4 5; do
+            if umount "$esp_mount" 2>/dev/null; then
+                _esp_unmounted=true
+                break
+            fi
+            echo "==> WARNING: umount ESP ($esp_part) failed (attempt $_esp_attempt/5), retrying..." >&2
+            sleep 2
+            sync
+        done
+        if [[ "$_esp_unmounted" != true ]]; then
+            echo "ERROR: Could not unmount ESP $esp_mount after 5 attempts" >&2
+            umount "$esp_mount"  # let it fail loudly
+        fi
         rmdir "$esp_mount"
     else
         echo "WARNING: Could not locate ESP partition to copy bootloader files." >&2
@@ -2446,7 +2495,7 @@ bootstrap_disk() {
 
   write_loader_conf "$esp_mount/loader/loader.conf"
 
-  umount "$esp_mount"
+  safe_umount "$esp_mount" "ESP ($esp_part)"
   rmdir "$esp_mount"
   sync
   command -v udevadm >/dev/null 2>&1 && udevadm settle --timeout=10 >/dev/null 2>&1 || true
@@ -2946,6 +2995,11 @@ resolve_copy_install_bundle
 # With ROOT_MOUNT set by seed_first_root_slot(), copy the installer
 # bundle onto the seeded root filesystem.
 copy_bundle
+if [[ "$COPY_INSTALL_BUNDLE" == "yes" ]]; then
+    [[ -f "$ROOT_MOUNT/root/ab-install.sh" ]] \
+        || die "POSTCONDITION FAILED: ab-install.sh was not found in /root/ on the seeded disk after copy_bundle(). The bundle copy silently failed."
+    echo "==> Verified: /root/ab-install.sh present on seeded disk ✓"
+fi
 
 echo "==> Syncing data to disk (this may take several minutes)..."
 sync
@@ -2971,3 +3025,14 @@ fi
 if [[ "$EMBED_FULL_IMAGE" == true ]]; then
     echo " Full raw image: copied into /root/"
 fi
+
+echo
+echo "╔══════════════════════════════════════════════════════════════════╗"
+echo "║  ✓  ab-install.sh COMPLETE — installation succeeded              ║"
+echo "╠══════════════════════════════════════════════════════════════════╣"
+printf "║  Host    : %-54s ║\n" "${HOST:-unknown}"
+printf "║  Version : %-54s ║\n" "$IMAGE_VERSION"
+printf "║  Slot    : %-54s ║\n" "${ROOT_PART:-unknown}"
+printf "║  Bundle  : %-54s ║\n" "$COPY_INSTALL_BUNDLE"
+echo "╚══════════════════════════════════════════════════════════════════╝"
+echo
