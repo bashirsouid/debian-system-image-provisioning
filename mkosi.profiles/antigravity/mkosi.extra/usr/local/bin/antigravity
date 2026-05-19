@@ -4,6 +4,9 @@
 # instead of just dying with "command not found".
 set -euo pipefail
 
+# TODO: remove
+#export TMPDIR="/tmp/antigravity-$USER"
+
 CANDIDATES=(
     /opt/antigravity/Antigravity.AppImage
     /opt/antigravity/antigravity.AppImage

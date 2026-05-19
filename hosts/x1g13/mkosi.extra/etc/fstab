@@ -46,3 +46,4 @@
 # TODO: This is the permanent one, but I need the below one to hide some live USB errors.
 # LABEL=HOME /home ext4 nofail,x-systemd.device-timeout=2s 0 2
 LABEL=HOME  /home  ext4  defaults,nofail,x-systemd.device-timeout=1s  0  2
+UUID=cfe533c7-fcb7-4d05-a20b-4338d3a09382 /mnt/data ext4 defaults,nofail,x-systemd.device-timeout=2s 0 2

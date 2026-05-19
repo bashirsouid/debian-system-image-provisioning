@@ -87,4 +87,17 @@ fi
 if [[ -d "$ROOT/root" ]]; then
   echo "==> [FINALIZE] locking /root to 0700"
   chmod 0700 "$ROOT/root"
+# Ensure /mnt/data mount point and permissions
+# Create group for data users
+chroot "$ROOT" groupadd -r data-users || true
+# Create users if they don't exist, then add them to the group
+chroot "$ROOT" id -u bashirs >/dev/null 2>&1 || chroot "$ROOT" useradd -m -s /bin/bash bashirs || true
+chroot "$ROOT" id -u ansible >/dev/null 2>&1 || chroot "$ROOT" useradd -m -s /bin/bash ansible || true
+# Add users to the group
+chroot "$ROOT" usermod -a -G data-users bashirs || true
+chroot "$ROOT" usermod -a -G data-users ansible || true
+# Create the mount directory with appropriate permissions
+install -d -m 0775 "$ROOT/mnt/data"
+# Set ownership inside the chroot
+chroot "$ROOT" chown root:data-users /mnt/data
 fi

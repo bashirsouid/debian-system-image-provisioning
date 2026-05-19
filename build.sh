@@ -1137,7 +1137,8 @@ EOF
   install -d -m 0755 \
     "$METADATA_DIR/usr/local/etc" \
     "$METADATA_DIR/usr/local/share/ab-image-meta" \
-    "$METADATA_DIR/usr/lib/sysupdate.d"
+    "$METADATA_DIR/usr/lib/sysupdate.d" \
+    "$METADATA_DIR/etc"
 
   # Per-host users override: if hosts/<HOST>/users.json exists, it
   # replaces the global .users.json for this build target. This lets a
