@@ -1510,18 +1510,16 @@ detect_existing_ab_layout() {
     eval "$line"
     [[ "$TYPE" == "part" ]] || continue
 
-    case "$PARTLABEL" in
-      ESP)
+    # Accept a partition labelled ESP *or* any vfat‑formatted partition as the EFI System Partition.
+    if [[ "$PARTLABEL" == "ESP" || "$FSTYPE" == "vfat" ]]; then
         esp_count=$((esp_count + 1))
-        ;;
-      DATA|HOME)
-        ;;
-      *)
+    elif [[ "$PARTLABEL" == "DATA" || "$PARTLABEL" == "HOME" ]]; then
+        : # skip non‑root partitions
+    else
         if [[ "$FSTYPE" == "ext4" || "$FSTYPE" == "crypto_LUKS" || -z "$FSTYPE" ]]; then
-          root_count=$((root_count + 1))
+            root_count=$((root_count + 1))
         fi
-        ;;
-    esac
+    fi
   done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$device" 2>/dev/null)
 
   [[ -n "$tmp_loop" ]] && losetup -d "$tmp_loop" >/dev/null 2>&1 || true
@@ -1541,19 +1539,16 @@ validate_existing_ab_layout() {
         eval "$line"
         [[ "$TYPE" == "part" ]] || continue
 
-        case "$PARTLABEL" in
-            ESP)
-                esp_count=$((esp_count + 1))
-                ;;
-            DATA|HOME)
-                continue
-                ;;
-            *)
-                if [[ "$FSTYPE" == "ext4" || "$FSTYPE" == "crypto_LUKS" || -z "$FSTYPE" ]]; then
-                    root_count=$((root_count + 1))
-                fi
-                ;;
-        esac
+        # Accept a partition labelled ESP *or* any vfat‑formatted partition as the EFI System Partition.
+        if [[ "$PARTLABEL" == "ESP" || "$FSTYPE" == "vfat" ]]; then
+            esp_count=$((esp_count + 1))
+        elif [[ "$PARTLABEL" == "DATA" || "$PARTLABEL" == "HOME" ]]; then
+            : # skip non‑root partitions
+        else
+            if [[ "$FSTYPE" == "ext4" || "$FSTYPE" == "crypto_LUKS" || -z "$FSTYPE" ]]; then
+                root_count=$((root_count + 1))
+            fi
+        fi
     done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
 
     (( esp_count >= 1 )) \
