@@ -45,6 +45,9 @@ source "$PROJECT_ROOT/scripts/lib/profile-resolver.sh"
 
 PROFILE="devbox"
 HOST=""
+HOSTNAME_ARG=""
+BUILD_HOSTNAME=""
+BUILD_HOSTNAME=""
 PROFILE_SET=false
 HOST_SET=false
 BUILD_ALL=false
@@ -605,7 +608,7 @@ render_build_info() {
 
   build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   build_user="$HOST_USER_NAME"
-  build_host="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)"
+  build_host="${HOST:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)}"
   build_git_rev="$(git_rev "$PROJECT_ROOT")"
   build_git_dirty="$(git_dirty "$PROJECT_ROOT")"
   awesome_git_rev="$(git_rev "$PROJECT_ROOT/third-party/awesome")"
