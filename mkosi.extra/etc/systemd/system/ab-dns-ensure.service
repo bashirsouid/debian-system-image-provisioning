@@ -1,0 +1,14 @@
+[Unit]
+Description=Ensure DNS resolver handoff is wired for NetworkManager and Tailscale
+Documentation=man:systemd-resolved.service(8) man:resolv.conf(5)
+DefaultDependencies=no
+After=local-fs.target systemd-resolved.service
+Before=network-pre.target NetworkManager.service tailscaled.service tailscale-up.service
+Wants=systemd-resolved.service network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/ab-dns-ensure
+
+[Install]
+WantedBy=sysinit.target

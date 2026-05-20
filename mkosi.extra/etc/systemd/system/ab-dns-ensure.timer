@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically verify DNS resolver handoff
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=ab-dns-ensure.service
+
+[Install]
+WantedBy=timers.target

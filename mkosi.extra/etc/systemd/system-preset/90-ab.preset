@@ -8,6 +8,8 @@ enable ab-user-provision.service
 enable ab-monitor.timer
 enable nftables.service
 enable systemd-resolved.service
+enable ab-dns-ensure.service
+enable ab-dns-ensure.timer
 enable systemd-timesyncd.service
 enable systemd-oomd.service
 enable ab-runtime-validate-firstboot.service
