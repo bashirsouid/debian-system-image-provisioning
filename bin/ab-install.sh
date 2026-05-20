@@ -1960,15 +1960,8 @@ seed_first_root_slot() {
         blockdev --rereadpt "$DISK_DEVICE" >/dev/null 2>&1 || true
     fi
 
-    local esp_part="" line NAME PARTLABEL FSTYPE TYPE
-    while read -r line; do
-        eval "$line"
-        [[ "$TYPE" == "part" ]] || continue
-        if [[ "$PARTLABEL" == "ESP" ]]; then
-            esp_part="$NAME"
-            break
-        fi
-    done < <(lsblk -P -npo NAME,PARTLABEL,FSTYPE,TYPE "$DISK_DEVICE")
+    local esp_part=""
+    esp_part="$(find_esp_partition 2>/dev/null || true)"
 
     if [[ -n "$esp_part" ]]; then
         local esp_mount
@@ -1994,13 +1987,7 @@ seed_first_root_slot() {
             echo "==> --reflash: keeping previously-installed boot entries as fallback"
         else
             entry_basename="${prefix}"
-            echo "==> Wiping old boot entries from boot partition"
-            rm -f "$bls_mount/loader/entries/"*.conf
-            if [[ -d "$bls_mount/EFI/Linux" ]]; then
-                rm -f "$bls_mount/EFI/Linux/"*.linux \
-                      "$bls_mount/EFI/Linux/"*.initrd \
-                      "$bls_mount/EFI/Linux/"*.efi
-            fi
+            echo "==> Adding new boot entry without removing existing ones"
         fi
 
         echo "==> Setting ${entry_basename}.conf as the default boot entry"
