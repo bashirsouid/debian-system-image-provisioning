@@ -1,0 +1,2 @@
+description="Flatpak support profile with desktop integration and Flathub remote setup."
+uses_secrets=""
