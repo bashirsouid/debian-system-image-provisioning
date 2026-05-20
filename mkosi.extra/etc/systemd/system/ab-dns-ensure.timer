@@ -2,8 +2,8 @@
 Description=Periodically verify DNS resolver handoff
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=5min
+OnBootSec=30s
+OnUnitActiveSec=1min
 AccuracySec=30s
 Unit=ab-dns-ensure.service
 
