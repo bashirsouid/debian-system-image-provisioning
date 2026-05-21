@@ -26,7 +26,7 @@ Everything except `profile.default` is optional.
 3. `touch hosts/<name>/secure-boot.disabled` with a reason, OR add a `hosts/<name>/mkosi.conf.d/30-secure-boot.conf` — every host-targeted build must do one or the other.
 4. Drop any host-specific files under `hosts/<name>/mkosi.extra/`. Common ones:
     * `etc/fstab` — host's disk layout
-    * `etc/hostname` — intentionally OMITTED: the image provisions hostname at first boot from DMI data; baking it in defeats the one-image-many-hosts model.
+    * `etc/hostname` — optional explicit hostname. If omitted, `./build.sh --host <name>` writes `<name>` as the image hostname automatically. Use `./build.sh --host <name> --hostname <other-name>` when the runtime hostname should differ from both.
 5. Build: `./build.sh --host <name>`
 
 ## Config layering
@@ -38,6 +38,7 @@ ones:
 1. Base           mkosi.extra/
 2. Each profile   mkosi.profiles/<name>/mkosi.extra/    (in profile-list order)
 3. Host           hosts/<name>/mkosi.extra/
+4. Generated      build metadata, including /etc/hostname when needed
 ```
 
 So if you want a host-specific `/etc/fstab` (e.g. a particular SSD's

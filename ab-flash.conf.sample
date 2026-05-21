@@ -63,6 +63,5 @@ EXTRA_KERNEL_ARGS="quiet"
 PRESERVE_PATHS=(
   /etc/fstab
   /etc/machine-id
-  /etc/hostname
   /etc/ssh/ssh_host_*
 )

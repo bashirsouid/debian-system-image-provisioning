@@ -23,6 +23,5 @@ EXTRA_KERNEL_ARGS="quiet amdgpu.gttsize=3072"
 PRESERVE_PATHS=(
   /etc/fstab
   /etc/machine-id
-  /etc/hostname
   /etc/ssh/ssh_host_*
 )

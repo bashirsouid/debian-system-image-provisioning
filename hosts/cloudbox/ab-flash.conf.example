@@ -35,6 +35,5 @@ SLOT_B_UKI=ab-slot-b.efi
 PRESERVE_PATHS=(
   /etc/fstab
   /etc/machine-id
-  /etc/hostname
   /etc/ssh/ssh_host_*
 )

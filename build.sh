@@ -47,7 +47,6 @@ PROFILE="devbox"
 HOST=""
 HOSTNAME_ARG=""
 BUILD_HOSTNAME=""
-BUILD_HOSTNAME=""
 PROFILE_SET=false
 HOST_SET=false
 BUILD_ALL=false
@@ -91,6 +90,8 @@ Options:
   --host NAME              include host-specific overlay from hosts/NAME/.
                            When --host is given without --profile, the profile
                            list is read from hosts/NAME/profile.default.
+  --hostname NAME          set the image hostname. Defaults to --host when a
+                           host build is requested; no-host builds keep qemu.
   --force                  pass mkosi -f
   --clean                  pass mkosi -f -f
   --force-rebuild          clean all generated state, refresh managed third-party
@@ -627,7 +628,7 @@ render_build_info() {
     AB_BUILD_PROFILE "$PROFILE" \
     AB_BUILD_HOST_OVERLAY "$host_overlay" \
     AB_BUILD_HOST_USER "$build_user" \
-    AB_BUILD_HOSTNAME "$build_host" \
+    AB_BUILD_HOSTNAME "${BUILD_HOSTNAME:-$build_host}" \
     AB_BUILD_GIT_REV "$build_git_rev" \
     AB_BUILD_GIT_DIRTY "$build_git_dirty" \
     AB_BUILD_AWESOME_GIT_REV "$awesome_git_rev" \
@@ -1031,10 +1032,12 @@ build_target() {
   local target_host="$2"
   local target_image_id target_force
   local host_dir checksum_file old_checksum built_image_path built_image_basename expected_image_path
+  local generate_hostname_overlay=false
   local extra_args=() mkosi_args=()
 
   PROFILE="$target_profile"
   HOST="$target_host"
+  BUILD_HOSTNAME=""
   TARGET_ARCH=""
   HOST_KERNEL_ARGS=""
   target_force="$MKOSI_FORCE"
@@ -1054,6 +1057,20 @@ build_target() {
   if [[ -n "$HOST" && ! -d "$PROJECT_ROOT/hosts/$HOST" ]]; then
     echo "ERROR: host directory hosts/$HOST not found" >&2
     exit 1
+  fi
+
+  if [[ -n "$HOSTNAME_ARG" ]]; then
+    BUILD_HOSTNAME="$HOSTNAME_ARG"
+    generate_hostname_overlay=true
+  elif [[ -n "$HOST" ]]; then
+    local host_hostname_file="$PROJECT_ROOT/hosts/$HOST/mkosi.extra/etc/hostname"
+    if [[ -f "$host_hostname_file" ]]; then
+      BUILD_HOSTNAME="$(awk 'NF{print; exit}' "$host_hostname_file")"
+    fi
+    if [[ -z "$BUILD_HOSTNAME" ]]; then
+      BUILD_HOSTNAME="$HOST"
+      generate_hostname_overlay=true
+    fi
   fi
 
   # Secure Boot posture: every --host build must either configure
@@ -1142,6 +1159,9 @@ EOF
     "$METADATA_DIR/usr/local/share/ab-image-meta" \
     "$METADATA_DIR/usr/lib/sysupdate.d" \
     "$METADATA_DIR/etc"
+  if [[ "$generate_hostname_overlay" == true ]]; then
+    printf '%s\n' "$BUILD_HOSTNAME" > "$METADATA_DIR/etc/hostname"
+  fi
 
   # Per-host users override: if hosts/<HOST>/users.json exists, it
   # replaces the global .users.json for this build target. This lets a
@@ -1192,7 +1212,6 @@ EOF
       fi
   fi
 
-  extra_args+=("--extra-tree=$METADATA_DIR:/")
   extra_args+=("--sandbox-tree=$PROJECT_ROOT/mkosi.extra:/")
 
   # Profile-level mkosi.extra/ is natively applied by mkosi as an
@@ -1238,6 +1257,10 @@ EOF
       extra_args+=("--extra-tree=$host_dir/mkosi.extra:/")
     fi
   fi
+
+  # Apply generated metadata last so a generated or --hostname-provided
+  # hostname wins over the base qemu fallback.
+  extra_args+=("--extra-tree=$METADATA_DIR:/")
 
   checksum_file="$PROJECT_ROOT/.config-checksum"
   if [[ -f "$checksum_file" && -z "$target_force" ]]; then
@@ -1398,6 +1421,10 @@ while [[ $# -gt 0 ]]; do
       HOST_SET=true
       shift 2
       ;;
+    --hostname)
+      HOSTNAME_ARG="${2:?missing hostname}"
+      shift 2
+      ;;
     --force)
       MKOSI_FORCE="-f"
       shift
@@ -1493,6 +1520,11 @@ fi
 
 if [[ "$BUILD_ALL" == true && ( "$PROFILE_SET" == true || "$HOST_SET" == true ) ]]; then
   echo "ERROR: --all cannot be combined with explicit --profile or --host" >&2
+  exit 1
+fi
+
+if [[ "$BUILD_ALL" == true && -n "$HOSTNAME_ARG" ]]; then
+  echo "ERROR: --all cannot be combined with --hostname" >&2
   exit 1
 fi
 
