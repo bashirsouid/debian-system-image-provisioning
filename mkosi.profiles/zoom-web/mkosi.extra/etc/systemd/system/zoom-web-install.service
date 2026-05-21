@@ -7,7 +7,6 @@ ConditionPathExists=!/var/lib/zoom-web/installed
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/install-zoom.sh
-Restart=no
 
 [Install]
 WantedBy=multi-user.target

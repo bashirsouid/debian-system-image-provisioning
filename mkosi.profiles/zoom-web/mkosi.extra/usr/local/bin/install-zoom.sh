@@ -21,7 +21,7 @@ fi
 echo "Downloading Zoom client..."
 if ! wget -O "$TMP" "$URL"; then
     echo "Unable to download Zoom; will retry on a later boot."
-    exit 0
+    exit 75
 fi
 
 echo "Installing Zoom..."
@@ -30,4 +30,5 @@ if apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "$TMP"; t
     touch "$MARKER"
 else
     echo "Zoom install failed; will retry on a later boot."
+    exit 75
 fi

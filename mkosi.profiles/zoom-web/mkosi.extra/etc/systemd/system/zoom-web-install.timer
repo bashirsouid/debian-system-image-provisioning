@@ -1,0 +1,11 @@
+[Unit]
+Description=Retry Zoom Workplace install until it succeeds
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=15min
+AccuracySec=1min
+Unit=zoom-web-install.service
+
+[Install]
+WantedBy=timers.target

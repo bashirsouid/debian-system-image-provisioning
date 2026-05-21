@@ -128,24 +128,28 @@ if ! ls "$FIRMWARE_DST"/iwlwifi-bz-b0* &>/dev/null; then
     exit 1
 fi
 
-# Bluetooth CNVi IML — prefer -iml suffix (Lunar Lake format)
-echo "--- Bluetooth CNVi (ibt-0190-0291-iml) ---"
-BT_SRC_GLOB="/usr/lib/firmware/intel/ibt-0190-0291-iml*"
+# Bluetooth CNVi / PCIe.  Recent btintel_pcie can request the IML firmware
+# first and then a PCI/USB/non-suffixed 0190 image before the adapter becomes
+# usable.  Stage the whole 0190-0291/0041 family so the initramfs has every
+# fallback name the driver may ask for.
+echo "--- Bluetooth CNVi / PCIe (ibt-0190 firmware family) ---"
+BT_SRC_GLOB="/usr/lib/firmware/intel/ibt-0190-0291* /usr/lib/firmware/intel/ibt-0190-0041*"
 BT_FILES=$(ls $BT_SRC_GLOB 2>/dev/null || true)
 if [[ -n "$BT_FILES" ]]; then
-    echo "  [local] found on system (IML format)"
+    echo "  [local] found on system"
     mkdir -p "$FIRMWARE_DST/intel"
     # shellcheck disable=SC2086
     cp -v $BT_SRC_GLOB "$FIRMWARE_DST/intel/"
 else
     extract_packages
-    IML_PKG=$(ls "$TMPDIR_WORK/extract/usr/lib/firmware/intel/ibt-0190-0291-iml"* 2>/dev/null || true)
-    if [[ -n "$IML_PKG" ]]; then
+    BT_PKG=$(ls "$TMPDIR_WORK/extract/usr/lib/firmware/intel/ibt-0190-0291"* \
+                  "$TMPDIR_WORK/extract/usr/lib/firmware/intel/ibt-0190-0041"* 2>/dev/null || true)
+    if [[ -n "$BT_PKG" ]]; then
         mkdir -p "$FIRMWARE_DST/intel"
         # shellcheck disable=SC2086
-        cp -v $IML_PKG "$FIRMWARE_DST/intel/"
+        cp -v $BT_PKG "$FIRMWARE_DST/intel/"
     else
-        echo "  WARNING: ibt-0190-0291-iml* not found"
+        echo "  WARNING: ibt-0190 Bluetooth firmware family not found"
     fi
 fi
 

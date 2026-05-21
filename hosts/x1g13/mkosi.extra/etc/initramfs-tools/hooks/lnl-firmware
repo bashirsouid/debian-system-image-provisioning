@@ -18,8 +18,21 @@ for fw in \
     iwlwifi-bz-b0-fm-c0-91.ucode \
     iwlwifi-bz-b0-fm-c0-92.ucode \
     iwlwifi-bz-b0-fm-c0-93.ucode \
+    intel/ibt-0190-0041-iml.sfi \
+    intel/ibt-0190-0041-pci.sfi \
+    intel/ibt-0190-0041-pci.ddc \
+    intel/ibt-0190-0041-usb.sfi \
+    intel/ibt-0190-0041-usb.ddc \
+    intel/ibt-0190-0041.sfi \
+    intel/ibt-0190-0041.ddc \
     intel/ibt-0190-0291-iml.sfi \
+    intel/ibt-0190-0291-pci.sfi \
+    intel/ibt-0190-0291-pci.ddc \
+    intel/ibt-0190-0291-usb.sfi \
+    intel/ibt-0190-0291-usb.ddc \
+    intel/ibt-0190-0291.sfi \
     intel/ibt-0190-0291-iml.ddc \
+    intel/ibt-0190-0291.ddc \
     intel/vpu/vpu_40xx_v1.bin \
     intel/sof-ipc4/lnl/sof-lnl.ri; do
     [ -e "/usr/lib/firmware/${fw}" ] && copy_firmware "${fw}"
