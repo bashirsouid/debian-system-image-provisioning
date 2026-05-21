@@ -3,7 +3,14 @@ set -euo pipefail
 
 # The BUILDROOT environment variable is provided by mkosi
 ROOT="${BUILDROOT:?BUILDROOT is required}"
-/usr/sbin/setcap cap_net_raw+ep /bin/ping
+
+PING="$ROOT/usr/bin/ping"
+if [[ -e "$PING" ]]; then
+  echo "==> [FINALIZE] setting cap_net_raw on /usr/bin/ping"
+  /usr/sbin/setcap cap_net_raw+ep "$PING"
+else
+  echo "==> [FINALIZE] /usr/bin/ping is not installed; skipping ping capabilities"
+fi
 
 # Same for ssh.socket — Debian ships both ssh.service and ssh.socket enabled
 # by default and they fight over :22. The preset disables ssh.socket for new
