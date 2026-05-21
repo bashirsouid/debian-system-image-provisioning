@@ -436,6 +436,76 @@ render_users_conf() {
   fi
 }
 
+validate_users_file() {
+  local file="$1" label="${2:-$1}" bad_indexes
+
+  if ! jq -e 'type == "array"' "$file" >/dev/null; then
+    echo "ERROR: $label must be a JSON array of user objects" >&2
+    exit 1
+  fi
+
+  if jq -e '[to_entries[] | select(.value | type != "object")] | length > 0' "$file" >/dev/null; then
+    echo "ERROR: $label contains non-object entries" >&2
+    exit 1
+  fi
+
+  bad_indexes="$(jq -r '
+    to_entries[] |
+    select((.value.username // "") == "") |
+    select([.value | keys[] | select(startswith("_") | not)] | length > 0) |
+    .key
+  ' "$file")"
+  if [[ -n "$bad_indexes" ]]; then
+    echo "ERROR: $label has user entries missing username at index(es):" >&2
+    while IFS= read -r idx; do
+      [[ -n "$idx" ]] && printf '  %s\n' "$idx" >&2
+    done <<< "$bad_indexes"
+    echo "Metadata-only entries are allowed only when every key starts with '_'." >&2
+    exit 1
+  fi
+
+  if jq -e '
+    [
+      .[] |
+      select((.username // "") != "") |
+      select(has("can_login") and (.can_login | type != "boolean"))
+    ] | length > 0
+  ' "$file" >/dev/null; then
+    echo "ERROR: $label has can_login values that are not boolean true/false" >&2
+    exit 1
+  fi
+
+  if ! jq -e '[.[] | select((.username // "") != "" and .username != "root")] | length > 0' "$file" >/dev/null; then
+    echo "ERROR: $label must define at least one non-root user" >&2
+    exit 1
+  fi
+}
+
+render_provision_users_json() {
+  local output="$1"
+  ALLOW_ROOT_LOGIN_ENV="$ALLOW_ROOT_LOGIN" jq '
+    [
+      .[] |
+      select(type == "object") |
+      select((.username // "") != "") |
+      select(.username != "root" or env.ALLOW_ROOT_LOGIN_ENV == "true")
+    ]
+  ' "$USERS_FILE" > "$output"
+  chmod 0600 "$output"
+}
+
+first_login_username() {
+  jq -r '
+    [
+      .[] |
+      select(type == "object") |
+      select((.username // "") != "") |
+      select(.username != "root") |
+      select(if has("can_login") and .can_login != null then .can_login else true end)
+    ][0].username // empty
+  ' "$USERS_FILE"
+}
+
 # Sanitize a dotfiles repo URL or path into a filesystem-safe cache key.
 # The result is deterministic so subsequent builds reuse the same cache
 # directory, which is what makes the warm path a single `git fetch`.
@@ -1173,8 +1243,9 @@ EOF
     USERS_FILE="$PROJECT_ROOT/hosts/$HOST/users.json"
     echo "==> Using per-host users file: hosts/$HOST/users.json"
   fi
+  validate_users_file "$USERS_FILE" "$USERS_FILE"
   render_users_conf "$METADATA_DIR/usr/local/etc/users.conf"
-  install -m 0600 "$USERS_FILE" "$METADATA_DIR/etc/ab-users.json"
+  render_provision_users_json "$METADATA_DIR/etc/ab-users.json"
   chmod 0600 "$METADATA_DIR/usr/local/etc/users.conf"
   if [[ "$SKIP_DOTFILES" == true ]]; then
     echo "==> [DOTFILES] --skip-dotfiles set; skipping dotfiles staging"
@@ -1192,6 +1263,7 @@ EOF
           echo "==> Packaging remote-access credentials for profile=$PROFILE${HOST:+ host=$HOST}..."
           pkg_args=()
           [[ -n "$HOST" ]] && pkg_args+=(--host "$HOST")
+          pkg_args+=(--user "$(first_login_username)")
           # Pass the per-target resolved profile list so the packager
           # only encrypts secrets the selected profiles actually consume.
           pkg_args+=(--profile "$PROFILE")
@@ -1569,6 +1641,8 @@ EOF
   exit 1
 fi
 
+validate_users_file "$USERS_FILE" "$USERS_FILE"
+
 # Refuse to build if the sample sentinel password is still present.
 # Users.json supports both 'password' and 'password_hash'; we guard both.
 if jq -e '
@@ -1654,10 +1728,11 @@ if [[ "${AB_SKIP_OVERLAY_GATES:-no}" != "yes" ]]; then
         "$PROJECT_ROOT/scripts/verify-no-baked-identity.sh"
     fi
 
-    # Validate secrets shape + permissions. Only runs if there is a
-    # .mkosi-secrets/ directory; otherwise this is a no-op.
-    if [[ -d "$PROJECT_ROOT/.mkosi-secrets" && \
-          -x "$PROJECT_ROOT/scripts/verify-build-secrets.sh" ]]; then
+    # Validate secrets shape + permissions. This intentionally runs even when
+    # .mkosi-secrets/ is absent: the verifier creates the directory and fails
+    # closed if required SSH authorized_keys are missing, so remote-access
+    # lockouts are caught at build time instead of first boot.
+    if [[ -x "$PROJECT_ROOT/scripts/verify-build-secrets.sh" ]]; then
         echo "==> Verifying .mkosi-secrets/ ..."
         verify_args=()
         [[ "${STRICT_SECRETS:-no}" == "yes" ]] && verify_args+=(--strict)

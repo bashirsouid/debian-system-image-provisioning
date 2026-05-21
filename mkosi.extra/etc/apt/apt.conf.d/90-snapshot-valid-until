@@ -1,0 +1,4 @@
+// This image intentionally pins Debian to snapshot.debian.org for
+// reproducible builds. Snapshot Release files expire by design; keep apt
+// usable on the installed system and in profile postinst hooks.
+Acquire::Check-Valid-Until "false";

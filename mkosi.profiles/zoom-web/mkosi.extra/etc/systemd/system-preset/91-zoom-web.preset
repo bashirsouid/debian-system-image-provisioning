@@ -1,1 +1,2 @@
-enable zoom-web-install.timer
+disable zoom-web-install.service
+disable zoom-web-install.timer

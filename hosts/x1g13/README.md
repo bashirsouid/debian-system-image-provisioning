@@ -56,7 +56,8 @@ the image build never depends on APT timing or incremental-cache state.
 - TLP ThinkPad power management with SSD write-back caching
 - Intel NPU kernel module (`intel_npu`) auto-loaded at boot
 - Display resolution forced to 1920×1200 at KMS layer
-- GPU runtime suspend (5 s autosuspend) via tmpfiles.d
+- GPU runtime PM left to the kernel/TLP; the old tmpfiles.d override was
+  removed because xe rejects those writes on this hardware
 
 ## Enabling fan control (optional)
 

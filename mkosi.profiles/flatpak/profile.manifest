@@ -1,2 +1,2 @@
-description="Flatpak package manager + a first-boot oneshot that adds the Flathub remote idempotently."
+description="Flatpak package manager + retrying timer that adds the Flathub remote idempotently once DNS/network are ready."
 uses_secrets=""

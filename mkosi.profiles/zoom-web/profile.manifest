@@ -1,2 +1,2 @@
-description="Zoom Workplace installer. Adds a first-boot service that downloads and installs Zoom from upstream's latest amd64 .deb URL when network is available."
+description="Zoom Workplace installer. Downloads and installs Zoom from upstream's latest amd64 .deb URL during the image build."
 uses_secrets=""

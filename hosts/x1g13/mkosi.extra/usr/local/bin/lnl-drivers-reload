@@ -7,13 +7,24 @@ wifi_up() { ls /sys/class/net/wl* >/dev/null 2>&1; }
 snd_up()  { ls /sys/class/sound/card* >/dev/null 2>&1; }
 npu_up()  { [ -e /dev/accel/accel0 ]; }
 
-# WiFi + Bluetooth: Intel BE201 (iwlwifi bz-b0-fm-c0) + CNVi IML (ibt-0190-0291-iml)
+# WiFi: Intel BE201 (iwlwifi bz-b0-fm-c0)
 if ! wifi_up; then
     echo "lnl-reload: no WiFi interface — reloading iwlwifi"
     modprobe -r iwlmvm 2>/dev/null || true
     modprobe -r iwlwifi 2>/dev/null || true
     modprobe iwlwifi || true
 fi
+
+# Bluetooth: Intel CNVi/PCIe (btintel_pcie + ibt-0190 firmware).
+#
+# On Lunar Lake, the kernel can create /sys/class/bluetooth/hci0 while the HCI
+# management interface is still wedged, leaving BlueZ with "No default
+# controller available".  Reload after rootfs firmware is available and before
+# bluetooth.service starts.
+echo "lnl-reload: reloading btintel_pcie"
+modprobe -r btintel_pcie 2>/dev/null || true
+modprobe -r btintel 2>/dev/null || true
+modprobe btintel_pcie || true
 
 # SOF audio: sof-audio-pci-intel-lnl (sof-lnl.ri IPC4)
 if ! snd_up; then

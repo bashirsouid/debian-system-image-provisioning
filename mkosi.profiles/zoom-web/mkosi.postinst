@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${container:-}" != "mkosi" ]]; then
+    exec mkosi-chroot "$CHROOT_SCRIPT" "$@"
+fi
+
+stage="${1:-final}"
+[[ "$stage" == "final" ]] || exit 0
+
+URL="https://zoom.us/client/latest/zoom_amd64.deb"
+TMP="$(mktemp --tmpdir zoom_amd64.XXXXXX.deb)"
+trap 'rm -f "$TMP"' EXIT
+
+if command -v zoom >/dev/null 2>&1; then
+    echo "==> [zoom-web/postinst] Zoom is already installed"
+    exit 0
+fi
+
+echo "==> [zoom-web/postinst] downloading Zoom Workplace"
+if command -v curl >/dev/null 2>&1; then
+    curl -fL "$URL" -o "$TMP"
+else
+    wget -O "$TMP" "$URL"
+fi
+
+echo "==> [zoom-web/postinst] installing Zoom Workplace"
+apt-get update -o Acquire::Check-Valid-Until=false
+DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y "$TMP"

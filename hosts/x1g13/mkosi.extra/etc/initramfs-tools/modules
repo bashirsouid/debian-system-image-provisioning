@@ -6,3 +6,4 @@ iwlwifi
 iwlmvm
 # Include Intel Bluetooth CNVi IML firmware for the same reason.
 btintel
+btintel_pcie

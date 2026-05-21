@@ -2,7 +2,7 @@
 Description=Reload Lunar Lake firmware-dependent drivers
 DefaultDependencies=no
 After=local-fs.target
-Before=network-pre.target
+Before=network-pre.target bluetooth.service blueman-mechanism.service
 
 [Service]
 Type=oneshot
