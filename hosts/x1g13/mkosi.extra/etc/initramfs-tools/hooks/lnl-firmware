@@ -34,6 +34,7 @@ for fw in \
     intel/ibt-0190-0291-iml.ddc \
     intel/ibt-0190-0291.ddc \
     intel/vpu/vpu_40xx_v1.bin \
+    intel/sof-ipc4-tplg/sof-lnl-*.tplg \
     intel/sof-ipc4/lnl/sof-lnl.ri; do
     [ -e "/usr/lib/firmware/${fw}" ] && copy_firmware "${fw}"
 done

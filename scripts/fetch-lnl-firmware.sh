@@ -167,6 +167,13 @@ stage_dir \
     "$FIRMWARE_DST/intel/sof-ipc4/lnl" \
     "SOF audio (sof-lnl IPC4)"
 
+
+# SOF audio — Lunar Lake IPC4 topology files
+stage_dir \
+    "/usr/lib/firmware/intel/sof-ipc4-tplg" \
+    "usr/lib/firmware/intel/sof-ipc4-tplg" \
+    "$FIRMWARE_DST/intel/sof-ipc4-tplg" \
+    "SOF audio (LNL topology files)"
 echo ""
 echo "==> Staged files (non-xe, non-bin):"
 find "$FIRMWARE_DST" \
