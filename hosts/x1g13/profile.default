@@ -20,3 +20,6 @@ intel-npu
 flatpak
 digikam
 zoom-web
+docker
+symlink-docker
+symlink-k3s
