@@ -1378,7 +1378,12 @@ EOF
   # unaffected: SYSTEMD_OFFLINE only applies to the build sandbox.
   mkosi_args+=("--environment=SYSTEMD_OFFLINE=1")
 
-  echo "==> Starting mkosi build (profile: $PROFILE${HOST:+, host: $HOST}, force: ${target_force:-none})..."
+  # Clean dangling symlinks in previous workspace to avoid cp errors
+if [[ -d ".mkosi.workspace" ]]; then
+  find .mkosi.workspace -type l ! -e {} -exec rm -f {} + 2>/dev/null || true
+fi
+
+echo "==> Starting mkosi build (profile: $PROFILE${HOST:+, host: $HOST}, force: ${target_force:-none})..."
   if [[ -n "$target_force" ]]; then
     # shellcheck disable=SC2206
     local force_args=($target_force)
