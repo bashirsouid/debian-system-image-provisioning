@@ -5,7 +5,7 @@ This configuration ensures that touchpad scrolling follows the *natural* directi
 ## What it does
 - Matches any touchpad device (`MatchIsTouchpad "on"`).
 - Uses the `libinput` driver.
-- Enables `Option "NaturalScrolling" "true"`.
+- Enables `Option "NaturalScrolling" "false"`.
 
 ## How to reuse
 Copy the entire directory `mkosi.extra/etc/X11/xorg.conf.d/90-libinput.conf` to the same path in any other mkosi profile you maintain. The settings will be applied automatically on boot.

@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply GNOME touch‑pad preferences (natural scroll)
+After=display-manager.service
+Wants=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/gsettings set org.gnome.desktop.peripherals.touchpad natural-scroll true
+
+[Install]
+WantedBy=display-manager.service

@@ -273,7 +273,7 @@ clean_all() {
     mkosi.pkgcache
     mkosi.builddir
     mkosi.tmp
-    .mkosi-secrets
+    # .mkosi-secrets
     .mkosi-thirdparty
     .mkosi-metadata
   )

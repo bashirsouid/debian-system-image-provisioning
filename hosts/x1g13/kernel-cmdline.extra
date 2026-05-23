@@ -1,1 +1,1 @@
-modprobe.blacklist=i915 systemd.unit=multi-user.target splash video=eDP-1:1920x1200@60
+modprobe.blacklist=i915 systemd.unit=default.target splash video=eDP-1:1920x1200@60

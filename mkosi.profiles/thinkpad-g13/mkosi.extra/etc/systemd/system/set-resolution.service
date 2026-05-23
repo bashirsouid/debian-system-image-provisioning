@@ -1,0 +1,11 @@
+[Unit]
+Description=Set default monitor resolution
+After=display-manager.service
+Wants=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/set-resolution.sh
+
+[Install]
+WantedBy=display-manager.service

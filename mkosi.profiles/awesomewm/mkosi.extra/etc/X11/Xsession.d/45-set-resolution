@@ -1,0 +1,8 @@
+#!/bin/sh
+# Set default monitor resolution to 1900x1200 on X start
+if command -v xrandr >/dev/null 2>&1; then
+  OUTPUT=$(xrandr --listactivemonitors | awk 'NR==2 {print $4}')
+  if [ -n "$OUTPUT" ]; then
+    xrandr --output "$OUTPUT" --mode 1900x1200 || true
+  fi
+fi
