@@ -1,0 +1,4 @@
+/* ThinkPad G13 Fn key support
+ * Users in video group can control backlight via the udev rules
+ * that set proper group permissions on /sys/class/backlight/*/brightness
+ */

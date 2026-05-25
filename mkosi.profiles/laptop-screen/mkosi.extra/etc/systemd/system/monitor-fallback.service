@@ -1,0 +1,11 @@
+[Unit]
+Description=Monitor hotplug fallback - re-enable internal display
+After=display-manager.service
+Wants=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/monitor-fallback.sh
+
+[Install]
+WantedBy=display-manager.service

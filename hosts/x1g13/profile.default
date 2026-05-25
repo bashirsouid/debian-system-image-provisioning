@@ -1,5 +1,6 @@
 kernel-amd64
 thinkpad-g13
+laptop-screen
 display-manager-gdm3
 awesomewm
 dev-tools
@@ -23,3 +24,5 @@ zoom-web
 docker
 symlink-docker
 symlink-k3s
+user-power-control
+watchdog-battery

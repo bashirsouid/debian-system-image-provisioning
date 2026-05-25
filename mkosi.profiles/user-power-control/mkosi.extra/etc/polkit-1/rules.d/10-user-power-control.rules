@@ -1,0 +1,16 @@
+/* Allow regular users to manage power without sudo */
+polkit.addRule(function(action, subject) {
+    if (subject.isInGroup("users") && subject.active) {
+        var actions = [
+            "org.freedesktop.login1.reboot",
+            "org.freedesktop.login1.power-off",
+            "org.freedesktop.login1.suspend",
+            "org.freedesktop.login1.hibernate",
+            "org.freedesktop.login1.reboot-multiple-sessions",
+            "org.freedesktop.login1.power-off-multiple-sessions"
+        ];
+        if (actions.indexOf(action.id) >= 0) {
+            return polkit.Result.YES;
+        }
+    }
+});

@@ -1,0 +1,7 @@
+[Unit]
+Description=Battery‑watchdog – suspend when charge ≤ 5 %
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/watchdog-battery.sh

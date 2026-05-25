@@ -1,0 +1,2 @@
+# Enable ACPI daemon for ThinkPad Fn key support
+enable acpid.service
