@@ -47,6 +47,7 @@ Profile directories currently in the tree:
 | `incus` | System containers / VMs |
 | `k3s` | *(stub)* single-node Kubernetes |
 | `kopia` | *(apt-source wired)* Kopia backup — uncomment Packages= to enable |
+| `kernel-6-18` | Linux 6.18.x kernel from trixie-backports |
 | `macbook` | Apple T2 hardware: kernel, firmware, t2fanrd |
 | `server` | Minimal headless CLI baseline |
 | `signal` | *(apt-source wired)* Signal Desktop — uncomment Packages= to enable |
