@@ -1,1 +1,1 @@
-description="Automatic internal display re‑enable when external monitors are unplugged"
+description="Automatic internal display re‑enable when external monitors are unplugged; adds udev hot‑plug recovery, timer fallback, and key‑bind (Fn+F8) support"

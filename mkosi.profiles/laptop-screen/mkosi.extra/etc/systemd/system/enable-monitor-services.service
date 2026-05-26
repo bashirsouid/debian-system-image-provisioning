@@ -1,0 +1,10 @@
+[Unit]
+Description=Enable monitor recovery timer and reload udev
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/enable-monitor-services.sh
+
+[Install]
+WantedBy=multi-user.target

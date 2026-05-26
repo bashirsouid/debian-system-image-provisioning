@@ -1,0 +1,30 @@
+[Unit]
+Description=Ensure rt1318 DAC Switch is ON for ThinkPad X1G13 speakers
+Documentation=https://github.com/thesofproject/linux/issues
+# Run after everything that could mute/toggle the DAC:
+#   wireplumber  – profile/route setup via UCM2
+#   pipewire-*   – audio routing
+#   mute-speaker – user service that mutes @DEFAULT_SINK@ on login/resume
+After=wireplumber.service pipewire.service pipewire-pulse.service mute-speaker.service
+Wants=wireplumber.service pipewire.service pipewire-pulse.service
+
+[Service]
+Type=oneshot
+# Wait for WirePlumber to finish profile/route setup before touching
+# the mixer; premature access can race with UCM EnableSequence.
+ExecStartPre=/bin/sleep 3
+ExecStart=/bin/sh -c '\
+  if amixer -c0 cget name="rt1318-1 DAC Switch" 2>/dev/null | grep -q "values=off"; then \
+    amixer -c0 cset name="rt1318-1 DAC Switch" 1; \
+    echo "DAC switch was off — enabled"; \
+  fi; \
+  if wpctl get-volume alsa_output.pci-0000_00_1f.3-platform-sof_sdw.HiFi__Speaker__sink 2>/dev/null | grep -q MUTED; then \
+    wpctl set-mute alsa_output.pci-0000_00_1f.3-platform-sof_sdw.HiFi__Speaker__sink 0; \
+    echo "Speaker was muted — unmuted"; \
+  fi'
+
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
