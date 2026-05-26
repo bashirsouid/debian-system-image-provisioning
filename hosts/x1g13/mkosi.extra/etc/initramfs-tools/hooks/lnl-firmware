@@ -18,6 +18,18 @@ for fw in \
     iwlwifi-bz-b0-fm-c0-91.ucode \
     iwlwifi-bz-b0-fm-c0-92.ucode \
     iwlwifi-bz-b0-fm-c0-93.ucode \
+    iwlwifi-bz-b0-fm-c0-94.ucode \
+    iwlwifi-bz-b0-fm-c0-95.ucode \
+    iwlwifi-bz-b0-fm-c0-96.ucode \
+    iwlwifi-bz-b0-fm-c0-97.ucode \
+    iwlwifi-bz-b0-fm-c0.pnvm \
+    iwlwifi-bz-b0-gf-a0-92.ucode \
+    iwlwifi-bz-b0-gf-a0-93.ucode \
+    iwlwifi-bz-b0-gf-a0-94.ucode \
+    iwlwifi-bz-b0-gf-a0-95.ucode \
+    iwlwifi-bz-b0-gf-a0-96.ucode \
+    iwlwifi-bz-b0-gf-a0-97.ucode \
+    iwlwifi-bz-b0-gf-a0.pnvm \
     intel/ibt-0190-0041-iml.sfi \
     intel/ibt-0190-0041-pci.sfi \
     intel/ibt-0190-0041-pci.ddc \
@@ -25,6 +37,7 @@ for fw in \
     intel/ibt-0190-0041-usb.ddc \
     intel/ibt-0190-0041.sfi \
     intel/ibt-0190-0041.ddc \
+    intel/ibt-0190-0041-iml.ddc \
     intel/ibt-0190-0291-iml.sfi \
     intel/ibt-0190-0291-pci.sfi \
     intel/ibt-0190-0291-pci.ddc \
@@ -34,7 +47,12 @@ for fw in \
     intel/ibt-0190-0291-iml.ddc \
     intel/ibt-0190-0291.ddc \
     intel/vpu/vpu_40xx_v1.bin \
+    intel/vpu/vpu_40xx_v0.0.bin \
     intel/sof-ipc4-tplg/sof-lnl-*.tplg \
-    intel/sof-ipc4/lnl/sof-lnl.ri; do
+    intel/sof-ipc4/lnl/sof-lnl.ri \
+    xe/lnl_huc.bin \
+    xe/lnl_guc_70.bin \
+    xe/lnl_gsc_1.bin \
+    i915/xe2lpd_dmc.bin; do
     [ -e "/usr/lib/firmware/${fw}" ] && copy_firmware "${fw}"
 done
