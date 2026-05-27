@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+#
+# Description: Runs a Kopia snapshot with configurable upload limits and
+#              parallelism, optionally targeting specific sources.
+# Usage: kopia-backup-trigger [options] [<source> ...]
+# Options:
+#   -l, --limit-mb <int>     Upload limit in MiB (default: 100000)
+#   -p, --parallel <int>     Number of parallel workers (default: 16)
+#       --no-all             Do not include the --all flag (requires sources)
+#       --snapshot-arg <x>   Additional argument forwarded to Kopia (repeatable)
+#       --dry-run            Run Kopia in dry-run mode
+#   -v, --verbose            Enable verbose logging
+#   -s, --silent             Suppress informational output (errors only)
+#   -h, --help               Display this help message and exit
+# Environment:
+#   KOPIA_UPLOAD_LIMIT_MB_DEFAULT   Override default upload limit
+#   KOPIA_PARALLEL_DEFAULT          Override default parallelism
+# Exit Codes:
+#   0  Success
+#   1  Dependency or configuration error
+#   2  Invalid usage or interruption
+# Dependencies:
+#   kopia
+
+set -euo pipefail
+IFS=$'\n\t'
+
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly LOG_TIMESTAMP_FORMAT="%Y-%m-%dT%H:%M:%S%z"
+
+UPLOAD_LIMIT_MB="${KOPIA_UPLOAD_LIMIT_MB_DEFAULT:-100000}"
+PARALLEL_JOBS="${KOPIA_PARALLEL_DEFAULT:-16}"
+INCLUDE_ALL=1
+DRY_RUN=0
+VERBOSE=0
+SILENT=0
+
+declare -a SNAPSHOT_ARGS=()
+declare -a SOURCES=()
+declare -a KOPIA_CMD=()
+
+log_timestamp() {
+  date +"${LOG_TIMESTAMP_FORMAT}"
+}
+
+log_info() {
+  if [[ ${SILENT} -eq 0 ]]; then
+    printf '[%s] [INFO] %s\n' "$(log_timestamp)" "$*" >&2
+  fi
+}
+
+log_debug() {
+  if [[ ${SILENT} -eq 0 && ${VERBOSE} -eq 1 ]]; then
+    printf '[%s] [DEBUG] %s\n' "$(log_timestamp)" "$*" >&2
+  fi
+}
+
+log_error() {
+  printf '[%s] [ERROR] %s\n' "$(log_timestamp)" "$*" >&2
+}
+
+fail() {
+  local code="$1"
+  shift || true
+  log_error "$*"
+  exit "${code}"
+}
+
+handle_interrupt() {
+  local signal="${1:-INT}"
+  log_error "Received signal ${signal}. Aborting."
+  exit 2
+}
+
+trap 'handle_interrupt INT' INT
+trap 'handle_interrupt TERM' TERM
+
+print_help() {
+  cat <<EOF_HELP
+${SCRIPT_NAME} - trigger Kopia snapshots with configurable settings.
+
+Usage:
+  ${SCRIPT_NAME} [options] [<source> ...]
+
+Options:
+  -l, --limit-mb <int>     Upload limit in MiB (default: ${UPLOAD_LIMIT_MB})
+  -p, --parallel <int>     Parallel workers (default: ${PARALLEL_JOBS})
+      --no-all             Do not include the --all flag (requires sources)
+      --snapshot-arg <x>   Additional snapshot argument (repeatable)
+      --dry-run            Run Kopia in dry-run mode
+  -v, --verbose            Enable verbose logging
+  -s, --silent             Suppress informational logging
+  -h, --help               Show this help message
+
+Exit codes:
+  0  Success
+  1  Dependency or configuration error
+  2  Invalid usage or interruption
+EOF_HELP
+}
+
+check_dependency() {
+  local cmd="$1"
+  local package="${2:-$1}"
+  if ! command -v "${cmd}" >/dev/null 2>&1; then
+    log_error "Required command '${cmd}' not found."
+    log_error "Install on Debian/Ubuntu with: sudo apt install ${package}"
+    exit 1
+  fi
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -l|--limit-mb)
+        if [[ $# -lt 2 ]]; then
+          fail 2 "Missing value for --limit-mb option"
+        fi
+        UPLOAD_LIMIT_MB="$2"
+        shift 2
+        ;;
+      -p|--parallel)
+        if [[ $# -lt 2 ]]; then
+          fail 2 "Missing value for --parallel option"
+        fi
+        PARALLEL_JOBS="$2"
+        shift 2
+        ;;
+      --no-all)
+        INCLUDE_ALL=0
+        shift
+        ;;
+      --snapshot-arg)
+        if [[ $# -lt 2 ]]; then
+          fail 2 "Missing value for --snapshot-arg option"
+        fi
+        SNAPSHOT_ARGS+=("$2")
+        shift 2
+        ;;
+      --dry-run)
+        DRY_RUN=1
+        shift
+        ;;
+      -v|--verbose)
+        VERBOSE=1
+        shift
+        ;;
+      -s|--silent)
+        SILENT=1
+        shift
+        ;;
+      -h|--help)
+        print_help
+        exit 0
+        ;;
+      --)
+        shift
+        SOURCES+=("$@")
+        break
+        ;;
+      -*)
+        fail 2 "Unknown option: $1"
+        ;;
+      *)
+        SOURCES+=("$1")
+        shift
+        ;;
+    esac
+  done
+}
+
+validate_configuration() {
+  if ! [[ ${UPLOAD_LIMIT_MB} =~ ^[0-9]+$ ]]; then
+    fail 1 "--limit-mb must be a positive integer."
+  fi
+
+  if ! [[ ${PARALLEL_JOBS} =~ ^[0-9]+$ ]]; then
+    fail 1 "--parallel must be a positive integer."
+  fi
+
+  if [[ ${INCLUDE_ALL} -eq 0 && ${#SOURCES[@]} -eq 0 ]]; then
+    fail 1 "Provide at least one source when --no-all is specified."
+  fi
+}
+
+build_command() {
+  KOPIA_CMD=("kopia" "snapshot" "create" "--upload-limit-mb=${UPLOAD_LIMIT_MB}" "--parallel=${PARALLEL_JOBS}")
+
+  if [[ ${DRY_RUN} -eq 1 ]]; then
+    KOPIA_CMD+=("--dry-run")
+  fi
+
+  if [[ ${#SNAPSHOT_ARGS[@]} -gt 0 ]]; then
+    KOPIA_CMD+=("${SNAPSHOT_ARGS[@]}")
+  fi
+
+  if [[ ${INCLUDE_ALL} -eq 1 ]]; then
+    KOPIA_CMD+=("--all")
+  fi
+
+  if [[ ${#SOURCES[@]} -gt 0 ]]; then
+    KOPIA_CMD+=("${SOURCES[@]}")
+  fi
+
+  log_debug "Constructed command: $(printf '%q ' "${KOPIA_CMD[@]}")"
+}
+
+run_kopia() {
+  log_info "Starting Kopia snapshot..."
+  if [[ ${SILENT} -eq 1 ]]; then
+    "${KOPIA_CMD[@]}" >/dev/null
+  else
+    "${KOPIA_CMD[@]}"
+  fi
+  log_info "Kopia snapshot operation complete."
+}
+
+main() {
+  parse_args "$@"
+  check_dependency "kopia"
+  validate_configuration
+  build_command
+  run_kopia
+}
+
+main "$@"

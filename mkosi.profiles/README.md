@@ -36,6 +36,7 @@ Profile directories currently in the tree:
 | `antigravity` | *(stub)* Google Antigravity IDE |
 | `audio-pipewire` | PipeWire + bluez audio stack |
 | `awesomewm` | awesome window manager + xorg (with xorg-legacy) |
+| `joystickwake` | Prevents DPMS timeout on controller input |
 | `bluetooth` | Bluetooth support with bluez stack |
 | `cloudflare-tunnel` | cloudflared connector for backup SSH |
 | `devbox` | Liquorix kernel + spice-vdagent (QEMU/virt guest) |
@@ -46,7 +47,9 @@ Profile directories currently in the tree:
 | `healthchecksio` | Dead-man's-switch heartbeat to healthchecks.io |
 | `incus` | System containers / VMs |
 | `k3s` | *(stub)* single-node Kubernetes |
-| `kopia` | *(apt-source wired)* Kopia backup — uncomment Packages= to enable |
+| `kopia` | Kopia backup CLI (apt-source wired) |
+| `cloud-backup` | Periodic cloud backup service using kopia-backup-trigger |
+| `home-server-backup` | Periodic home server backup service using kopia-backup-trigger |
 | `kernel-6-18` | Linux 6.18.x kernel from trixie-backports |
 | `macbook` | Apple T2 hardware: kernel, firmware, t2fanrd |
 | `server` | Minimal headless CLI baseline |
@@ -166,6 +169,7 @@ Pre-defined roles:
 | `group_photo` | `digikam kopia` |
 | `group_game` | `flatpak steam` |
 | `symlinks` | `symlink-docker symlink-k3s` |
+| `backup` | `kopia cloud-backup home-server-backup` |
 
 You can use role names anywhere a profile name is accepted:
 `--profile "macbook awesomewm group_dev wifi ssh-server"` or in

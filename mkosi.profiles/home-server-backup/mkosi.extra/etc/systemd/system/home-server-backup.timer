@@ -1,0 +1,9 @@
+[Unit]
+Description=Hourly home server backup timer
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

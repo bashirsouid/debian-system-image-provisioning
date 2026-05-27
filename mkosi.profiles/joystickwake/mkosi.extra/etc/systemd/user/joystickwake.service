@@ -1,0 +1,11 @@
+[Unit]
+Description=Joystickwake - prevent DPMS timeout on controller input
+After=default.target
+
+[Service]
+ExecStart=/usr/bin/joystickwake
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

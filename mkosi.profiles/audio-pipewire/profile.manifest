@@ -1,2 +1,2 @@
-description="PipeWire audio stack with bluez for Bluetooth audio; includes alsa-utils + pavucontrol."
+description="PipeWire + bluez audio stack with mute-speaker service that mutes speakers on login to prevent sudden audio; includes alsa-utils + pavucontrol."
 uses_secrets=""

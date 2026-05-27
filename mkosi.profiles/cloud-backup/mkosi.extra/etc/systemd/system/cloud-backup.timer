@@ -1,0 +1,9 @@
+[Unit]
+Description=Hourly cloud backup timer
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

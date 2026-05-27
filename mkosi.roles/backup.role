@@ -1,0 +1,4 @@
+# Backup role: periodic backups using kopia
+kopia
+cloud-backup
+home-server-backup

@@ -1,0 +1,3 @@
+# Enable cloud-backup timer when cloud-backup profile is selected
+enable cloud-backup.timer
+enable cloud-backup.service

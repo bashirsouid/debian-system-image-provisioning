@@ -1,0 +1,13 @@
+[Unit]
+Description=Mute speakers on login to prevent sudden audio
+Documentation=man:wpctl(1)
+After=pipewire.service pulseaudio.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 2
+ExecStart=/usr/bin/wpctl set-mute @DEFAULT_SINK@ 1
+RemainAfterExit=yes
+
+[Install]
+WantedBy=default.target

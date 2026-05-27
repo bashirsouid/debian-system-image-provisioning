@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodic home server backup via Kopia
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/kopia-backup-trigger
+# Use home server specific settings via environment
+Environment=KOPIA_UPLOAD_LIMIT_MB_DEFAULT=50000
+TimeoutStartSec=3600
+
+[Install]
+WantedBy=multi-user.target
