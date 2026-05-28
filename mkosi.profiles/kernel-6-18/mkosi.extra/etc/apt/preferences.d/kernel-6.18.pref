@@ -8,3 +8,8 @@ Pin-Priority: 600
 Package: linux-headers-6.18*
 Pin: release a=trixie-backports
 Pin-Priority: 600
+
+# Pull all non‑free firmware from backports when using kernel‑6‑18
+Package: firmware-*
+Pin: release a=trixie-backports
+Pin-Priority: 600

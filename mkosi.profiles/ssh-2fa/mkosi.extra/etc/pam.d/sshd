@@ -1,0 +1,5 @@
+# PAM config for SSH with Google Authenticator 2FA
+auth required pam_google_authenticator.so nullok
+@include common-auth
+account required pam_nologin.so
+@include common-session-noninteractive

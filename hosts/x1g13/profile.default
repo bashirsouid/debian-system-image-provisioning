@@ -8,6 +8,7 @@ devbox
 audio-pipewire
 wifi
 ssh-server
+ssh-2fa
 tailscale
 cloudflare-tunnel
 healthchecksio
@@ -27,3 +28,5 @@ symlink-k3s
 user-power-control
 watchdog-battery
 solaar
+timezone-los-angeles
+s3-unencrypted-backup

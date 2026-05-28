@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# /usr/local/bin/s3-backup-trigger
+#
+# Uploads configured files/folders to S3-compatible storage.
+# Skipped if /etc/s3-backup-paths.conf is missing (first boot or not configured).
+#
+# Uses MinIO client (mc) for S3 operations. Credentials loaded from
+# $CREDENTIALS_DIRECTORY/s3-backup-credentials.json at runtime.
+#
+# Path list format (one per line): /absolute/path/to/file or /path/to/dir
+# Directories are uploaded recursively. Glob patterns are expanded.
+#
+# Each file is checksummed locally; if the remote object's ETag matches,
+# the upload is skipped (no-op). Bucket structure: backup/<hostname>/<relative-path>
+
+set -euo pipefail
+
+CREDENTIALS_DIR=""
+MC_CONFIG_DIR=""
+UPLOADED=0
+SKIPPED=0
+
+# --- helpers -----------------------------------------------------------
+
+log() { printf '[s3-backup] %s\n' "$*" >&2; }
+warn() { printf '[s3-backup] WARN: %s\n' "$*" >&2; }
+fail() { printf '[s3-backup] ERROR: %s\n' "$*" >&2; exit 1; }
+
+# --- credential loading ------------------------------------------------
+
+load_credentials() {
+    # Find credentials directory - can be systemd CREDENTIALS_DIRECTORY or default path
+    if [[ -n "${CREDENTIALS_DIRECTORY:-}" ]]; then
+        CREDENTIALS_DIR="${CREDENTIALS_DIRECTORY}"
+    else
+        CREDENTIALS_DIR="/etc/credstore"
+    fi
+
+    if [[ ! -r "${CREDENTIALS_DIR}/s3-backup-credentials.json" ]]; then
+        log "no s3-backup-credentials.json; backup disabled. Create /etc/s3-backup-paths.conf to enable."
+        exit 0
+    fi
+
+    # Parse JSON credentials
+    S3_ENDPOINT="$(jq -r '.endpoint // ""' "${CREDENTIALS_DIR}/s3-backup-credentials.json")"
+    S3_ACCESS_KEY="$(jq -r '.accessKeyId // empty' "${CREDENTIALS_DIR}/s3-backup-credentials.json")"
+    S3_SECRET_KEY="$(jq -r '.secretAccessKey // empty' "${CREDENTIALS_DIR}/s3-backup-credentials.json")"
+    S3_BUCKET="$(jq -r '.bucket // empty' "${CREDENTIALS_DIR}/s3-backup-credentials.json")"
+
+    if [[ -z "${S3_ACCESS_KEY}" || -z "${S3_SECRET_KEY}" || -z "${S3_BUCKET}" ]]; then
+        fail "s3-backup-credentials.json missing required fields (accessKeyId, secretAccessKey, bucket)"
+    fi
+}
+
+# --- mc configuration --------------------------------------------------
+
+configure_mc() {
+    # Configure mc (MinIO client) with credentials
+    # Use a temporary config directory to avoid polluting image
+    MC_CONFIG_DIR="${CREDENTIALS_DIR}/.mc-config"
+    mkdir -p "${MC_CONFIG_DIR}"
+
+    # Export env vars for mc
+    export MC_CONFIG_DIR
+
+    local s3_url="${S3_ENDPOINT:-https://s3.amazonaws.com}"
+    mc alias set s3 "${s3_url}" "${S3_ACCESS_KEY}" "${S3_SECRET_KEY}" >/dev/null 2>&1
+}
+
+# Upload a single file to S3 with checksum skip
+upload_file() {
+    local src_file="$1"
+    local rel_path="$2"
+    local s3_dest="s3/${S3_BUCKET}/${S3_PREFIX}/${rel_path}"
+
+    # Check if remote object exists
+    if mc ls "s3/${S3_BUCKET}/${S3_PREFIX}/${rel_path}" >/dev/null 2>&1; then
+        # File exists - check if content matches via MD5
+        local local_md5 remote_etag
+        local_md5="$(openssl dgst -md5 -binary "${src_file}" 2>/dev/null | openssl base64 2>/dev/null || true)"
+        remote_etag="$(mc ls --json "s3/${S3_BUCKET}/${S3_PREFIX}/${rel_path}" 2>/dev/null | jq -r '.[0]?.etag // ""' 2>/dev/null || true)"
+        remote_etag="${remote_etag#\"}"
+        remote_etag="${remote_etag%\"}"
+        
+        if [[ -n "${local_md5}" && -n "${remote_etag}" && "${local_md5}" == "${remote_etag}" ]]; then
+            log "SKIP: ${rel_path} (unchanged)"
+            ((SKIPPED++)) || true
+            return 0
+        fi
+    fi
+
+    log "UPLOAD: ${rel_path}"
+    mc cp "${src_file}" "${s3_dest}" >/dev/null 2>&1
+    ((UPLOADED++)) || true
+}
+
+# Recursively upload directory contents
+upload_directory() {
+    local src_dir="$1"
+    local rel_dir="$2"
+
+    while IFS= read -r -d '' item; do
+        local rel_path="${item#"$src_dir/"}"
+        if [[ -f "$item" ]]; then
+            upload_file "$item" "${rel_dir}/${rel_path}"
+        fi
+    done < <(find "$src_dir" -mindepth 1 -type f -print0 2>/dev/null)
+}
+
+# --- main --------------------------------------------------------------
+
+main() {
+    load_credentials
+    configure_mc
+
+    # Verify bucket exists
+    if ! mc ls "s3/${S3_BUCKET}" >/dev/null 2>&1; then
+        fail "bucket ${S3_BUCKET} not accessible with current credentials"
+    fi
+
+    # Read backup paths
+    local BACKUP_PATHS=()
+    local paths_file="/etc/s3-backup-paths.conf"
+    if [[ ! -f "${paths_file}" ]]; then
+        log "no ${paths_file}; nothing to backup (create this file to enable)"
+        exit 0
+    fi
+    mapfile -t BACKUP_PATHS < <(grep -v '^[[:space:]]*#' "${paths_file}" | grep -v '^[[:space:]]*$')
+
+    local hostname
+    hostname="$(hostname -s)"
+    S3_PREFIX="backup/${hostname}"
+
+    for pattern in "${BACKUP_PATHS[@]}"; do
+        # Expand glob patterns
+        for path in ${pattern}; do
+            if [[ ! -e "$path" ]]; then
+                warn "path not found: ${path}"
+                continue
+            fi
+
+            if [[ -f "$path" ]]; then
+                # Single file - use basename as relative path
+                upload_file "$path" "$(basename "$path")"
+            elif [[ -d "$path" ]]; then
+                # Directory - preserve structure
+                upload_directory "$path" "$(basename "$path")"
+            fi
+        done
+    done
+
+    log "backup complete: ${UPLOADED} uploaded, ${SKIPPED} skipped"
+}
+
+# Cleanup on exit
+cleanup() {
+    rm -rf "${MC_CONFIG_DIR:-}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+main "$@"

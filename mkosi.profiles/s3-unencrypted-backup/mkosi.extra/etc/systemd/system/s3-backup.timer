@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly S3 backup of configured files
+Documentation=man:mc(1)
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

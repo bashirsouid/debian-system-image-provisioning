@@ -1,0 +1,2 @@
+description="Upload configured files to S3-compatible storage hourly"
+uses_secrets="s3-backup"

@@ -18,6 +18,31 @@ produces encrypted credential blobs under `mkosi.extra/etc/credstore.encrypted/`
 └── ssh-authorized-keys       (mode 0600, authorized_keys format)
 ```
 
+## Optional secrets (profile-gated)
+
+```
+.mkosi-secrets/
+└── s3-backup-credentials.json       (mode 0600, JSON format for S3 backup)
+```
+
+The format for `s3-backup-credentials.json`:
+
+```json
+{
+  "endpoint": "",
+  "accessKeyId": "YOUR_ACCESS_KEY",
+  "secretAccessKey": "YOUR_SECRET_KEY",
+  "bucket": "your-backup-bucket"
+}
+```
+
+- `endpoint` may be empty for AWS S3 default, or a custom S3-compatible URL
+- `accessKeyId` and `secretAccessKey` are your S3 credentials
+- `bucket` is the destination bucket name
+
+The `s3-unencrypted-backup` profile reads this secret and uploads files
+listed in `/etc/s3-backup-paths.conf` (configured via host overlay).
+
 ## Optional per-host overrides
 
 ```

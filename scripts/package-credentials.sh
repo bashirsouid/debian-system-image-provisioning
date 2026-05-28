@@ -214,4 +214,17 @@ if profile_selected ssh-server; then
     fi
 fi
 
+# --- OPTIONAL: s3-backup-credentials.json ---------------------------------
+# Single JSON file containing S3 backup credentials.
+# Format: {"endpoint":"","accessKeyId":"","secretAccessKey":"","bucket":""}
+if profile_selected s3-unencrypted-backup; then
+    if s3_path="$(resolve_secret s3-backup-credentials.json)"; then
+        encrypt_credential s3-backup-credentials.json "${s3_path}" "${CREDSTORE}/s3-backup-credentials.json"
+    else
+        warn "s3-backup-credentials.json absent; skipping. s3-backup.service will no-op via ConditionPathExists="
+    fi
+else
+    log "s3-unencrypted-backup profile not selected; skipping s3-backup-credentials.json packaging"
+fi
+
 log "done. Credentials under ${CREDSTORE} (only for present + relevant secrets)."

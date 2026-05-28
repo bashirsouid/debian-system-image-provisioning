@@ -45,6 +45,9 @@ third-party/
 .mkosi-private/
 *.patch
 
+# Large binary files
+*.deb
+
 # Local machine and deployment state
 ab-flash.conf
 ansible/inventory.ini

@@ -43,7 +43,7 @@ Profile directories currently in the tree:
 | `dev-tools` | Baseline CLI: git, curl, vim, htop, tmux, rsync, less, jq |
 | `digikam` | Photo manager |
 | `flatpak` | Flatpak + first-boot Flathub remote setup |
-| `ftp` | vsftpd FTP server with sftponly user (no shell access) |
+| `ftp` | SFTP-only server with sftponly user (SSH-key auth, no shell) |
 | `healthchecksio` | Dead-man's-switch heartbeat to healthchecks.io |
 | `incus` | System containers / VMs |
 | `k3s` | *(stub)* single-node Kubernetes |
@@ -91,7 +91,7 @@ is a defensive awk script). Keys:
 | Key | Type | Purpose |
 | --- | --- | --- |
 | `description` | string | One-line human-readable summary |
-| `uses_secrets` | space-separated | Which `.mkosi-secrets/` files this profile consumes. Names match the feature keys in `scripts/verify-build-secrets.sh`: `ssh tailscale cloudflared sendgrid pagerduty healthchecks s3`. |
+| `uses_secrets` | space-separated | Which `.mkosi-secrets/` files this profile consumes. Names match the feature keys in `scripts/verify-build-secrets.sh`: `ssh tailscale cloudflared sendgrid pagerduty healthchecks s3-backup`. |
 
 Example (`mkosi.profiles/tailscale/profile.manifest`):
 

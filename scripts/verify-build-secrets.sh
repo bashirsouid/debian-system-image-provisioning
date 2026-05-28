@@ -50,7 +50,7 @@ source "${REPO_ROOT}/scripts/lib/profile-resolver.sh"
 # Every known secret category. Order matters for the summary table.
 # ssh is special: always required (no bootable image is useful without
 # it). The rest are optional unless a selected profile declares them.
-ALL_FEATURES=(ssh tailscale cloudflared sendgrid pagerduty healthchecks wifi)
+ALL_FEATURES=(ssh tailscale cloudflared sendgrid pagerduty healthchecks wifi s3-backup)
 
 declare -A STATUS
 declare -A DETAIL
@@ -307,6 +307,30 @@ if [[ -n "${NEEDED[wifi]+x}" ]]; then
         fi
     else
         warn "wifi-ssid + wifi-psk absent — wifi profile selected but no pre-seeded SSID; you'll set one up at first login"
+    fi
+fi
+
+# --- OPTIONAL: s3-backup-credentials.json -----------------------------------
+# Single JSON file containing S3 endpoint, access keys, bucket, and optional path list.
+# Format: {"endpoint":"","accessKeyId":"","secretAccessKey":"","bucket":""}
+# endpoint may be empty for AWS S3 default.
+# When profile selects s3-unencrypted-backup, this secret is needed.
+
+if [[ -n "${NEEDED[s3-backup]+x}" ]]; then
+    if s3_path="$(resolve_secret s3-backup-credentials.json)" && check_file_perms "${s3_path}"; then
+        if ! jq -e '.' "${s3_path}" >/dev/null 2>&1; then
+            fail_soft s3-backup "content is not valid JSON"
+        elif [[ -z "$(jq -r '.bucket // empty' "${s3_path}")" ]]; then
+            fail_soft s3-backup "bucket field is missing or empty"
+        elif [[ -z "$(jq -r '.accessKeyId // empty' "${s3_path}")" ]]; then
+            fail_soft s3-backup "accessKeyId field is missing or empty"
+        elif [[ -z "$(jq -r '.secretAccessKey // empty' "${s3_path}")" ]]; then
+            fail_soft s3-backup "secretAccessKey field is missing or empty"
+        else
+            ok s3-backup "configured (bucket=$(jq -r '.bucket' "${s3_path}"))"
+        fi
+    else
+        warn "s3-backup-credentials.json absent — s3-unencrypted-backup profile selected but backup disabled"
     fi
 fi
 

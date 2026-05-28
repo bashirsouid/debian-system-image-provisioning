@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Timezone profile: set timezone to America/Los_Angeles
+
+set -euo pipefail
+
+# Run inside mkosi chroot if needed
+if [[ "${container:-}" != "mkosi" ]]; then
+    exec mkosi-chroot "$CHROOT_SCRIPT" "$@"
+fi
+
+stage="${1:-final}"
+[[ "$stage" == "final" ]] || exit 0
+
+# Set timezone configuration
+echo "America/Los_Angeles" > /etc/timezone
+ln -sf /usr/share/zoneinfo/America/Los_Angeles /etc/localtime
+if command -v timedatectl >/dev/null 2>&1; then
+    timedatectl set-timezone America/Los_Angeles || true
+fi

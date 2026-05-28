@@ -1,0 +1,14 @@
+# Optional overrides for S3 backup configuration.
+# Sourced by /usr/local/bin/s3-backup-trigger via systemd EnvironmentFile.
+#
+# Host overlays can drop their own /etc/default/s3-backup to override
+# these values per host.
+#
+# Note: Main credentials come from the s3-credentials.json secret,
+# not from this file. This file is for optional runtime settings only.
+
+# Storage class to use for uploaded objects (STANDARD_IA for infrequent access)
+# S3_STORAGE_CLASS=STANDARD_IA
+
+# Maximum upload size (mc default handles this, but can be overridden)
+# S3_UPLOAD_LIMIT_MB=10000

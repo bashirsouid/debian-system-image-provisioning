@@ -12,6 +12,7 @@ profiles and roles compose.
 | `profile.default` | Default profile list when `./build.sh --host <host>` runs without `--profile`. Space-separated profile and/or role names. |
 | `mkosi.conf.d/*.conf` | Extra mkosi config scoped by `[Match] Profiles=X` to only apply when `X` is in the resolved profile list. |
 | `mkosi.extra/` | Files overlaid into the image. Applied LAST by mkosi, so host files win over any profile's equivalent path. |
+| `mkosi.extra/etc/s3-backup-paths.conf` | List of file/directory paths to upload (one per line) when `s3-unencrypted-backup` profile is selected. Supports glob patterns. |
 | `image-id-suffix` | Short alias used in place of the host name in GPT partition labels (labels cap at 36 chars). |
 | `kernel-cmdline.extra` | Extra kernel command-line args appended to the boot entry. |
 | `secure-boot.disabled` | One-line reason — opt out of Secure Boot for this host. |
@@ -27,6 +28,7 @@ Everything except `profile.default` is optional.
 4. Drop any host-specific files under `hosts/<name>/mkosi.extra/`. Common ones:
     * `etc/fstab` — host's disk layout
     * `etc/hostname` — optional explicit hostname. If omitted, `./build.sh --host <name>` writes `<name>` as the image hostname automatically. Use `./build.sh --host <name> --hostname <other-name>` when the runtime hostname should differ from both.
+    * `etc/s3-backup-paths.conf` — list of file paths to upload when using the `s3-unencrypted-backup` profile. See `.mkosi-secrets.example/s3-backup-paths.conf.example` for format details.
 5. Build: `./build.sh --host <name>`
 
 ## Config layering

@@ -1,0 +1,5 @@
+# Pull firmware packages from trixie-backports for kernel-6-18 builds
+# This ensures newer firmware (e.g., for Intel BE201 Wi‑Fi) is used.
+Package: firmware-iwlwifi firmware-intel-sound firmware-sof-signed firmware-linux-nonfree firmware-realtek firmware-mediatek
+Pin: release a=trixie-backports
+Pin-Priority: 600

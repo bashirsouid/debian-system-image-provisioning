@@ -1,0 +1,4 @@
+# Enable SSH service
+enable ssh.service
+# Disable ssh.socket (conflicts with ssh.service on port 22)
+disable ssh.socket

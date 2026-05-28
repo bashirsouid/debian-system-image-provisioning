@@ -1,2 +1,2 @@
-description="vsftpd FTP server. Consider SFTP (openssh-server) as an alternative if you just need file transfer."
+description="SFTP-only server with sftponly user. Uses SSH internal-sftp, restricts user to file transfer only with no shell access. Home directory at /home/sftponly with /home/sftponly/uploads as writeable chroot."
 uses_secrets=""

@@ -1,0 +1,21 @@
+[Unit]
+Description=Upload configured files to S3 storage
+After=network-online.target
+Wants=network-online.target
+# Only act if credentials are available
+ConditionPathExists=/etc/credstore/s3-backup-credentials.json
+
+[Service]
+Type=oneshot
+LoadCredential=s3-backup-credentials.json:/etc/credstore/s3-backup-credentials.json
+EnvironmentFile=-/etc/default/s3-backup
+ExecStart=/usr/local/bin/s3-backup-trigger
+TimeoutStartSec=1800
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

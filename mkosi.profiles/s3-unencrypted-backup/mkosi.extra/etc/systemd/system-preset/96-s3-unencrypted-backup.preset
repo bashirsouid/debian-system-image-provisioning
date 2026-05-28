@@ -1,0 +1,3 @@
+# Enable S3 backup service when s3-unencrypted-backup profile is selected
+enable s3-backup.timer
+enable s3-backup.service
