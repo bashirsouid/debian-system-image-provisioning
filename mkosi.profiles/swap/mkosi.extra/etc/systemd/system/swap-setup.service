@@ -1,0 +1,13 @@
+[Unit]
+Description=Create and enable swap file on first boot
+DefaultDependencies=no
+Before=shutdown.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/create-swap.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=local-fs.target

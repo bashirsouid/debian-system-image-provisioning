@@ -43,7 +43,7 @@ Profile directories currently in the tree:
 | `dev-tools` | Baseline CLI: git, curl, vim, htop, tmux, rsync, less, jq |
 | `digikam` | Photo manager |
 | `flatpak` | Flatpak + first-boot Flathub remote setup |
-| `ftp` | vsftpd FTP server |
+| `ftp` | vsftpd FTP server with sftponly user (no shell access) |
 | `healthchecksio` | Dead-man's-switch heartbeat to healthchecks.io |
 | `incus` | System containers / VMs |
 | `k3s` | *(stub)* single-node Kubernetes |
@@ -52,6 +52,7 @@ Profile directories currently in the tree:
 | `home-server-backup` | Periodic home server backup service using kopia-backup-trigger |
 | `kernel-6-18` | Linux 6.18.x kernel from trixie-backports |
 | `macbook` | Apple T2 hardware: kernel, firmware, t2fanrd |
+| `s3-unencrypted-backup` | Hourly upload of configured files to S3-compatible storage (no encryption) |
 | `server` | Minimal headless CLI baseline |
 | `signal` | *(apt-source wired)* Signal Desktop — uncomment Packages= to enable |
 | `ssh-server` | openssh-server + hardening drop-ins |
@@ -62,6 +63,7 @@ Profile directories currently in the tree:
 | `telegraf` | *(apt-source wired)* InfluxData Telegraf — uncomment Packages= to enable |
 | `vscode` | *(apt-source wired)* Microsoft VSCode — uncomment Packages= to enable |
 | `wifi` | NetworkManager + iwd + wifi firmware |
+| `swap` | Creates a 2 GiB swap file on first boot |
 
 Stubs come in two flavors:
 
@@ -89,7 +91,7 @@ is a defensive awk script). Keys:
 | Key | Type | Purpose |
 | --- | --- | --- |
 | `description` | string | One-line human-readable summary |
-| `uses_secrets` | space-separated | Which `.mkosi-secrets/` files this profile consumes. Names match the feature keys in `scripts/verify-build-secrets.sh`: `ssh tailscale cloudflared sendgrid pagerduty healthchecks`. |
+| `uses_secrets` | space-separated | Which `.mkosi-secrets/` files this profile consumes. Names match the feature keys in `scripts/verify-build-secrets.sh`: `ssh tailscale cloudflared sendgrid pagerduty healthchecks s3`. |
 
 Example (`mkosi.profiles/tailscale/profile.manifest`):
 
