@@ -7,7 +7,7 @@ set -euo pipefail
 
 log() { printf '[ab-health 20-cloudflared] %s\n' "$*" >&2; }
 
-if [[ ! -f /etc/credstore.encrypted/cloudflared-token ]]; then
+if [[ ! -f /etc/credstore/cloudflared-token ]]; then
     log "cloudflared not configured (no credential); skipping."
     exit 0
 fi

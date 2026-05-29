@@ -9,13 +9,14 @@ this project, both at rest and at runtime.
 Build Host                       Target Machine (QEMU or Baremetal)
 ──────────                       ──────────────────────────────────
                                  ┌─────────────────────────────────┐
-  ./build.sh --host evox2        │  ESP (unencrypted, FAT32)       │
-  ├─ prompts for LUKS passphrase │  └─ systemd-boot + UKI          │
-  ├─ copies secrets as plaintext │  ┌─────────────────────────────────┐
-  │  into /etc/credstore/        │  │  Root Partition (LUKS2)         │
-  └─ mkosi builds .raw with     │  │  ├─ /etc/credstore/             │
-     LUKS2-encrypted root        │  │  │   ├─ tailscale-authkey       │
-                                 │  │  │   ├─ cloudflared-token       │
+  bin/mkosi-vault-build.sh       │  ESP (unencrypted, FAT32)       │
+  ├─ decrypts age vault          │  └─ systemd-boot + UKI          │
+  ├─ stages .mkosi-secrets/      │  ┌─────────────────────────────────┐
+  ├─ ./build.sh --host evox2     │  │  Root Partition (LUKS2)         │
+  │  ├─ prompts for LUKS pass    │  │  ├─ /etc/credstore/             │
+  │  └─ copies credentials       │  │  │   ├─ tailscale-authkey       │
+  └─ removes .mkosi-secrets/     │  │  │   ├─ cloudflared-token       │
+                                 │  │  │   ├─ sendgrid-api-key        │
                                  │  │  │   └─ ...                     │
                                  │  │  ├─ /etc/ssh/authorized_keys.d/ │
                                  │  │  └─ everything else             │
@@ -24,6 +25,19 @@ Build Host                       Target Machine (QEMU or Baremetal)
 ```
 
 ## Layers of Protection
+
+### Layer 0: age Local Vault (build host, optional)
+
+Build-host secrets can be stored in `secrets/*.json.age` and unlocked
+only for the duration of a build with `bin/mkosi-vault-build.sh`.
+The wrapper materializes `.mkosi-secrets/`, runs the normal build, and
+removes the plaintext staging directory on exit.
+
+**What this protects against:**
+- Accidental long-term plaintext secrets on the build host
+- Safe commits of encrypted secret material
+- Reuse of the existing `.mkosi-secrets/` verifier without changing
+  the mkosi packaging path
 
 ### Layer 1: LUKS2 Full Disk Encryption (at rest)
 
@@ -66,14 +80,16 @@ TPM. Subsequent boots auto-unlock without typing a password.
 
 ### Development (QEMU)
 
-1. `./build.sh --host evox2` — prompts for LUKS passphrase
+1. `bin/mkosi-vault-build.sh -- --host evox2` — unlocks local secrets,
+   runs `./build.sh`, and prompts for LUKS passphrase
 2. `./run.sh --host evox2` — QEMU boots, prompts for LUKS passphrase
 3. Login and run `sudo ab-verify` to confirm everything is working
 4. Iterate on changes
 
 ### Production (Baremetal)
 
-1. `./build.sh --host evox2` — prompts for LUKS passphrase
+1. `bin/mkosi-vault-build.sh -- --host evox2` — unlocks local secrets,
+   runs `./build.sh`, and prompts for LUKS passphrase
 2. Flash to USB or disk
 3. Boot the target machine — type the LUKS passphrase
 4. Login and run `sudo ab-verify`

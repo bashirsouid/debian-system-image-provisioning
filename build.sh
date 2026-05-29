@@ -1265,7 +1265,7 @@ EOF
           [[ -n "$HOST" ]] && pkg_args+=(--host "$HOST")
           pkg_args+=(--user "$(first_login_username)")
           # Pass the per-target resolved profile list so the packager
-          # only encrypts secrets the selected profiles actually consume.
+          # only stages secrets the selected profiles actually consume.
           pkg_args+=(--profile "$PROFILE")
           [[ "$NON_INTERACTIVE" == true ]] && pkg_args+=("--non-interactive")
           [[ "$NON_INTERACTIVE" == true ]] && export AB_NON_INTERACTIVE=1

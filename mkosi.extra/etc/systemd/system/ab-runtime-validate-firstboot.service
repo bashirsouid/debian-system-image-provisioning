@@ -28,8 +28,8 @@ TimeoutStartSec=8min
 
 ExecStart=/usr/local/sbin/ab-runtime-validate --first-boot
 
-# Sandboxing (the script itself uses systemd-run to reload credentials,
-# so we do not need LoadCredentialEncrypted= here).
+# Sandboxing (the script itself uses systemd-run to load credentials,
+# so we do not need LoadCredential= here).
 NoNewPrivileges=yes
 ProtectSystem=strict
 # StateDirectory= creates and chowns /var/lib/ab-runtime-validate BEFORE

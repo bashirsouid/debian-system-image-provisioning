@@ -2,7 +2,7 @@
 # checks/10-tailscale.sh - Tailscale session health
 set -uo pipefail
 
-if [[ ! -f /etc/credstore.encrypted/tailscale-authkey ]]; then
+if [[ ! -f /etc/credstore/tailscale-authkey ]]; then
     jq -n '{key:"tailscale_down", status:"ok", severity:"info", summary:"not configured", details:{}}'
     exit 0
 fi

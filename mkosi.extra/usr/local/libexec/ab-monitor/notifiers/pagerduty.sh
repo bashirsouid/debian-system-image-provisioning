@@ -14,7 +14,7 @@ source /etc/default/ab-monitor
 
 log() { printf '[pagerduty] %s\n' "$*" >&2; }
 
-: "${CREDENTIALS_DIRECTORY:?not set; pagerduty notifier must be run from a systemd unit with LoadCredentialEncrypted=}"
+: "${CREDENTIALS_DIRECTORY:?not set; pagerduty notifier must be run from a systemd unit with LoadCredential=}"
 
 if [[ ! -r "${CREDENTIALS_DIRECTORY}/pagerduty-routing-key" ]]; then
     log "no pagerduty-routing-key credential; cannot page."

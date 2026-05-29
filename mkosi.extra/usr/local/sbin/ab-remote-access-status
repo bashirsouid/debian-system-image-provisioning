@@ -67,7 +67,7 @@ else
 fi
 
 section "credentials"
-for f in /etc/credstore.encrypted/tailscale-authkey /etc/credstore.encrypted/cloudflared-token; do
+for f in /etc/credstore/tailscale-authkey /etc/credstore/cloudflared-token; do
     if [[ -f "$f" ]]; then
         m="$(stat -c '%a %U:%G' "$f")"
         printf '  %s (%s)\n' "$f" "$m"

@@ -13,15 +13,15 @@ StartLimitBurst=20
 [Service]
 Type=oneshot
 
-# Decrypt whichever outbound-notification credentials are actually
-# present in /etc/credstore.encrypted/ into a private runtime
-# directory and expose it to check.sh / notify.sh / notifiers/*.sh
-# via $CREDENTIALS_DIRECTORY (the same env var systemd's native
-# LoadCredentialEncrypted= would set). This matters because:
-#   * `LoadCredentialEncrypted=ID:/path` HARD-FAILS the unit if the
-#     source path is missing — there is no per-entry "optional" syntax.
+# Copy whichever outbound-notification credentials are actually
+# present in /etc/credstore/ into a private runtime directory and
+# expose it to check.sh / notify.sh / notifiers/*.sh via
+# $CREDENTIALS_DIRECTORY (the same env var systemd's native
+# LoadCredential= would set). This matters because:
+#   * `LoadCredential=ID:/path` HARD-FAILS the unit if the source path
+#     is missing — there is no per-entry "optional" syntax.
 #     A clean image (after clean.sh, or before package-alert-credentials
-#     has been run) has zero credstore blobs, so the unit would fail
+#     has been run) has zero credstore files, so the unit would fail
 #     to start on every fresh install.
 #   * The notifiers under /usr/local/libexec/ab-monitor/notifiers/
 #     already tolerate a missing file inside $CREDENTIALS_DIRECTORY,

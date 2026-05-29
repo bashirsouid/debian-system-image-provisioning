@@ -122,10 +122,8 @@ if git -C "${REPO_ROOT}" ls-files --error-unmatch .mkosi-secrets >/dev/null 2>&1
     fail_hard ".mkosi-secrets/ is tracked by git. Unstage it and add to .gitignore"
 fi
 
-for bin in systemd-creds jq; do
-    command -v "${bin}" >/dev/null 2>&1 \
-        || fail_hard "host tool missing: ${bin} (apt-get install --no-install-recommends systemd-container jq)"
-done
+command -v jq >/dev/null 2>&1 \
+    || fail_hard "host tool missing: jq (apt-get install --no-install-recommends jq)"
 
 resolve_secret() {
     local name="$1"

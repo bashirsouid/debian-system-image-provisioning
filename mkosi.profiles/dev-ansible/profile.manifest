@@ -1,0 +1,2 @@
+description="Installs Ansible for development and running playbooks on Debian Trixie."
+uses_secrets=""

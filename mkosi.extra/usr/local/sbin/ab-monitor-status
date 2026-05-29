@@ -62,7 +62,7 @@ journalctl -t ab-notify -t ab-monitor --since "-24h" -n 30 --no-pager --no-hostn
 
 section "credentials"
 for f in sendgrid-api-key pagerduty-routing-key healthchecks-ping-url; do
-    p="/etc/credstore.encrypted/$f"
+    p="/etc/credstore/$f"
     if [[ -f "$p" ]]; then
         printf '  %s%spresent%s: %s\n' "$(green)" "" "$(reset)" "$p"
     else

@@ -2,7 +2,7 @@
 # checks/20-cloudflared.sh - Cloudflare tunnel health
 set -uo pipefail
 
-if [[ ! -f /etc/credstore.encrypted/cloudflared-token ]]; then
+if [[ ! -f /etc/credstore/cloudflared-token ]]; then
     jq -n '{key:"cloudflared_down", status:"ok", severity:"info", summary:"not configured", details:{}}'
     exit 0
 fi

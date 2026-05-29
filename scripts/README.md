@@ -15,7 +15,7 @@ USB bundle and run from the booted USB live in `installer/`.
 | Script                            | Called from                                  | What it does                                                          |
 | --------------------------------- | -------------------------------------------- | --------------------------------------------------------------------- |
 | `fetch-third-party-keys.sh`       | `update-3rd-party-deps.sh`, `build.sh`       | Fetch third-party apt keys and pin them by fingerprint.               |
-| `package-credentials.sh`          | `build.sh`                                   | Encrypt per-host secrets into `mkosi.extra/etc/credstore.encrypted/`. |
+| `package-credentials.sh`          | `build.sh`                                   | Stage per-host secrets into `mkosi.extra/etc/credstore/` for the LUKS image. |
 | `package-alert-credentials.sh`    | `build.sh`                                   | Same, for the alerting-stack credentials.                             |
 | `export-sysupdate-artifacts.sh`   | `build.sh` (post-build)                      | Export versioned root/UKI/BLS artifacts for `systemd-sysupdate`.      |
 | `verify-build-secrets.sh`         | `build.sh` (preflight)                       | Audit `.mkosi-secrets/` shape and permissions.                        |

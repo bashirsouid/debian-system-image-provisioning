@@ -4,7 +4,7 @@
 # Host overlays can drop their own /etc/default/s3-backup to override
 # these values per host.
 #
-# Note: Main credentials come from the s3-credentials.json secret,
+# Note: Main credentials come from the s3-backup-credentials.json secret,
 # not from this file. This file is for optional runtime settings only.
 
 # Storage class to use for uploaded objects (STANDARD_IA for infrequent access)

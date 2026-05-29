@@ -3,16 +3,16 @@ Description=Cloudflare Tunnel (out-of-band SSH / backup access)
 Documentation=https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=/etc/credstore.encrypted/cloudflared-token
+ConditionPathExists=/etc/credstore/cloudflared-token
 StartLimitIntervalSec=600
 StartLimitBurst=10
 
 [Service]
 Type=simple
 
-# Token is loaded only for the lifetime of this service and is never
-# written to disk in plaintext.
-LoadCredentialEncrypted=cloudflared-token:/etc/credstore.encrypted/cloudflared-token
+# Token is copied into this service's private credentials tmpfs for
+# the lifetime of the service.
+LoadCredential=cloudflared-token:/etc/credstore/cloudflared-token
 
 # cloudflared reads --token from argv. We dereference the credential
 # inside a subshell so the environment of the parent process does not

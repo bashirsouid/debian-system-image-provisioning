@@ -3,11 +3,10 @@
 #
 # Takes plaintext secrets in .mkosi-secrets/ and produces build assets:
 #
-#   <out>/etc/credstore.encrypted/tailscale-authkey      (if tailscale profile selected + secret provided)
-#   <out>/etc/credstore.encrypted/cloudflared-token      (if cloudflare-tunnel profile selected + secret provided)
+#   <out>/etc/credstore/tailscale-authkey      (if tailscale profile selected + secret provided)
+#   <out>/etc/credstore/cloudflared-token      (if cloudflare-tunnel profile selected + secret provided)
 #   <out>/etc/ssh/authorized_keys.d/<user>               (always, required)
 #   <out>/etc/ssh/sshd_config.d/50-hardening.conf        (if ssh-server profile selected; username substituted)
-#   <out>/etc/systemd/credential.secret                  (per-image key)
 #
 # When a profile that uses an optional secret is NOT selected, the
 # secret is skipped silently even if the file exists in
@@ -17,7 +16,7 @@
 # silently no-ops via ConditionPathExists=).
 #
 # The 50-hardening.conf template is read from the ssh-server profile
-# at build time, has __INITIAL_USERNAME__ substituted with the actual
+# at build time, has __LOGIN_USERNAME__ substituted with the actual
 # login user, and dropped under the metadata --extra-tree so it
 # overlays the unsubstituted version in the profile's mkosi.extra/.
 
@@ -71,10 +70,7 @@ if [[ -z "${USER_NAME}" ]]; then
     if [[ -f "${REPO_ROOT}/.users.json" ]]; then
         USER_NAME="$(jq -r '[.[] | select(.can_login==true)][0].username // empty' "${REPO_ROOT}/.users.json")"
     fi
-    if [[ -z "${USER_NAME}" ]] && [[ -f "${REPO_ROOT}/.env" ]]; then
-        USER_NAME="$(awk -F= '/^INITIAL_USERNAME=/ {print $2}' "${REPO_ROOT}/.env" | tr -d '"')"
-    fi
-    [[ -n "${USER_NAME}" ]] || fail "could not resolve login username. Pass --user."
+    [[ -n "${USER_NAME}" ]] || fail "could not resolve login username from .users.json. Pass --user."
 fi
 log "login user: ${USER_NAME}"
 
@@ -99,9 +95,9 @@ install -d -m 0755 "${CREDSTORE}"
 install -d -m 0755 "${AUTHKEYS_D}"
 install -d -m 0755 "${SSHD_D}"
 
-encrypt_credential() {
+stage_credential() {
     local name="$1" src="$2" dest="$3"
-    log "packaging plaintext credential ${name} -> ${dest}"
+    log "staging plaintext credential ${name} -> ${dest}"
     install -m 0600 "${src}" "${dest}"
 }
 
@@ -116,7 +112,7 @@ fi
 # --- OPTIONAL: tailscale-authkey ----------------------------------------
 if profile_selected tailscale; then
     if ts_path="$(resolve_secret tailscale-authkey)"; then
-        encrypt_credential tailscale-authkey "${ts_path}" "${CREDSTORE}/tailscale-authkey"
+        stage_credential tailscale-authkey "${ts_path}" "${CREDSTORE}/tailscale-authkey"
     else
         warn "tailscale-authkey absent; skipping. tailscale-up.service will no-op via ConditionPathExists="
     fi
@@ -127,7 +123,7 @@ fi
 # --- OPTIONAL: cloudflared-token ----------------------------------------
 if profile_selected cloudflare-tunnel; then
     if cf_path="$(resolve_secret cloudflared-token)"; then
-        encrypt_credential cloudflared-token "${cf_path}" "${CREDSTORE}/cloudflared-token"
+        stage_credential cloudflared-token "${cf_path}" "${CREDSTORE}/cloudflared-token"
     else
         warn "cloudflared-token absent; skipping. cloudflared.service will no-op via ConditionPathExists="
     fi
@@ -191,7 +187,7 @@ fi
 
 # --- Template sshd_config hardening file --------------------------------
 # Only relevant when ssh-server is selected. The template lives in the
-# profile and gets copied into the image with __INITIAL_USERNAME__
+# profile and gets copied into the image with __LOGIN_USERNAME__
 # literal as part of the profile's mkosi.extra/. We read that template
 # here, substitute the username, and drop the result under
 # ${EXTRA_DIR} (METADATA_DIR) so the metadata --extra-tree overlays
@@ -200,13 +196,13 @@ if profile_selected ssh-server; then
     SRC_TEMPLATE="${REPO_ROOT}/mkosi.profiles/ssh-server/mkosi.extra/etc/ssh/sshd_config.d/50-hardening.conf"
     DEST_TEMPLATE="${SSHD_D}/50-hardening.conf"
     if [[ -f "${SRC_TEMPLATE}" ]]; then
-        if grep -q '__INITIAL_USERNAME__' "${SRC_TEMPLATE}"; then
-            log "substituting __INITIAL_USERNAME__ -> ${USER_NAME} into ${DEST_TEMPLATE}"
+        if grep -q '__LOGIN_USERNAME__' "${SRC_TEMPLATE}"; then
+            log "substituting __LOGIN_USERNAME__ -> ${USER_NAME} into ${DEST_TEMPLATE}"
             install -d -m 0755 "${SSHD_D}"
-            sed "s/__INITIAL_USERNAME__/${USER_NAME}/g" "${SRC_TEMPLATE}" >"${DEST_TEMPLATE}"
+            sed "s/__LOGIN_USERNAME__/${USER_NAME}/g" "${SRC_TEMPLATE}" >"${DEST_TEMPLATE}"
             chmod 0644 "${DEST_TEMPLATE}"
         else
-            log "ssh-server 50-hardening.conf has no __INITIAL_USERNAME__; copying as-is"
+            log "ssh-server 50-hardening.conf has no __LOGIN_USERNAME__; copying as-is"
             install -m 0644 "${SRC_TEMPLATE}" "${DEST_TEMPLATE}"
         fi
     else
@@ -219,7 +215,7 @@ fi
 # Format: {"endpoint":"","accessKeyId":"","secretAccessKey":"","bucket":""}
 if profile_selected s3-unencrypted-backup; then
     if s3_path="$(resolve_secret s3-backup-credentials.json)"; then
-        encrypt_credential s3-backup-credentials.json "${s3_path}" "${CREDSTORE}/s3-backup-credentials.json"
+        stage_credential s3-backup-credentials.json "${s3_path}" "${CREDSTORE}/s3-backup-credentials.json"
     else
         warn "s3-backup-credentials.json absent; skipping. s3-backup.service will no-op via ConditionPathExists="
     fi

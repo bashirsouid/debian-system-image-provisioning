@@ -14,7 +14,7 @@ source /etc/default/ab-monitor
 
 log() { printf '[sendgrid] %s\n' "$*" >&2; }
 
-: "${CREDENTIALS_DIRECTORY:?not set; sendgrid notifier must be run from a systemd unit with LoadCredentialEncrypted=}"
+: "${CREDENTIALS_DIRECTORY:?not set; sendgrid notifier must be run from a systemd unit with LoadCredential=}"
 
 if [[ ! -r "${CREDENTIALS_DIRECTORY}/sendgrid-api-key" ]]; then
     log "no sendgrid-api-key credential; cannot send email."

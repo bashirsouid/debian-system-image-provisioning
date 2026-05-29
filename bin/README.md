@@ -21,6 +21,9 @@ re-imaging another disk after booting from that USB.
 | `verify-image-raw.sh`               | Sanity-check a built `image.raw` (GPT layout, ESP bootloader, rootfs identity, credential perms) before you flash it. Safe to run without root for partition-level checks; `sudo` unlocks the filesystem-level checks via `systemd-dissect`. |
 | `generate-secureboot-keys.sh`       | Generate the local Secure Boot signing key + cert that mkosi uses to sign the UKI.                   |
 | `hash-password.sh`                  | Interactive helper that prints a yescrypt hash or a ready-to-paste `.users.json` entry.              |
+| `mkosi-vault-init.sh`               | Interactive first-run setup for the age local secret vault.                                          |
+| `mkosi-vault-edit.sh`               | Open the age local secret vault in `$EDITOR`; the helper re-encrypts it on exit.                     |
+| `mkosi-vault-build.sh`              | Decrypt an age local secret vault into temporary `.mkosi-secrets/`, run `build.sh`, then clean up.    |
 | `test-rollback.sh`                  | QEMU smoke test of the retained-version rollback state machine.                                      |
 | `ab-flash.sh`                       | **Legacy** manual A/B flasher. Kept only as a fallback; use `ab-install.sh` instead.                 |
 

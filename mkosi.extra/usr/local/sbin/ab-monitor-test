@@ -34,13 +34,13 @@ fi
 
 # Run via systemd-run so credentials get loaded the exact same way as
 # ab-monitor.service does. Otherwise we would have to reimplement
-# credential decryption here.
+# credential loading here.
 systemd_run_args=(
     --pipe
     --wait
     --collect
-    --property=LoadCredentialEncrypted=sendgrid-api-key:/etc/credstore.encrypted/sendgrid-api-key
-    --property=LoadCredentialEncrypted=pagerduty-routing-key:/etc/credstore.encrypted/pagerduty-routing-key
+    --property=LoadCredential=sendgrid-api-key:/etc/credstore/sendgrid-api-key
+    --property=LoadCredential=pagerduty-routing-key:/etc/credstore/pagerduty-routing-key
     --property=EnvironmentFile=-/etc/default/ab-monitor
 )
 

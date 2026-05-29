@@ -19,10 +19,11 @@ the image, not by post-install provisioning.
 ### 1. Install host tools
 
 ```
-sudo apt-get install --no-install-recommends systemd-container jq curl
+sudo apt-get install --no-install-recommends jq curl
 ```
 
-`systemd-creds` comes from `systemd-container` on trixie.
+Install `age` too if you want to use the local encrypted vault
+workflow from `docs/local-secret-vault.md`.
 
 ### 2. Generate a hardware-backed SSH key on your client machine
 
@@ -43,6 +44,12 @@ ssh-keygen -t ed25519-sk -O resident -O verify-required \
 Copy the PUBLIC key into the build repo's secrets staging area.
 
 ### 3. Provision the secrets directory
+
+If you use the local age vault workflow, put these values in
+`secrets/mkosi-secrets.json.age` instead and build with
+`bin/mkosi-vault-build.sh`; see `docs/local-secret-vault.md`.
+The `.mkosi-secrets/` layout below is still the build-time interface
+that the vault wrapper materializes.
 
 ```
 cd <repo>
@@ -117,12 +124,12 @@ them.
 
 ## What ends up in the image
 
-* `/etc/credstore.encrypted/tailscale-authkey` — encrypted blob, decrypted
-  only in-process by `tailscale-up.service`.
-* `/etc/credstore.encrypted/cloudflared-token` — encrypted blob, decrypted
-  only in-process by `cloudflared.service`.
-* `/var/lib/systemd/credential.secret` — per-image host key that the
-  above blobs are encrypted against. Mode 0400 root.
+* `/etc/credstore/tailscale-authkey` — plaintext credential on the
+  LUKS-encrypted root filesystem, loaded through systemd
+  `LoadCredential=` by `tailscale-up.service`.
+* `/etc/credstore/cloudflared-token` — plaintext credential on the
+  LUKS-encrypted root filesystem, loaded through systemd
+  `LoadCredential=` by `cloudflared.service`.
 * `/etc/ssh/authorized_keys.d/<user>` — plaintext public SSH keys.
 * `/etc/ssh/sshd_config.d/50-hardening.conf` — hardened sshd config.
 * `/usr/local/libexec/ab-remote-access/ensure-tailscale.sh`
@@ -221,16 +228,18 @@ safe), or re-flash the image with a fresh key pair and reinstall.
 
 ## Threat model notes
 
-* **Where plaintext lives.** Plaintext auth material only exists (1) on
-  your build host in `.mkosi-secrets/` (gitignored, 0700) and (2)
-  in-process for the lifetime of `tailscale-up.service` and
-  `cloudflared.service`, via a systemd-managed tmpfs credentials
-  directory that only the service sees.
-* **What an attacker with the image file can do.** Recover the
-  credential.secret from `/var/lib/systemd/credential.secret` and
-  decrypt the credstore blobs. That is why you rotate the Tailscale
-  auth key and the cloudflared token routinely, and why the eventual
-  upgrade to `--with-key=tpm2` (post-Secure-Boot wire-up) matters.
+* **Where plaintext lives.** Plaintext auth material exists on the
+  build host in `.mkosi-secrets/` while staging is unlocked, inside
+  the image's LUKS-encrypted `/etc/credstore/`, and in-process for the
+  lifetime of `tailscale-up.service` and `cloudflared.service` via a
+  systemd-managed tmpfs credentials directory that only the service
+  sees. Use `bin/mkosi-vault-build.sh` to keep the durable build-host
+  copy encrypted at rest and remove `.mkosi-secrets/` after each build.
+* **What an attacker with the locked image file can do.** Without the
+  LUKS passphrase or TPM-unsealed key, they see ciphertext. If they
+  obtain the passphrase or compromise a running system, they can read
+  `/etc/credstore/`, so rotate Tailscale auth keys and cloudflared
+  tokens routinely.
 * **What an attacker on the network can do without a key.** Nothing
   useful. sshd rejects passwords, requires a hardware-backed key
   touch, and binds `AllowUsers` to a single account. Cloudflare Access
@@ -252,6 +261,6 @@ safe), or re-flash the image with a fresh key pair and reinstall.
   re-create the tunnel connector in the Cloudflare dashboard.
 * **SSH keys:** rotate on a 1–2 year cadence or immediately on
   suspected compromise.
-* **Per-image credential.secret:** regenerated automatically every
-  time `package-credentials.sh` runs, so every fresh build is
-  cryptographically distinct.
+* **Image credential store:** rebuilt each time `package-credentials.sh`
+  runs. At-rest confidentiality comes from the image's LUKS root
+  encryption; service isolation comes from systemd `LoadCredential=`.

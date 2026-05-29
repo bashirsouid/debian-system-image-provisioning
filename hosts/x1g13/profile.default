@@ -4,6 +4,7 @@ laptop-screen
 display-manager-gdm3
 awesomewm
 dev-tools
+dev-ansible
 devbox
 audio-pipewire
 wifi

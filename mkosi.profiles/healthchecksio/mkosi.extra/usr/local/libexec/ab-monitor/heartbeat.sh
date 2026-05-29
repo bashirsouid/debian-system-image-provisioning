@@ -38,13 +38,13 @@ if systemctl list-units --failed --no-legend 2>/dev/null | grep -q .; then
     fail_reason="failed systemd units present"
 fi
 
-if command -v tailscale >/dev/null && [[ -f /etc/credstore.encrypted/tailscale-authkey ]]; then
+if command -v tailscale >/dev/null && [[ -f /etc/credstore/tailscale-authkey ]]; then
     if ! tailscale status --json 2>/dev/null | jq -e '.BackendState == "Running"' >/dev/null; then
         fail_reason="${fail_reason:+${fail_reason}; }tailscale not Running"
     fi
 fi
 
-if systemctl list-unit-files cloudflared.service >/dev/null 2>&1 && [[ -f /etc/credstore.encrypted/cloudflared-token ]]; then
+if systemctl list-unit-files cloudflared.service >/dev/null 2>&1 && [[ -f /etc/credstore/cloudflared-token ]]; then
     if ! systemctl is-active --quiet cloudflared.service; then
         fail_reason="${fail_reason:+${fail_reason}; }cloudflared inactive"
     fi

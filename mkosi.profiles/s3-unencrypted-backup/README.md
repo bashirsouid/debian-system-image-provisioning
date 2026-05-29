@@ -33,7 +33,9 @@ mkosi.profiles/
 
 ## Secret format
 
-Create `.mkosi-secrets/s3-credentials.json` (mode 0600):
+Create `.mkosi-secrets/s3-backup-credentials.json` (mode 0600), or
+put the same object under `s3-backup-credentials.json` in the SOPS
+local vault described in `docs/local-secret-vault.md`:
 
 ```json
 {
@@ -91,7 +93,7 @@ Paths can be:
 ## Troubleshooting
 
 1. **No files uploaded**: Check that `/etc/s3-backup-paths.conf` exists and contains valid paths
-2. **Credential errors**: Verify `.mkosi-secrets/s3-credentials.json` has all required fields
+2. **Credential errors**: Verify `.mkosi-secrets/s3-backup-credentials.json` or the SOPS vault entry has all required fields
 3. **Upload failures**: Check `journalctl -u s3-backup.service` for detailed error messages
 4. **Checksum mismatches**: The script uses MD5 for ETag comparison - multipart uploads will always re-upload (ETag format differs)
 

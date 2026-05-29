@@ -1,10 +1,9 @@
 #!/bin/bash
 # scripts/package-alert-credentials.sh
 #
-# Encrypts the three alerting-stack secrets into
-# mkosi.extra/etc/credstore.encrypted/ using the same per-image key
-# as scripts/package-credentials.sh. Call AFTER that script so the
-# per-image credential.secret is already in place.
+# Stages the alerting-stack secrets into mkosi.extra/etc/credstore/.
+# The generated image protects these files at rest with LUKS, and
+# service units load them through systemd LoadCredential=.
 #
 # Expected inputs under .mkosi-secrets/:
 #   sendgrid-api-key       (starts with SG. )
@@ -94,7 +93,7 @@ encrypt_one() {
         fail "${path} failed format validation for ${name}"
     fi
 
-    log "packaging plaintext credential ${name} -> ${CREDSTORE}/${name}"
+    log "staging plaintext credential ${name} -> ${CREDSTORE}/${name}"
     install -m 0600 "${path}" "${CREDSTORE}/${name}"
 }
 

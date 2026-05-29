@@ -50,8 +50,8 @@ add_if_bad() {
 
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     # Only scan tracked files. Build-time generated content under
-    # mkosi.extra/ (credstore blobs, per-image credential.secret,
-    # fetched apt keyrings) is gitignored and must not trip this.
+    # mkosi.extra/ (staged credstore files, fetched apt keyrings) is
+    # gitignored and must not trip this.
     while IFS= read -r -d '' path; do
         add_if_bad "$path"
     done < <(

@@ -5,8 +5,7 @@ systemd update stack: `systemd-repart` for the initial disk layout,
 `systemd-sysupdate` for versioned root and boot artifact installs,
 `systemd-boot` with boot counting and `systemd-bless-boot` for
 automatic rollback, signed Unified Kernel Images under Secure Boot
-(per-host opt-in), and an encrypted credential store bound to
-per-image key material.
+(per-host opt-in), and a LUKS-protected runtime credential store.
 
 ## What this provides
 
@@ -23,6 +22,7 @@ per-image key material.
 * Secure Boot UKI signing with a locally-generated key, opt-in per host
 * preflight audits for baked-in identity, sample-password sentinel,
   and `.mkosi-secrets/` shape
+* optional age local vault workflow for build-host secrets
 
 ## Assumptions
 
@@ -184,6 +184,9 @@ Committed:
   `scripts/verify-build-secrets.sh`, which also cross-checks with
   `git ls-files` to refuse if anything under `.mkosi-secrets/` ever
   gets tracked.
+* `secrets/mkosi-secrets.example.json` — example schema for the
+  optional age local vault. Real encrypted vault files should be named
+  `secrets/*.json.age`; plaintext `secrets/*.json` files are gitignored.
 
 Generated locally and gitignored:
 
@@ -536,6 +539,11 @@ actually runs them. Each of those directories also has its own short
     generator
   + `bin/hash-password.sh` — interactive helper that prints a yescrypt hash
     or a `.users.json` entry
+  + `bin/mkosi-vault-init.sh`,
+    `bin/mkosi-vault-edit.sh` — first-run setup and edit helpers for the
+    age local secret vault
+  + `bin/mkosi-vault-build.sh` — decrypt an age local secret vault into
+    temporary `.mkosi-secrets/`, run `build.sh`, then clean the staging tree
   + `bin/test-rollback.sh` — smoke test for the retained-version rollback
     path in QEMU
   + `bin/ab-flash.sh` — **legacy** manual A/B flasher, kept as a fallback

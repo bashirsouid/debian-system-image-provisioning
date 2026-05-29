@@ -15,7 +15,7 @@
 #   4. ESP contains /EFI/BOOT/BOOT*.EFI (fallback loader) or /EFI/systemd/.
 #   5. Root partition contains a recognizable Debian rootfs (/etc/os-release).
 #   6. /etc/ssh/sshd_config.d/50-hardening.conf exists and has a real username
-#      substituted (not __INITIAL_USERNAME__).
+#      substituted (not __LOGIN_USERNAME__).
 #   7. /etc/credstore/ contains the expected plaintext credential blobs
 #      if the remote-access add-on is enabled (protected at rest by LUKS).
 
@@ -151,8 +151,8 @@ ok "rootfs os-release NAME='${os_name}'"
 # 6. sshd hardening substitution
 hardening="${TMP}/etc/ssh/sshd_config.d/50-hardening.conf"
 if [[ -f "${hardening}" ]]; then
-    if grep -q '__INITIAL_USERNAME__' "${hardening}"; then
-        fail "${hardening} still contains __INITIAL_USERNAME__ placeholder. package-credentials.sh did not run."
+    if grep -q '__LOGIN_USERNAME__' "${hardening}"; then
+        fail "${hardening} still contains __LOGIN_USERNAME__ placeholder. package-credentials.sh did not run."
     fi
     ok "sshd hardening file has username substituted"
 else
@@ -161,7 +161,7 @@ fi
 
 # 7. credstore blobs
 for f in tailscale-authkey cloudflared-token; do
-    p="${TMP}/etc/credstore.encrypted/${f}"
+    p="${TMP}/etc/credstore/${f}"
     if [[ -f "${p}" ]]; then
         m="$(stat -c '%a' "${p}")"
         if [[ "${m}" != "600" ]]; then
@@ -172,17 +172,5 @@ for f in tailscale-authkey cloudflared-token; do
         warn "${f} not found; skipping (add-on disabled?)"
     fi
 done
-
-# 8. credential.secret
-cs="${TMP}/var/lib/systemd/credential.secret"
-if [[ -f "${cs}" ]]; then
-    m="$(stat -c '%a' "${cs}")"
-    if [[ "${m}" != "400" ]]; then
-        fail "${cs} has permissions ${m}, expected 400"
-    fi
-    ok "credential.secret present and 0400"
-else
-    warn "credential.secret not found; systemd-creds will not be able to decrypt credstore."
-fi
 
 log "image verification passed."

@@ -7,9 +7,9 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-LoadCredentialEncrypted=sendgrid-api-key:/etc/credstore.encrypted/sendgrid-api-key
-LoadCredentialEncrypted=pagerduty-routing-key:/etc/credstore.encrypted/pagerduty-routing-key
-LoadCredentialEncrypted=healthchecks-ping-url:/etc/credstore.encrypted/healthchecks-ping-url
+LoadCredential=sendgrid-api-key:/etc/credstore/sendgrid-api-key
+LoadCredential=pagerduty-routing-key:/etc/credstore/pagerduty-routing-key
+LoadCredential=healthchecks-ping-url:/etc/credstore/healthchecks-ping-url
 EnvironmentFile=-/etc/default/ab-monitor
 # %i is the failing unit name (from OnFailure=ab-monitor-alert@%n.service).
 ExecStart=/usr/local/libexec/ab-monitor/ad-hoc-alert.sh "unit_failed_%i" critical "systemd unit %i entered failed state"

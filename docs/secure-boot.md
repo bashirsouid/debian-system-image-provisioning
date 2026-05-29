@@ -7,11 +7,12 @@ support SB, and how this interacts with QEMU testing.
 ## What SB protects against
 
 `systemd-sysupdate` + `systemd-boot` provides versioned root images,
-boot counting, automatic rollback, and an encrypted credstore. None
-of that is rooted in hardware trust on its own: an attacker with
-root on a running image can modify the UKI in the ESP, swap
-`credential.secret`, or install a rogue retained-version slot, and
-on next boot the firmware will cheerfully execute whatever it finds.
+boot counting, automatic rollback, and a LUKS-protected runtime
+credential store. None of that is rooted in hardware trust on its
+own: an attacker with root on a running image can modify the UKI in
+the ESP, alter files in `/etc/credstore/`, or install a rogue
+retained-version slot, and on next boot the firmware will cheerfully
+execute whatever it finds.
 
 Secure Boot closes that gap. The firmware verifies the UKI's RSA
 signature against a key enrolled in the UEFI variable `db` before
@@ -52,11 +53,12 @@ chain, and never get flashed.
 
 The repo does NOT do:
 
-* TPM2 sealing of the credstore. The design uses per-image random
-  keys with `systemd-creds --host-key-path=`, which is appropriate
-  for cross-machine builds. TPM binding would require building on
-  the target or pre-computing a PCR policy per host; that's a lot
-  of complexity for small marginal gain once the UKI is signed.
+* Per-credential TPM sealing. The design protects the whole root
+  filesystem with LUKS and can bind that LUKS volume to the target
+  TPM after first boot. Pre-sealing individual credential files would
+  require building on the target or pre-computing a PCR policy per
+  host; that's a lot of complexity for small marginal gain once the
+  UKI is signed and the root volume is encrypted.
 * shim + MOK. Keys go directly into UEFI `db`. This means no
   dependency on a Microsoft-signed pre-boot component and no shim
   revocation story.

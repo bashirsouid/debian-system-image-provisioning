@@ -12,7 +12,7 @@ set -euo pipefail
 
 log() { printf '[ab-health 10-tailscale] %s\n' "$*" >&2; }
 
-if [[ ! -f /etc/credstore.encrypted/tailscale-authkey ]]; then
+if [[ ! -f /etc/credstore/tailscale-authkey ]]; then
     log "tailscale not configured (no credential); skipping."
     exit 0
 fi

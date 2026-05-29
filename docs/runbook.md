@@ -40,7 +40,8 @@ Steps:
 2. `tailscale status` — look for reason (NeedsLogin, Stopped, etc.)
 3. If `NeedsLogin`: the auth key was revoked or expired. Generate a
    new reusable auth key in the Tailscale admin, write to
-   `.mkosi-secrets/tailscale-authkey`, rebuild image, deploy via
+   `.mkosi-secrets/tailscale-authkey` or the age local vault, rebuild
+   image, deploy via
    sysupdate. While offline on Tailscale, SSH in over the Cloudflare
    Tunnel backup path.
 4. If daemon inactive: `systemctl restart tailscaled.service` and
@@ -58,7 +59,7 @@ Steps:
 1. `journalctl -u cloudflared.service -n 200 --no-pager`
 2. Common causes in order of likelihood:
    - Token revoked in the Cloudflare dashboard → rebuild image with
-     new token in `.mkosi-secrets/cloudflared-token`.
+     new token in `.mkosi-secrets/cloudflared-token` or the age local vault.
    - Upstream network blocking the tunnel (some ISPs / captive
      portals) → nothing to do at the host; revert via Tailscale.
    - cloudflared version too old → bumped on next image rebuild.

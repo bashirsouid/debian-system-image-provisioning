@@ -285,6 +285,7 @@ clean_all() {
   )
   # Credential paths to remove
   local cred_paths=(
+    mkosi.extra/etc/credstore
     mkosi.extra/etc/credstore.encrypted
     mkosi.extra/etc/ssh/authorized_keys.d
     mkosi.extra/var/lib/systemd/credential.secret

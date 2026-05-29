@@ -43,11 +43,11 @@ case "${state}" in
         ;;
 esac
 
-# At this point we need to re-authenticate. The encrypted auth key must
-# have been loaded by systemd via LoadCredentialEncrypted=.
+# At this point we need to re-authenticate. The auth key must have
+# been loaded by systemd via LoadCredential=.
 if [[ -z "${CREDENTIALS_DIRECTORY:-}" || ! -r "${CREDENTIALS_DIRECTORY}/tailscale-authkey" ]]; then
     log "ERROR: tailscale-authkey credential not available; cannot re-auth."
-    log "Hint: check that /etc/credstore.encrypted/tailscale-authkey exists and"
+    log "Hint: check that /etc/credstore/tailscale-authkey exists and"
     log "      was built with scripts/package-credentials.sh on the build host."
     exit 1
 fi
