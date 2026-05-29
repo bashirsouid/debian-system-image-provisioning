@@ -1,0 +1,9 @@
+# server-stack role — production headless server baseline.
+# Composes the minimum stack for a remotely managed server:
+# remote access via SSH over both Tailscale (primary) and
+# Cloudflare Tunnel (backup), plus a health heartbeat.
+server
+ssh-server
+tailscale
+cloudflare-tunnel
+healthchecksio

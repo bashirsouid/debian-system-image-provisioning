@@ -12,7 +12,7 @@ Build Host                       Target Machine (QEMU or Baremetal)
   bin/mkosi-vault-build.sh       │  ESP (unencrypted, FAT32)       │
   ├─ decrypts age vault          │  └─ systemd-boot + UKI          │
   ├─ stages .mkosi-secrets/      │  ┌─────────────────────────────────┐
-  ├─ ./build.sh --host evox2     │  │  Root Partition (LUKS2)         │
+  ├─ ./build.sh --host myhost    │  │  Root Partition (LUKS2)         │
   │  ├─ prompts for LUKS pass    │  │  ├─ /etc/credstore/             │
   │  └─ copies credentials       │  │  │   ├─ tailscale-authkey       │
   └─ removes .mkosi-secrets/     │  │  │   ├─ cloudflared-token       │
@@ -80,15 +80,15 @@ TPM. Subsequent boots auto-unlock without typing a password.
 
 ### Development (QEMU)
 
-1. `bin/mkosi-vault-build.sh -- --host evox2` — unlocks local secrets,
+1. `bin/mkosi-vault-build.sh -- --host myhost` — unlocks local secrets,
    runs `./build.sh`, and prompts for LUKS passphrase
-2. `./run.sh --host evox2` — QEMU boots, prompts for LUKS passphrase
+2. `./run.sh --host myhost` — QEMU boots, prompts for LUKS passphrase
 3. Login and run `sudo ab-verify` to confirm everything is working
 4. Iterate on changes
 
 ### Production (Baremetal)
 
-1. `bin/mkosi-vault-build.sh -- --host evox2` — unlocks local secrets,
+1. `bin/mkosi-vault-build.sh -- --host myhost` — unlocks local secrets,
    runs `./build.sh`, and prompts for LUKS passphrase
 2. Flash to USB or disk
 3. Boot the target machine — type the LUKS passphrase

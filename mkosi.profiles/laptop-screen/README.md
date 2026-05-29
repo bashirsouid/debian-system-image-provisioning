@@ -88,10 +88,3 @@ The file is located at:
 - Works with any display manager (GDM, LightDM, etc.) because it discovers the active X session dynamically.
 - The recovery logic does not depend on the window manager; it works even when AwesomeWM is not yet running.
 
-## License
-
-This profile is part of the *my‑mkosi‑test* repository and is distributed under the same license as the rest of the project.
-
----
-
-*End of file*

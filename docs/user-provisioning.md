@@ -5,11 +5,13 @@ How local login users are defined, hashed, and applied on first boot.
 ## The pipeline
 
 ```
-.users.json  ──┐                                   build.sh
-(or            │   render_users_conf()             ─────────►
-hosts/<n>/   │   (hashes plaintext passwords,                                    image
- users.json)   │    resolves host UID sync)                                      build
-               ▼
+secrets file   ──┐                                   build.sh
+(users.json        │   render_users_conf()             ─────────►
+ key in vault)     │   (hashes plaintext passwords,                                    image
+                   │    resolves host UID sync)                                        build
+or .users.json     │
+(legacy fallback)  │
+                   ▼
            /usr/local/etc/users.conf        (mode 0600, one line per user,
            inside the image                  colon-separated fields)
                 │
@@ -26,33 +28,79 @@ hosts/<n>/   │   (hashes plaintext passwords,                                 
 
 The implementation:
 
-- `build.sh` `render_users_conf()` — reads `.users.json`, produces
-  `/usr/local/etc/users.conf` inside the image
+- `build.sh` `render_users_conf()` — reads the resolved users file,
+  produces `/usr/local/etc/users.conf` inside the image
 - `mkosi.extra/usr/lib/systemd/system/provision-local-users.service` —
   the systemd unit
 - `mkosi.extra/usr/local/libexec/provision-local-users` — the first-boot
   script that consumes `users.conf` and calls `useradd` / `usermod`
 
-## Shape of `.users.json`
+## Defining users
+
+### Preferred: define users in your secrets file
+
+Add a `"users.json"` key to your vault (`secrets/mkosi-secrets.json.age`)
+or place the same JSON at `.mkosi-secrets/users.json`:
 
 ```json
-[
-  {
-    "username": "demo",
-    "comment": "Primary login user",
-    "can_login": true,
-    "uid": 1000,
-    "gid": 1000,
-    "primary_group": "demo",
-    "groups": ["sudo", "audio", "video", "render", "input", "plugdev", "dialout"],
-    "shell": "/bin/bash",
-    "password": "change-me-now"
-  }
-]
+{
+  "users.json": [
+    {
+      "username": "you",
+      "comment": "Primary login user",
+      "can_login": true,
+      "uid": 1000,
+      "gid": 1000,
+      "primary_group": "you",
+      "groups": ["sudo", "audio", "video", "render", "input", "tty", "plugdev", "dialout", "netdev"],
+      "shell": "/bin/bash",
+      "password_hash": "$y$j9T$..."
+    }
+  ]
+}
 ```
 
-Any top-level object without a `username` field is silently skipped
-(used by the sample file's `_notes` entry to self-document the schema).
+`build.sh` reads `.mkosi-secrets/users.json` first. The vault build
+wrapper (`bin/mkosi-vault-build.sh`) extracts the `users.json` key to
+that path automatically when it stages the secrets directory.
+
+#### Per-host overrides in the vault
+
+Place a `users.json` key under the host's section to override the
+top-level user list for that host:
+
+```json
+{
+  "users.json": [ ... ],
+  "hosts": {
+    "myserver": {
+      "users.json": [
+        {
+          "username": "svcaccount",
+          "can_login": false
+        }
+      ]
+    }
+  }
+}
+```
+
+The per-host array **completely replaces** the top-level array for that
+host — there is no merge. If you want to share most users, copy the
+common entries into each host section.
+
+### Legacy: `.users.json` file
+
+If `.mkosi-secrets/users.json` does not exist, `build.sh` falls back to
+`.users.json` at the repo root. Copy `.users.json.sample` to get started:
+
+```sh
+cp .users.json.sample .users.json
+$EDITOR .users.json
+```
+
+For per-host legacy overrides, place `hosts/<HOST>/users.json` — it
+takes precedence over `.users.json` when building with `--host HOST`.
 
 ## Supported fields
 
@@ -65,26 +113,24 @@ Any top-level object without a `username` field is silently skipped
 | `groups` | no | `[]` | Supplementary groups, array of names. Missing groups are created. |
 | `shell` | no | `/bin/bash` (login) or nologin (service) | Falls back to `/bin/sh` at first boot if the requested shell isn't installed. |
 | `home` | no | `/home/<username>` (login) or `/nonexistent` (service) | |
-| `password` | no | — | Plaintext. `build.sh` hashes it at build time via `hash_password()`. |
+| `password` | no | — | Plaintext. `build.sh` hashes it at build time via `hash_password()`. Not recommended — prefer `password_hash`. |
 | `password_hash` | no | — | Pre-hashed crypt string. Wins over `password` when both are set. |
 | `ssh_authorized_keys_file` | no | — | Path (relative to repo root) whose contents go into `~/.ssh/authorized_keys` on first boot. |
-| `dotfiles_repo` | no | — | Git URL or path (relative to repo root, or absolute) of a dotfiles repo. Cloned with submodules at build time and copied into `~/.dotfiles` on first boot. See **Dotfiles bootstrap** below. |
-| `dotfiles_install` | no | `./install` | Shell command run from inside `~/.dotfiles` on first boot. Override when your repo's bootstrap script is named differently or needs flags. |
+| `dotfiles_repo` | no | — | Git URL or path of a dotfiles repo. Cloned with submodules at build time and copied into `~/.dotfiles` on first boot. See **Dotfiles bootstrap** below. |
+| `dotfiles_install` | no | `./install` | Shell command run from inside `~/.dotfiles` on first boot. |
 | `force_password_change_on_first_login` | no | `false` | Currently informational; enforcement is not yet wired into the first-boot script. |
 
 A `password_hash` of `"!"` or `"*"` is a lock marker in `/etc/shadow`,
-not a real hash. Setting it disables password login (pubkey still
-works). That is the right thing for service accounts; it is *not* what
-you want for your primary login user. This was the pre-overlay sample's
-default and caused "I can't log in" confusion — that's why the current
-sample ships a usable plaintext default instead.
+not a real hash. Setting it disables password login (pubkey still works).
+That is correct for service accounts; it is **not** what you want for
+your primary login user.
 
 ## Generating `password_hash` without touching disk
 
-```bash
+```sh
 ./bin/hash-password.sh
 # or, with a ready-to-paste JSON entry:
-./bin/hash-password.sh --json --username demo --uid 1000
+./bin/hash-password.sh --json --username you --uid 1000
 ```
 
 The script:
@@ -97,35 +143,19 @@ The script:
 - prints the hash (or the JSON entry) to stdout; prompts and hints go
   to stderr, so `--json > entry.json` works cleanly
 
-## Per-host users
-
-If `hosts/<HOST>/users.json` exists, `./build.sh --host HOST` uses it
-instead of the global `.users.json`. The per-host file has the same
-shape. Common patterns:
-
-- same login user on every machine, different passwords per host
-  (copy-paste the user entry into each host file with a different
-  `password_hash`)
-- a server host with only service accounts and no login user
-- a workstation with several extra dev accounts that never ship on the
-  server
-
-There is no merge semantics — per-host entirely replaces global for
-that target. If you want to share most of the global list, copy-paste.
-
 ## Host UID / GID sync
 
-By default, any `.users.json` entry whose `username` matches the build
-host user inherits that user's numeric uid/gid/primary group. This is
-the safe default for retained-root updates where `/home` persists
-across versions — files in `/home` keep their owner even though the
-root image is replaced.
+By default, any user entry whose `username` matches the build host user
+inherits that user's numeric uid/gid/primary group. This is the safe
+default for retained-root updates where `/home` persists across versions
+— files in `/home` keep their owner even though the root image is
+replaced.
 
 You can:
 
 - opt out entirely: `./build.sh --sync-host-ids=no`
 - override per user: set `uid`, `gid`, `primary_group` explicitly in
-  the JSON entry
+  the user definition
 - request it per field: set any of those three to the literal string
   `"host"`
 
@@ -136,7 +166,7 @@ before `multi-user.target`. The script:
 
 1. Locks the root account and sets its shell to nologin. (Only the
    locally-provisioned users should be able to log in; root password
-   auth stays off regardless of what `.users.json` says.)
+   auth stays off regardless of what the users file says.)
 2. If `/usr/local/etc/users.conf` is empty or missing, logs a message
    and exits clean.
 3. For each line in `users.conf`:
@@ -169,11 +199,11 @@ it to the user, and runs `dotfiles_install` (default `./install`) via
 
 ### Why bake the seed instead of cloning at first boot
 
-First boot frequently happens on a fresh laptop that's still on
-captive-portal Wi-Fi or has no network at all. Cloning during
-provisioning would either fail or hang the boot. The image ships a
-sealed working tree with submodules already initialized so the
-bootstrap script has everything it needs locally.
+First boot frequently happens on a fresh machine with no network or a
+captive-portal Wi-Fi. Cloning during provisioning would either fail or
+hang the boot. The image ships a sealed working tree with submodules
+already initialized so the bootstrap script has everything it needs
+locally.
 
 ### Build-host cache
 
@@ -189,49 +219,49 @@ cp -a <cache> <metadata>/usr/local/share/dotfiles-seed/<username>/
 ```
 
 That's typically a fraction of a second on top of an existing clone.
-The cache survives across `--force-rebuild`; if you want to nuke it,
-delete `~/.cache/mkosi-dotfiles` by hand.
+The cache survives across `--force-rebuild`; delete
+`~/.cache/mkosi-dotfiles` to nuke it.
 
-To use a snapshot of the cache as-is (no `git fetch` — handy when
-working offline or when the dotfiles remote is unreachable), set
-`MKOSI_DOTFILES_OFFLINE=1`. That errors out if the cache is empty
-rather than silently shipping an image without dotfiles.
+To skip network access (e.g. working offline), set
+`MKOSI_DOTFILES_OFFLINE=1`. That errors out if the cache is empty rather
+than silently shipping an image without dotfiles.
 
-To skip the whole step, pass `--skip-dotfiles` to `build.sh`. The
-seed dir won't exist, so first-boot provisioning leaves `~/.dotfiles`
-alone for any user whose entry has `dotfiles_repo` set.
+To control when dotfiles are staged:
+
+```sh
+./build.sh --dotfiles=auto    # default: skip if host has persistent /home
+./build.sh --dotfiles=always  # always stage (e.g. for a first-time USB flash)
+./build.sh --dotfiles=skip    # never stage (--skip-dotfiles is a legacy alias)
+```
+
+In `auto` mode, `build.sh` reads the host's `mkosi.extra/etc/fstab` and skips
+dotfiles staging when a `/home` mount point is defined. Hosts with a persistent
+home partition (where `~/.dotfiles` likely already exists) should leave the live
+home untouched; hosts without one (fresh USBs, QEMU smoke tests) get the seed
+baked in as usual.
 
 ### When the install command runs vs. when it's skipped
 
-`apply_dotfiles_for_user` skips the entire step if `~/.dotfiles`
-already exists in the user's home. That keeps the bootstrap
-idempotent across A/B image updates: retained homes already have
-whatever the user did last time, and re-running dotbot on top of a
-live home would overwrite hand edits.
-
-If you want to re-run the bootstrap on an existing user, delete
-`~/.dotfiles` (and any symlinks dotbot created) before the next
-boot.
+`apply_dotfiles_for_user` skips the entire step if `~/.dotfiles` already
+exists in the user's home. That keeps the bootstrap idempotent across A/B
+image updates: retained homes already have whatever the user did last
+time. If you want to re-run the bootstrap on an existing user, delete
+`~/.dotfiles` (and any symlinks dotbot created) before the next boot.
 
 ### Picking the right `dotfiles_install`
 
-- **Vanilla dotbot:** the default `./install` works — that's the
-  shell wrapper dotbot's `init-dotfiles` template ships.
-- **Custom bootstrap script:** set `dotfiles_install` to the script
-  name plus any flags. If your script normally fetches the dotbot
-  submodule from the network, pass whatever flag tells it to skip
-  that — first boot is offline. The build-host clone already
-  initialized submodules, so the dotbot binary is present locally.
-- **No bootstrap, just files:** leave `dotfiles_install` unset and
-  don't ship an `install` script. The seed still lands at
-  `~/.dotfiles`, but nothing runs against it. Useful for users who
-  manage symlinks via some other tool, or who only want a working
-  tree they can `cd` into.
+- **Vanilla dotbot:** the default `./install` works.
+- **Custom bootstrap script:** set `dotfiles_install` to the script name
+  plus any flags. If your script fetches submodules from the network,
+  pass whatever flag tells it to skip that — first boot is often offline.
+  The build-host clone already initialized submodules locally.
+- **No bootstrap, just files:** leave `dotfiles_install` unset and don't
+  ship an `install` script. The seed lands at `~/.dotfiles`, nothing runs
+  against it.
 
 ## Why not `systemd-sysusers`
 
-`systemd-sysusers.conf` is great for system accounts but does not
-handle:
+`systemd-sysusers.conf` is great for system accounts but does not handle:
 
 - supplementary group membership
 - shell selection per user
@@ -239,11 +269,9 @@ handle:
 - idempotent re-run with a state marker
 - seeding from a runtime-mounted directory for QEMU smoke tests
 
-It's also awkward to feed structured data into. `.users.json` driven by
-a small shell script is more transparent and keeps the existing
-convention in this repo.
+It's also awkward to feed structured data into. A JSON file driven by a
+small shell script is more transparent.
 
-If you later want to converge on sysusers for system accounts (e.g.
-`tss`, service users installed by packages), keep this script for the
-human login user and let the respective package install its own
-sysusers fragments.
+If you want to converge on sysusers for system accounts (e.g. `tss`,
+service users installed by packages), keep this script for human login
+users and let the respective package install its own sysusers fragments.

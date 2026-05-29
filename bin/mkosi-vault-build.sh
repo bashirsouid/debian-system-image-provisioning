@@ -136,9 +136,14 @@ ab_hostdeps_ensure_commands "local secret vault prerequisites" age jq || exit 1
 
 if [[ -e "${SECRETS_DIR}" ]]; then
     if [[ "${REPLACE_STAGING}" != true ]]; then
-        fail "${SECRETS_DIR} already exists. Move it aside, or rerun with --replace-staging."
+        if [[ -d "${SECRETS_DIR}" && -z "$(find "${SECRETS_DIR}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+            rmdir -- "${SECRETS_DIR}"
+        else
+            fail "${SECRETS_DIR} already exists. Move it aside, or rerun with --replace-staging."
+        fi
+    else
+        rm -rf -- "${SECRETS_DIR}"
     fi
-    rm -rf -- "${SECRETS_DIR}"
 fi
 
 tmp_json="$(mktemp "$(tmp_parent)/mkosi-secrets.XXXXXX.json")"
@@ -185,7 +190,8 @@ for name in \
     healthchecks-ping-url \
     wifi-ssid \
     wifi-psk \
-    s3-backup-credentials.json
+    s3-backup-credentials.json \
+    users.json
 do
     write_value ".[\"${name}\"]" "${name}"
 done

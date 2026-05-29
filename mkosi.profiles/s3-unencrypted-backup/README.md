@@ -97,10 +97,3 @@ Paths can be:
 3. **Upload failures**: Check `journalctl -u s3-backup.service` for detailed error messages
 4. **Checksum mismatches**: The script uses MD5 for ETag comparison - multipart uploads will always re-upload (ETag format differs)
 
-## License
-
-This profile is part of the *my-mkosi-test* repository and is distributed under the same license as the rest of the project.
-
----
-
-*End of file*

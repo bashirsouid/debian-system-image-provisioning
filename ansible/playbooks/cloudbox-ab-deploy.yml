@@ -157,7 +157,7 @@
       ansible.builtin.command:
         chdir: "{{ remote_project_root }}"
         argv:
-          - ./bin/bootstrap-ab-disk.sh
+          - ./bin/ab-install.sh
           - --target
           - "{{ cloudbox_bootstrap_target }}"
           - --loader-timeout

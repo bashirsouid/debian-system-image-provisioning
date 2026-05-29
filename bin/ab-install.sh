@@ -1024,7 +1024,7 @@ preview_current_and_planned_layout() {
   local target_real
   target_real="$(readlink -f "$TARGET")"
 
-  echo "Current partition table on target (BEFORE):"
+  echo "Current partition table — will be ERASED (BEFORE):"
   if [[ -b "$target_real" ]]; then
     # -f shows fstype/label/uuid without needing root on some hosts;
     # -o lays out the columns we want to see.
@@ -1039,7 +1039,7 @@ preview_current_and_planned_layout() {
   fi
   echo
 
-  echo "Planned layout after repart (AFTER):"
+  echo "Partition table systemd-repart will CREATE (AFTER):"
 
   # Choose empty mode to match what bootstrap_disk() will actually use
   local preview_empty_mode="--empty=force"
@@ -1076,19 +1076,21 @@ confirm_usb_write_or_abort() {
 
   echo
   if [[ "$REFLASH" == true ]]; then
-    echo "===================================================================="
-    echo "RE-FLASH (non-destructive): writes to the *inactive* root slot only;"
-    echo "the active slot, HOME / DATA partitions, and ESP fallback entries are kept."
-    echo "===================================================================="
+    echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+    echo "NON-DESTRUCTIVE: existing partition layout is kept as-is."
+    echo "  Only the inactive root slot will be overwritten."
+    echo "  Active root, HOME, DATA, and ESP entries: unchanged."
+    echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
   elif [[ "$PRESERVE_MODE" == true ]]; then
     echo "===================================================================="
     echo "PRESERVE MODE: existing partitions on the target will be kept."
     echo "New partitions (ESP + A/B roots + DATA) will be added in free space."
     echo "===================================================================="
   else
-    echo "===================================================================="
-    echo "DESTRUCTIVE OPERATION: all partition data on the target will be lost"
-    echo "===================================================================="
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo "!! DESTRUCTIVE: ALL data on this disk will be ERASED.             !!"
+    echo "!! A new partition table will be written. This cannot be undone.  !!"
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   fi
   echo
   echo "Target device:"
@@ -1105,7 +1107,7 @@ confirm_usb_write_or_abort() {
   echo
 
   if [[ "$REFLASH" == true ]]; then
-    echo "Current partition table on target (will be REUSED in --reflash mode):"
+    echo "Existing partitions (none of these will change — read-only view):"
     lsblk -o NAME,SIZE,TYPE,FSTYPE,PARTLABEL,LABEL,MOUNTPOINT "$(readlink -f "$TARGET")" 2>/dev/null \
       || echo "  (lsblk failed)"
     echo

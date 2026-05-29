@@ -1,7 +1,14 @@
 [
   {
     "_notes": [
-      "Copy this file to .users.json and edit before running ./build.sh.",
+      "PREFERRED: define users inside your secrets file instead of this file.",
+      "Add a 'users.json' key to secrets/mkosi-secrets.json.age (or to the",
+      ".mkosi-secrets/users.json file the vault workflow populates) and",
+      "build.sh will use that automatically. See secrets/mkosi-secrets.example.json",
+      "and docs/user-provisioning.md for the format.",
+      "",
+      "LEGACY: Copy this file to .users.json and edit before running ./build.sh.",
+      "build.sh falls back to .users.json when .mkosi-secrets/users.json does not exist.",
       "",
       "Password options, in order of precedence:",
       "  1. 'password_hash' — a pre-hashed crypt string. Generate one with:",

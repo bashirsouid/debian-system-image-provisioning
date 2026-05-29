@@ -1,0 +1,13 @@
+# desktop role — base graphical workstation layer.
+# Composes the AwesomeWM desktop, full audio, Bluetooth, SSH access,
+# and common CLI tools. Pair with devbox (Liquorix kernel) or macbook
+# (T2 hardware) as the kernel/hardware base:
+#
+#   ./build.sh --profile "devbox desktop" --host mymachine
+#   ./build.sh --profile "macbook desktop" --host mymachine
+awesomewm
+audio-pipewire
+bluetooth
+dev-tools
+ssh-server
+wifi

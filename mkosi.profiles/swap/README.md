@@ -47,5 +47,3 @@ mkosi.profiles/
 - The swap file is created on the root filesystem (`/`). If you need it on a different mount, adjust `SWAPFILE` in `create-swap.sh`.
 - The profile does not install any additional packages; it only relies on utilities already present in the base image.
 
-## License
-This profile is part of the *my‑mkosi‑test* repository and is distributed under the same license as the rest of the project.

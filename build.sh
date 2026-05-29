@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-trap 'echo >&2 ""; echo >&2 "╔══ FATAL: build.sh died at line $LINENO (exit $?) ══╗"; echo >&2 "║  Command: ${BASH_COMMAND}"; echo >&2 "╚══ Target disk may be in partial/unbootable state ═══╝"' ERR
 
 # ── Loud failure trap ─────────────────────────────────────────────────────────
 # Fires on ANY non-zero exit when set -e is active. Prints the failing
@@ -9,14 +8,14 @@ _die_on_error() {
     local exit_code=$? lineno="${1:-?}" cmd="${BASH_COMMAND:-?}"
     echo >&2
     echo >&2 "╔══════════════════════════════════════════════════════════════════╗"
-    echo >&2 "║  ✗  ab-install.sh FAILED — INSTALLATION INCOMPLETE               ║"
+    echo >&2 "║  ✗  build.sh FAILED — IMAGE BUILD INCOMPLETE                     ║"
     echo >&2 "╠══════════════════════════════════════════════════════════════════╣"
     printf >&2 "║  Exit code : %-51s ║\n" "$exit_code"
     printf >&2 "║  Line      : %-51s ║\n" "$lineno"
     printf >&2 "║  Command   : %-51s ║\n" "${cmd:0:51}"
     echo >&2 "╠══════════════════════════════════════════════════════════════════╣"
-    echo >&2 "║  The target disk may be in a PARTIAL / UNBOOTABLE state.         ║"
-    echo >&2 "║  Do NOT reboot from this disk until you re-run ab-install.sh.    ║"
+    echo >&2 "║  No target disk was written by build.sh.                         ║"
+    echo >&2 "║  Fix the build error and rerun the image build.                  ║"
     echo >&2 "╚══════════════════════════════════════════════════════════════════╝"
     echo >&2
 }
@@ -24,6 +23,7 @@ trap '_die_on_error $LINENO' ERR
 # ─────────────────────────────────────────────────────────────────────────────
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORIGINAL_ARGS=("$@")
 # Export so scripts/lib/profile-resolver.sh can find mkosi.profiles/ and
 # mkosi.roles/ without every caller repeating the wiring.
 export AB_PROJECT_ROOT="$PROJECT_ROOT"
@@ -33,8 +33,17 @@ export AB_PROJECT_ROOT="$PROJECT_ROOT"
 export TMPDIR="${PROJECT_ROOT}/mkosi.tmp"
 mkdir -p "$TMPDIR"
 SECRETS_DIR="$PROJECT_ROOT/.mkosi-secrets"
+DEFAULT_VAULT="$PROJECT_ROOT/secrets/mkosi-secrets.json.age"
 THIRD_PARTY_DIR="$PROJECT_ROOT/.mkosi-thirdparty"
-USERS_FILE="$PROJECT_ROOT/.users.json"
+# Resolve users file: prefer .mkosi-secrets/users.json (populated by the age
+# vault workflow or placed there manually) so that a single secrets file holds
+# all per-user and per-credential configuration. Fall back to .users.json for
+# backward compatibility.
+if [[ -f "$PROJECT_ROOT/.mkosi-secrets/users.json" ]]; then
+  USERS_FILE="$PROJECT_ROOT/.mkosi-secrets/users.json"
+else
+  USERS_FILE="$PROJECT_ROOT/.users.json"
+fi
 USERS_SAMPLE="$PROJECT_ROOT/.users.json.sample"
 # shellcheck source=scripts/lib/host-deps.sh
 source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
@@ -69,7 +78,10 @@ NON_INTERACTIVE=false
 ALLOW_ROOT_LOGIN=false
 ALLOW_EMERGENCY_ROOT=false
 FORCE_EMERGENCY_SHELL=false
-SKIP_DOTFILES=false
+# auto: skip dotfiles staging when the host overlay has a persistent /home
+# always: stage regardless (useful for first-time USB writes)
+# skip: never stage (--skip-dotfiles legacy alias)
+DOTFILES_MODE="auto"
 ROOT_PASSWORD_HASH=""
 
 HOST_USER_NAME="$(id -un)"
@@ -106,12 +118,16 @@ Options:
   --allow-root             TEMPORARY: allow root login with password (interactive)
   --allow-emergency-shell  TEMPORARY: enable passwordless root shell on tty9
   --force-emergency-shell  TEMPORARY: force debug shell to tty1 (implies --allow-emergency-shell)
-  --skip-dotfiles          do not clone or stage per-user dotfiles repos.
-                           First-boot provisioning will leave ~/.dotfiles alone
-                           for any user that has dotfiles_repo set in their
-                           .users.json entry. Useful when iterating on image
-                           changes off-network or when a dotfiles remote is
-                           temporarily unreachable.
+  --dotfiles=auto|always|skip
+                           Control dotfiles seed baking.
+                           'auto' (default): skip when the host overlay has a
+                           persistent /home mount in its fstab — those machines
+                           already have an existing home on next boot. Stage for
+                           hosts without a persistent /home and for QEMU builds.
+                           'always': always stage (e.g. first-time USB flash).
+                           'skip': never stage; first-boot leaves ~/.dotfiles
+                           alone. Useful when iterating off-network.
+                           --skip-dotfiles is a legacy alias for --dotfiles=skip.
 
 Environment variables:
   MKOSI_DOTFILES_CACHE     directory for cached dotfiles clones
@@ -548,6 +564,19 @@ resolve_dotfiles_repo_spec() {
 #   can change which repo they point at over time. Hashing the resolved
 #   spec dedupes the former and avoids stale cross-pollination on the
 #   latter.
+# Returns 0 when the host overlay defines a persistent /home mount point
+# in its fstab. When this is true, dotfiles seeding is skipped in auto mode
+# because the home directory will survive across A/B updates and is likely
+# already populated on the machine's next boot.
+host_has_persistent_home() {
+  local host="$1"
+  [[ -n "$host" ]] || return 1
+  local fstab="$PROJECT_ROOT/hosts/$host/mkosi.extra/etc/fstab"
+  [[ -f "$fstab" ]] || return 1
+  awk '!/^[[:space:]]*#/ && NF >= 2 && $2 == "/home" { found=1; exit }
+       END { exit !found }' "$fstab"
+}
+
 stage_dotfiles_seeds() {
   local metadata_root="$1"
   local cache_root="${MKOSI_DOTFILES_CACHE:-$HOME/.cache/mkosi-dotfiles}"
@@ -1233,13 +1262,15 @@ EOF
     printf '%s\n' "$BUILD_HOSTNAME" > "$METADATA_DIR/etc/hostname"
   fi
 
-  # Per-host users override: if hosts/<HOST>/users.json exists, it
-  # replaces the global .users.json for this build target. This lets a
-  # workstation and a server share the same repo while keeping
-  # host-specific user sets (or a different password for the shared
-  # login user) out of the global file.
+  # Per-host users override. Check in priority order:
+  #   1. .mkosi-secrets/hosts/<HOST>/users.json  (vault-populated or manually placed)
+  #   2. hosts/<HOST>/users.json                 (legacy committed override)
+  # If neither exists, the global USERS_FILE resolved above is used.
   local _original_users_file="$USERS_FILE"
-  if [[ -n "$HOST" && -f "$PROJECT_ROOT/hosts/$HOST/users.json" ]]; then
+  if [[ -n "$HOST" && -f "$PROJECT_ROOT/.mkosi-secrets/hosts/$HOST/users.json" ]]; then
+    USERS_FILE="$PROJECT_ROOT/.mkosi-secrets/hosts/$HOST/users.json"
+    echo "==> Using per-host users from secrets: .mkosi-secrets/hosts/$HOST/users.json"
+  elif [[ -n "$HOST" && -f "$PROJECT_ROOT/hosts/$HOST/users.json" ]]; then
     USERS_FILE="$PROJECT_ROOT/hosts/$HOST/users.json"
     echo "==> Using per-host users file: hosts/$HOST/users.json"
   fi
@@ -1247,8 +1278,11 @@ EOF
   render_users_conf "$METADATA_DIR/usr/local/etc/users.conf"
   render_provision_users_json "$METADATA_DIR/etc/ab-users.json"
   chmod 0600 "$METADATA_DIR/usr/local/etc/users.conf"
-  if [[ "$SKIP_DOTFILES" == true ]]; then
-    echo "==> [DOTFILES] --skip-dotfiles set; skipping dotfiles staging"
+  if [[ "$DOTFILES_MODE" == "skip" ]]; then
+    echo "==> [DOTFILES] --dotfiles=skip: skipping dotfiles staging"
+  elif [[ "$DOTFILES_MODE" == "auto" && -n "$HOST" ]] && host_has_persistent_home "$HOST"; then
+    echo "==> [DOTFILES] auto: host '$HOST' has a persistent /home mount in its fstab;"
+    echo "    skipping dotfiles staging (use --dotfiles=always to override)"
   else
     stage_dotfiles_seeds "$METADATA_DIR"
   fi
@@ -1544,7 +1578,14 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --skip-dotfiles)
-      SKIP_DOTFILES=true
+      DOTFILES_MODE="skip"
+      shift
+      ;;
+    --dotfiles=*)
+      case "${1#--dotfiles=}" in
+        auto|always|skip) DOTFILES_MODE="${1#--dotfiles=}" ;;
+        *) echo "ERROR: --dotfiles must be auto, always, or skip" >&2; exit 1 ;;
+      esac
       shift
       ;;
     -h|--help)
@@ -1738,6 +1779,24 @@ if [[ "${AB_SKIP_OVERLAY_GATES:-no}" != "yes" ]]; then
     # closed if required SSH authorized_keys are missing, so remote-access
     # lockouts are caught at build time instead of first boot.
     if [[ -x "$PROJECT_ROOT/scripts/verify-build-secrets.sh" ]]; then
+        staged_ssh_present=false
+        if [[ -f "$SECRETS_DIR/ssh-authorized-keys" \
+              || ( -n "$HOST" && -f "$SECRETS_DIR/hosts/$HOST/ssh-authorized-keys" ) ]]; then
+            staged_ssh_present=true
+        fi
+        if [[ "$staged_ssh_present" != true \
+              && -f "$DEFAULT_VAULT" \
+              && ! -f "$SECRETS_DIR/.generated-by-mkosi-vault-build" ]]; then
+            if [[ -x "$PROJECT_ROOT/bin/mkosi-vault-build.sh" ]]; then
+                echo "==> Encrypted secret vault found; unlocking before build..."
+                exec "$PROJECT_ROOT/bin/mkosi-vault-build.sh" -- "${ORIGINAL_ARGS[@]}"
+            fi
+            echo >&2 "ERROR: encrypted secret vault exists, but bin/mkosi-vault-build.sh is not executable:"
+            echo >&2 "  vault:   $DEFAULT_VAULT"
+            echo >&2 "  staging: $SECRETS_DIR"
+            exit 1
+        fi
+        unset staged_ssh_present
         echo "==> Verifying .mkosi-secrets/ ..."
         verify_args=()
         [[ "${STRICT_SECRETS:-no}" == "yes" ]] && verify_args+=(--strict)

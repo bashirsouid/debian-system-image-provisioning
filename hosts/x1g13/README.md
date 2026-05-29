@@ -12,10 +12,10 @@ Use it with:
 
 Trixie stable's `firmware-nonfree` snapshot predates the Lunar Lake launch and
 is missing WiFi, Bluetooth, NPU, and audio firmware for this machine.  Run this
-once on the build machine (evox2) **before** the first build:
+once on the build host **before** the first build:
 
 ```bash
-# Install backports firmware onto evox2 so the script can copy from it
+# Install backports firmware on the build host so the script can copy from it
 sudo apt-get install -t trixie-backports \
     firmware-iwlwifi firmware-misc-nonfree firmware-sof-signed
 

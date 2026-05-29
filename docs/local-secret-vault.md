@@ -73,22 +73,52 @@ with `jq`. Top-level keys map directly to files under
     "secretAccessKey": "YOUR_SECRET_KEY",
     "bucket": "your-backup-bucket"
   },
+  "users.json": [
+    {
+      "username": "you",
+      "can_login": true,
+      "uid": 1000,
+      "gid": 1000,
+      "primary_group": "you",
+      "groups": ["sudo", "audio", "video", "render", "input", "plugdev"],
+      "shell": "/bin/bash",
+      "password_hash": "$y$j9T$..."
+    }
+  ],
   "hosts": {
-    "x1g13": {
+    "myhost": {
       "tailscale-authkey": "tskey-auth-host-specific-...",
       "s3-backup-credentials.json": {
         "endpoint": "",
         "accessKeyId": "HOST_ACCESS_KEY",
         "secretAccessKey": "HOST_SECRET_KEY",
         "bucket": "host-backup-bucket"
-      }
+      },
+      "users.json": [
+        {
+          "username": "you",
+          "can_login": true,
+          "uid": 1000,
+          "gid": 1000,
+          "primary_group": "you",
+          "groups": ["sudo", "audio", "video", "render", "input", "plugdev"],
+          "shell": "/bin/bash",
+          "password_hash": "$y$j9T$HOST_SPECIFIC_HASH"
+        }
+      ]
     }
   }
 }
 ```
 
-All keys are optional except the secrets required by the profiles you
-select. `scripts/verify-build-secrets.sh` remains the authority for
+The `users.json` key defines local login accounts baked into the image.
+It follows the same schema as the standalone `.users.json` file.
+Top-level `users.json` is shared across all hosts; per-host
+`hosts.<name>.users.json` replaces the top-level array for that host.
+See `docs/user-provisioning.md` for the full field reference.
+
+All other keys are optional except the secrets required by the profiles
+you select. `scripts/verify-build-secrets.sh` remains the authority for
 required files, formats, and permissions.
 
 ## Build With The Vault
