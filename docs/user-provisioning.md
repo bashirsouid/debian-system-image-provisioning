@@ -9,8 +9,7 @@ secrets file   ──┐                                   build.sh
 (users.json        │   render_users_conf()             ─────────►
  key in vault)     │   (hashes plaintext passwords,                                    image
                    │    resolves host UID sync)                                        build
-or .users.json     │
-(legacy fallback)  │
+                   │
                    ▼
            /usr/local/etc/users.conf        (mode 0600, one line per user,
            inside the image                  colon-separated fields)
@@ -88,19 +87,6 @@ top-level user list for that host:
 The per-host array **completely replaces** the top-level array for that
 host — there is no merge. If you want to share most users, copy the
 common entries into each host section.
-
-### Legacy: `.users.json` file
-
-If `.mkosi-secrets/users.json` does not exist, `build.sh` falls back to
-`.users.json` at the repo root. Copy `.users.json.sample` to get started:
-
-```sh
-cp .users.json.sample .users.json
-$EDITOR .users.json
-```
-
-For per-host legacy overrides, place `hosts/<HOST>/users.json` — it
-takes precedence over `.users.json` when building with `--host HOST`.
 
 ## Supported fields
 

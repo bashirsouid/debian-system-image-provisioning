@@ -3,7 +3,7 @@
 #
 # Interactive helper: prompts for a password (no echo), prints either:
 #   1. just the yescrypt hash (default, back-compatible with old callers), or
-#   2. a ready-to-paste JSON user entry for .users.json (with --json).
+#   2. a ready-to-paste JSON user entry for the secrets vault (with --json).
 #
 # Usage:
 #   ./bin/hash-password.sh                          # print hash only
@@ -24,7 +24,7 @@ usage() {
 Usage: ./bin/hash-password.sh [options]
 
 Options:
-  --json              emit a complete JSON entry ready for .users.json
+  --json              emit a complete JSON entry ready for the secrets vault
                       instead of just the hash
   --username NAME     username to put in the JSON entry (with --json)
   --uid N             uid to pin in the JSON entry (with --json; default: auto)
@@ -40,7 +40,7 @@ Examples:
   # Produce just the hash (back-compatible behavior):
   ./bin/hash-password.sh
 
-  # Produce a full user entry to paste into .users.json:
+  # Produce a full user entry to paste into the secrets vault:
   ./bin/hash-password.sh --json --username bashir --uid 1000
 USAGE
 }
@@ -109,8 +109,8 @@ if [[ "$JSON" == false ]]; then
     cat >&2 <<'HINT'
 
 Paste the hash above into the "password_hash" field of the relevant user
-in .users.json. To get a full ready-to-paste JSON entry instead, rerun
-with --json --username NAME.
+in your secrets vault (users.json key). To get a full ready-to-paste JSON
+entry instead, rerun with --json --username NAME.
 HINT
     exit 0
 fi

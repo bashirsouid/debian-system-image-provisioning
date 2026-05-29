@@ -16,7 +16,7 @@ This doc covers the diagnostic flags. For day-to-day happy-path use,
 ```
 
 The VM opens in a QEMU GUI window. Log in with the user you defined in
-`.users.json` (the sample ships `demo` / `change-me-now`). For the
+your secrets vault (`users.json` key). For the
 devbox profile, `startx` starts AwesomeWM.
 
 If you get here, the image works and you can move on to hardware-test

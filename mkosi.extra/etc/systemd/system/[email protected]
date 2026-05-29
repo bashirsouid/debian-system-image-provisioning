@@ -7,7 +7,8 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-LoadCredential=sendgrid-api-key:/etc/credstore/sendgrid-api-key
+LoadCredential=mailjet-public-key:/etc/credstore/mailjet_public_key
+LoadCredential=mailjet-private-key:/etc/credstore/mailjet_private_key
 LoadCredential=pagerduty-routing-key:/etc/credstore/pagerduty-routing-key
 LoadCredential=healthchecks-ping-url:/etc/credstore/healthchecks-ping-url
 EnvironmentFile=-/etc/default/ab-monitor

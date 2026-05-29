@@ -16,7 +16,8 @@ Build Host                       Target Machine (QEMU or Baremetal)
   │  ├─ prompts for LUKS pass    │  │  ├─ /etc/credstore/             │
   │  └─ copies credentials       │  │  │   ├─ tailscale-authkey       │
   └─ removes .mkosi-secrets/     │  │  │   ├─ cloudflared-token       │
-                                 │  │  │   ├─ sendgrid-api-key        │
+                                 │  │  │   ├─ mailjet_public_key      │
+                                 │  │  │   ├─ mailjet_private_key     │
                                  │  │  │   └─ ...                     │
                                  │  │  ├─ /etc/ssh/authorized_keys.d/ │
                                  │  │  └─ everything else             │
@@ -53,7 +54,7 @@ duration of the build and is **never written to persistent storage**.
 
 ### Layer 2: systemd LoadCredential= (at runtime)
 
-Services that need secrets (Tailscale, Cloudflare, SendGrid, etc.)
+Services that need secrets (Tailscale, Cloudflare, Mailjet, etc.)
 use systemd's `LoadCredential=` directive. When a service starts,
 systemd copies the credential file into an isolated, memory-backed
 tmpfs that is **only visible to that specific service**. When the
@@ -122,7 +123,8 @@ protection:
 |------|---------|-------------|
 | `/etc/credstore/tailscale-authkey` | Tailscale pre-auth key | `0600` |
 | `/etc/credstore/cloudflared-token` | Cloudflare tunnel token | `0600` |
-| `/etc/credstore/sendgrid-api-key` | SendGrid API key | `0600` |
+| `/etc/credstore/mailjet_public_key` | Mailjet public key | `0600` |
+| `/etc/credstore/mailjet_private_key` | Mailjet private key | `0600` |
 | `/etc/credstore/pagerduty-routing-key` | PagerDuty routing key | `0600` |
 | `/etc/credstore/healthchecks-ping-url` | Healthchecks.io ping URL | `0600` |
 

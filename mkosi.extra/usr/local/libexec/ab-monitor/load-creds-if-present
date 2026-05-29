@@ -23,7 +23,8 @@ SRC=/etc/credstore
 # Names this monitor / heartbeat stack knows about. Add new ones here
 # the same day they are added as LoadCredential= in any unit.
 CREDS=(
-    sendgrid-api-key
+    mailjet_public_key
+    mailjet_private_key
     pagerduty-routing-key
     healthchecks-ping-url
 )

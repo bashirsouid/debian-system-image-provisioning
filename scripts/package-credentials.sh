@@ -65,12 +65,18 @@ profile_selected() {
     return 1
 }
 
-# Resolve login username.
+# Resolve login username from the secrets vault.
 if [[ -z "${USER_NAME}" ]]; then
-    if [[ -f "${REPO_ROOT}/.users.json" ]]; then
-        USER_NAME="$(jq -r '[.[] | select(.can_login==true)][0].username // empty' "${REPO_ROOT}/.users.json")"
+    local_users=""
+    if [[ -n "${HOST}" && -f "${SECRETS_DIR}/hosts/${HOST}/users.json" ]]; then
+        local_users="${SECRETS_DIR}/hosts/${HOST}/users.json"
+    elif [[ -f "${SECRETS_DIR}/users.json" ]]; then
+        local_users="${SECRETS_DIR}/users.json"
     fi
-    [[ -n "${USER_NAME}" ]] || fail "could not resolve login username from .users.json. Pass --user."
+    if [[ -n "${local_users}" ]]; then
+        USER_NAME="$(jq -r '[.[] | select(.can_login==true)][0].username // empty' "${local_users}")"
+    fi
+    [[ -n "${USER_NAME}" ]] || fail "could not resolve login username from ${SECRETS_DIR}/users.json. Pass --user."
 fi
 log "login user: ${USER_NAME}"
 

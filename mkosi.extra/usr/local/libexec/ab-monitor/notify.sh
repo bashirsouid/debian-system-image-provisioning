@@ -1,7 +1,7 @@
 #!/bin/bash
 # /usr/local/libexec/ab-monitor/notify.sh
 #
-# Fans one alert event out to all configured channels (SendGrid,
+# Fans one alert event out to all configured channels (Mailjet,
 # PagerDuty, journal). Each notifier runs independently; one failing
 # does not stop the others.
 #
@@ -77,10 +77,10 @@ severity_rank() {
 cur_rank="$(severity_rank "${SEVERITY}")"
 min_rank="$(severity_rank "${AB_MONITOR_PD_MIN_SEVERITY:-error}")"
 
-for channel in ${AB_MONITOR_CHANNELS:-sendgrid pagerduty}; do
+for channel in ${AB_MONITOR_CHANNELS:-mailjet pagerduty}; do
     case "${channel}" in
-        sendgrid)
-            "${LIBDIR}/notifiers/sendgrid.sh" || log "sendgrid notifier failed"
+        mailjet)
+            "${LIBDIR}/notifiers/mailjet.sh" || log "mailjet notifier failed"
             ;;
         pagerduty)
             if (( cur_rank >= min_rank )); then

@@ -117,9 +117,6 @@ This is enforced on every build, not just initial setup.
 
 Committed to the repository:
 
-* `.users.json.sample` — reference only. `.users.json` with real
-  credentials is gitignored. The preferred approach is to put users in
-  the secrets file instead; see `docs/user-provisioning.md`.
 * `secrets/mkosi-secrets.example.json` — example schema for the secrets
   vault. Real encrypted vault files are named `secrets/*.json.age`;
   plaintext `secrets/*.json` files are gitignored.

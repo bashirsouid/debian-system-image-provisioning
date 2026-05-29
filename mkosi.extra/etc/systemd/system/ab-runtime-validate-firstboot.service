@@ -15,7 +15,7 @@ After=ab-heartbeat.timer
 Wants=network-online.target
 
 # Do NOT fail the boot if validation fails — we want the box up and
-# reachable even if e.g. SendGrid rejects our key. ab-monitor will
+# reachable even if e.g. Mailjet rejects our key. ab-monitor will
 # pick up whatever is genuinely broken on its next tick.
 
 [Service]

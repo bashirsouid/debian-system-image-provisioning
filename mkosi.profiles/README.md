@@ -91,7 +91,7 @@ is a defensive awk script). Keys:
 | Key | Type | Purpose |
 | --- | --- | --- |
 | `description` | string | One-line human-readable summary |
-| `uses_secrets` | space-separated | Which `.mkosi-secrets/` files this profile consumes. Names match the feature keys in `scripts/verify-build-secrets.sh`: `ssh tailscale cloudflared sendgrid pagerduty healthchecks s3-backup`. |
+| `uses_secrets` | space-separated | Which `.mkosi-secrets/` files this profile consumes. Names match the feature keys in `scripts/verify-build-secrets.sh`: `ssh tailscale cloudflared mailjet pagerduty healthchecks s3-backup`. |
 
 Example (`mkosi.profiles/tailscale/profile.manifest`):
 

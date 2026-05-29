@@ -35,16 +35,9 @@ mkdir -p "$TMPDIR"
 SECRETS_DIR="$PROJECT_ROOT/.mkosi-secrets"
 DEFAULT_VAULT="$PROJECT_ROOT/secrets/mkosi-secrets.json.age"
 THIRD_PARTY_DIR="$PROJECT_ROOT/.mkosi-thirdparty"
-# Resolve users file: prefer .mkosi-secrets/users.json (populated by the age
-# vault workflow or placed there manually) so that a single secrets file holds
-# all per-user and per-credential configuration. Fall back to .users.json for
-# backward compatibility.
-if [[ -f "$PROJECT_ROOT/.mkosi-secrets/users.json" ]]; then
-  USERS_FILE="$PROJECT_ROOT/.mkosi-secrets/users.json"
-else
-  USERS_FILE="$PROJECT_ROOT/.users.json"
-fi
-USERS_SAMPLE="$PROJECT_ROOT/.users.json.sample"
+# Users file: always read from .mkosi-secrets/users.json (populated by the age
+# vault workflow via bin/mkosi-vault-build.sh, or placed there manually).
+USERS_FILE="$PROJECT_ROOT/.mkosi-secrets/users.json"
 # shellcheck source=scripts/lib/host-deps.sh
 source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
 # shellcheck source=scripts/lib/build-meta.sh
@@ -534,7 +527,7 @@ sanitize_dotfiles_cache_key() {
 #   - Absolute paths pass through
 #   - Anything else is treated as relative to PROJECT_ROOT, so a build
 #     host can point at a sibling checkout (e.g. "../dotfiles") without
-#     committing absolute paths into .users.json
+#     committing absolute paths into the users.json entry
 resolve_dotfiles_repo_spec() {
   local spec="$1"
   if [[ "$spec" == *"://"* ]] || [[ "$spec" =~ ^[^/]+@[^/]+: ]]; then
@@ -887,7 +880,7 @@ compute_config_checksum() {
     docs
     scripts
     ansible
-    .users.json
+    .mkosi-secrets/users.json
     build.sh
     run.sh
     clean.sh
@@ -1262,17 +1255,13 @@ EOF
     printf '%s\n' "$BUILD_HOSTNAME" > "$METADATA_DIR/etc/hostname"
   fi
 
-  # Per-host users override. Check in priority order:
-  #   1. .mkosi-secrets/hosts/<HOST>/users.json  (vault-populated or manually placed)
-  #   2. hosts/<HOST>/users.json                 (legacy committed override)
-  # If neither exists, the global USERS_FILE resolved above is used.
+  # Per-host users override from the secrets vault.
+  # If .mkosi-secrets/hosts/<HOST>/users.json exists it completely replaces
+  # the top-level users.json for this build.
   local _original_users_file="$USERS_FILE"
   if [[ -n "$HOST" && -f "$PROJECT_ROOT/.mkosi-secrets/hosts/$HOST/users.json" ]]; then
     USERS_FILE="$PROJECT_ROOT/.mkosi-secrets/hosts/$HOST/users.json"
     echo "==> Using per-host users from secrets: .mkosi-secrets/hosts/$HOST/users.json"
-  elif [[ -n "$HOST" && -f "$PROJECT_ROOT/hosts/$HOST/users.json" ]]; then
-    USERS_FILE="$PROJECT_ROOT/hosts/$HOST/users.json"
-    echo "==> Using per-host users file: hosts/$HOST/users.json"
   fi
   validate_users_file "$USERS_FILE" "$USERS_FILE"
   render_users_conf "$METADATA_DIR/usr/local/etc/users.conf"
@@ -1671,17 +1660,22 @@ if [[ ! -f "$USERS_FILE" ]]; then
   cat >&2 <<EOF
 ERROR: $USERS_FILE is missing.
 
-This file tells build.sh which local users to provision on first boot,
-including their passwords. build.sh intentionally does NOT auto-create
-it, because silently copying the sample would leave a known default
-password ("change-me-now") on any image built without a manual review
-step — a serious footgun for CI and for anyone building on autopilot.
+Users are defined in the encrypted secrets vault and staged into
+.mkosi-secrets/ at build time. The recommended workflow:
 
-To create it:
-  cp $USERS_SAMPLE $USERS_FILE
-  \$EDITOR $USERS_FILE              # set a real password / password_hash
+  bin/mkosi-vault-build.sh -- ${HOST:+--host $HOST}${HOST:- --profile devbox}
 
-Prefer password_hash over password. Generate one with:
+This decrypts secrets/mkosi-secrets.json.age into .mkosi-secrets/,
+runs ./build.sh, and cleans up afterwards.
+
+If you haven't set up the vault yet:
+  bin/mkosi-vault-init.sh            # one-time: create the age vault
+  bin/mkosi-vault-edit.sh            # add users under the "users.json" key
+
+See secrets/mkosi-secrets.example.json for the schema and
+docs/user-provisioning.md for the full field reference.
+
+Generate a password_hash with:
   ./bin/hash-password.sh --hash-only
 EOF
   exit 1

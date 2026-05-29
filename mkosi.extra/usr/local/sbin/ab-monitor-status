@@ -61,7 +61,7 @@ journalctl -t ab-notify -t ab-monitor --since "-24h" -n 30 --no-pager --no-hostn
     | tail -n 30 || true
 
 section "credentials"
-for f in sendgrid-api-key pagerduty-routing-key healthchecks-ping-url; do
+for f in mailjet_public_key mailjet_private_key pagerduty-routing-key healthchecks-ping-url; do
     p="/etc/credstore/$f"
     if [[ -f "$p" ]]; then
         printf '  %s%spresent%s: %s\n' "$(green)" "" "$(reset)" "$p"

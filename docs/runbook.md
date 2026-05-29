@@ -146,7 +146,7 @@ Steps:
    `Chronyd` with `iburst` and fallback pool servers.
 
 Why this matters: without correct time, TLS certs look invalid and
-ALL outbound alerts (SendGrid, PagerDuty, healthchecks.io) fail
+ALL outbound alerts (Mailjet, PagerDuty, healthchecks.io) fail
 closed. This is a silent-alert-disabling bug and deserves urgent
 fixing.
 
@@ -172,7 +172,7 @@ sudo ab-monitor-test
 ```
 
 Fires one trigger + one resolve through every configured channel
-(SendGrid, PagerDuty, healthchecks.io is not triggered from here —
+(Mailjet, PagerDuty, healthchecks.io is not triggered from here —
 that one you test by stopping `ab-heartbeat.timer` for 20 minutes
 and watching for the missed-ping email).
 

@@ -99,11 +99,13 @@ encrypt_one() {
 
 # Validators: read from stdin, exit 0 on OK, non-zero otherwise.
 # They MUST NOT echo the input.
-validate_sendgrid() {
+validate_mailjet_key() {
     local content; content="$(cat)"
-    # SendGrid API keys start with "SG." and are ~69 characters.
-    [[ "${content}" == SG.* ]] || { echo "  sendgrid key does not start with SG." >&2; return 1; }
-    (( ${#content} >= 40 )) || { echo "  sendgrid key too short" >&2; return 1; }
+    content="${content%$'\n'}"
+    if [[ ! "${content}" =~ ^[A-Za-z0-9]{32}$ ]]; then
+        echo "  mailjet key expected to be 32 alphanumeric chars" >&2
+        return 1
+    fi
     return 0
 }
 
@@ -130,7 +132,27 @@ validate_healthchecks() {
     esac
 }
 
-encrypt_one sendgrid-api-key       AB_REQUIRE_SENDGRID     validate_sendgrid
+# For mailjet, if either key is present, both are required to be present.
+mj_pub_exists=0
+mj_priv_exists=0
+resolve_secret mailjet_public_key >/dev/null 2>&1 && mj_pub_exists=1
+resolve_secret mailjet_private_key >/dev/null 2>&1 && mj_priv_exists=1
+
+if (( mj_pub_exists || mj_priv_exists )); then
+    if (( ! mj_pub_exists )); then
+        fail "mailjet_private_key exists but mailjet_public_key is missing"
+    fi
+    if (( ! mj_priv_exists )); then
+        fail "mailjet_public_key exists but mailjet_private_key is missing"
+    fi
+    encrypt_one mailjet_public_key     AB_REQUIRE_MAILJET     validate_mailjet_key
+    encrypt_one mailjet_private_key    AB_REQUIRE_MAILJET     validate_mailjet_key
+else
+    if [[ "${AB_REQUIRE_MAILJET:-no}" == "yes" ]]; then
+        fail "Mailjet keys missing and AB_REQUIRE_MAILJET=yes"
+    fi
+    warn "mailjet keys not found under ${SECRETS_DIR}; skipping (channel disabled for this image)"
+fi
 encrypt_one pagerduty-routing-key  AB_REQUIRE_PAGERDUTY    validate_pagerduty
 if profile_selected healthchecksio; then
     encrypt_one healthchecks-ping-url  AB_REQUIRE_HEALTHCHECKS validate_healthchecks

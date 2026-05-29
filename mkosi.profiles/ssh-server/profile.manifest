@@ -8,7 +8,7 @@
 #   description   - one-line human summary.
 #   uses_secrets  - space-separated. Valid names match the feature keys
 #                   in scripts/verify-build-secrets.sh:
-#                     ssh tailscale cloudflared sendgrid pagerduty healthchecks
+#                     ssh tailscale cloudflared mailjet pagerduty healthchecks
 #                   Only listed secrets are required for this profile;
 #                   anything absent from .mkosi-secrets/ that is NOT in
 #                   any selected profile's list is skipped silently.

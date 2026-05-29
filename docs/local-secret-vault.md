@@ -62,7 +62,8 @@ with `jq`. Top-level keys map directly to files under
   "ssh-authorized-keys": "ssh-ed25519 AAAA... hardware-key\n",
   "tailscale-authkey": "tskey-auth-...",
   "cloudflared-token": "eyJhIjoi...",
-  "sendgrid-api-key": "SG....",
+  "mailjet_public_key": "0123456789abcdef0123456789abcdef",
+  "mailjet_private_key": "0123456789abcdef0123456789abcdef",
   "pagerduty-routing-key": "0123456789abcdef0123456789abcdef",
   "healthchecks-ping-url": "https://hc-ping.com/...",
   "wifi-ssid": "example",
@@ -112,7 +113,6 @@ with `jq`. Top-level keys map directly to files under
 ```
 
 The `users.json` key defines local login accounts baked into the image.
-It follows the same schema as the standalone `.users.json` file.
 Top-level `users.json` is shared across all hosts; per-host
 `hosts.<name>.users.json` replaces the top-level array for that host.
 See `docs/user-provisioning.md` for the full field reference.

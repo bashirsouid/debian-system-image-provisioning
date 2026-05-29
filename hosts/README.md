@@ -16,7 +16,7 @@ profiles and roles compose.
 | `image-id-suffix` | Short alias used in place of the host name in GPT partition labels (labels cap at 36 chars). |
 | `kernel-cmdline.extra` | Extra kernel command-line args appended to the boot entry. |
 | `secure-boot.disabled` | One-line reason — opt out of Secure Boot for this host. |
-| `users.json` | Per-host override of the repo-root `.users.json`. |
+| `users.json` | *(Deprecated — use the secrets vault instead.)* Per-host user overrides belong under `.mkosi-secrets/hosts/<host>/users.json`, populated via the `hosts.<host>.users.json` key in the age vault. See `docs/user-provisioning.md`. |
 
 Everything except `profile.default` is optional.
 

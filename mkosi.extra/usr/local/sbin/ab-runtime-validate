@@ -15,7 +15,7 @@
 #                 revokes/expires, tailscale up returns "key expired"
 #                 within seconds of this test running.
 #   Cloudflared - tunnel reaches readyConnections >= 1 within 60s
-#   SendGrid    - sends a single "ab-runtime-validate" probe email
+#   Mailjet     - sends a single "ab-runtime-validate" probe email
 #                 to the configured AB_MONITOR_EMAIL_TO. You WILL
 #                 receive this on first boot. Pass --no-probe-email
 #                 to skip.
@@ -31,7 +31,7 @@
 #   /var/lib/ab-runtime-validate/last-run.json    machine-readable
 #   /var/lib/ab-runtime-validate/last-run.txt     human-readable
 #   journal structured fields under tag ab-runtime-validate
-#   optional final email summary (if SendGrid is configured)
+#   optional final email summary (if Mailjet is configured)
 #
 # Exit code:
 #   0  all CONFIGURED features passed
@@ -83,7 +83,7 @@ BOOTED_SINCE="$(uptime -s 2>/dev/null || echo unknown)"
 # Per-test status tracking
 declare -A RESULT  # pass | fail | skip
 declare -A DETAIL
-for k in ssh tailscale cloudflared sendgrid pagerduty healthchecks; do
+for k in ssh tailscale cloudflared mailjet pagerduty healthchecks; do
     RESULT[$k]="skip"
     DETAIL[$k]="not configured on this image"
 done
@@ -251,44 +251,47 @@ test_cloudflared() {
     fi
 }
 
-test_sendgrid() {
-    say "testing sendgrid..."
-    if [[ ! -f /etc/credstore/sendgrid-api-key ]]; then
-        skip sendgrid "sendgrid-api-key not configured at build time"
+test_mailjet() {
+    say "testing mailjet..."
+    if [[ ! -f /etc/credstore/mailjet_public_key || ! -f /etc/credstore/mailjet_private_key ]]; then
+        skip mailjet "mailjet credentials not configured at build time"
         return
     fi
     if [[ "${SEND_PROBE_EMAIL}" != "yes" ]]; then
-        skip sendgrid "probe email disabled via --no-probe-email"
+        skip mailjet "probe email disabled via --no-probe-email"
         return
     fi
-    # Run via systemd-run with credential so we can actually read the API key.
+    # Run via systemd-run with credentials so we can actually read the keys.
     local http_code
     http_code="$(systemd-run --pipe --wait --collect \
-        --property=LoadCredential=sendgrid-api-key:/etc/credstore/sendgrid-api-key \
+        --property=LoadCredential=mailjet-public-key:/etc/credstore/mailjet_public_key \
+        --property=LoadCredential=mailjet-private-key:/etc/credstore/mailjet_private_key \
         --property=EnvironmentFile=-/etc/default/ab-monitor \
         /bin/bash -c '
-            key="$(cat "$CREDENTIALS_DIRECTORY/sendgrid-api-key")"
+            pub="$(cat "$CREDENTIALS_DIRECTORY/mailjet-public-key")"
+            priv="$(cat "$CREDENTIALS_DIRECTORY/mailjet-private-key")"
             payload=$(jq -n \
                 --arg to "${AB_MONITOR_EMAIL_TO:-}" \
                 --arg from "${AB_MONITOR_EMAIL_FROM:-}" \
+                --arg from_name "${AB_MONITOR_EMAIL_FROM_NAME:-AB Monitor}" \
                 --arg host "'"${HOST}"'" \
                 --arg ts "'"${NOW}"'" \
-                "{personalizations:[{to:[{email:\$to}]}], from:{email:\$from}, subject:(\"[\" + \$host + \"] ab-runtime-validate probe (\" + \$ts + \")\"), content:[{type:\"text/plain\", value:(\"Runtime validation probe from \" + \$host + \" at \" + \$ts + \".\\nIf you received this, SendGrid is working.\\n\")}]}")
+                "{Messages: [{From: {Email: \$from, Name: \$from_name}, To: [{Email: \$to}], Subject: (\"[\" + \$host + \"] ab-runtime-validate probe (\" + \$ts + \")\"), TextPart: (\"Runtime validation probe from \" + \$host + \" at \" + \$ts + \".\\nIf you received this, Mailjet is working.\\n\")}]}")
             if [[ -z "${AB_MONITOR_EMAIL_TO:-}" || -z "${AB_MONITOR_EMAIL_FROM:-}" ]]; then
                 echo 000
                 exit 0
             fi
             curl --silent --max-time 10 --output /dev/null --write-out "%{http_code}" \
-                -X POST https://api.sendgrid.com/v3/mail/send \
-                -H "Authorization: Bearer $key" \
+                -X POST https://api.mailjet.com/v3.1/send \
+                --user "\$pub:\$priv" \
                 -H "Content-Type: application/json" \
-                --data-raw "$payload"
+                --data-raw "\$payload"
         ' 2>/dev/null || echo 000)"
     case "${http_code}" in
-        202|200) pass sendgrid "probe email accepted by API (HTTP ${http_code})" ;;
-        000)     fail sendgrid "no HTTP response (EMAIL_TO/FROM unset in /etc/default/ab-monitor?)" ;;
-        401|403) fail sendgrid "API rejected credentials (HTTP ${http_code} — regenerate key)" ;;
-        *)       fail sendgrid "unexpected HTTP ${http_code}" ;;
+        200)     pass mailjet "probe email accepted by API (HTTP ${http_code})" ;;
+        000)     fail mailjet "no HTTP response (EMAIL_TO/FROM unset in /etc/default/ab-monitor?)" ;;
+        401|403) fail mailjet "API rejected credentials (HTTP ${http_code} — regenerate key)" ;;
+        *)       fail mailjet "unexpected HTTP ${http_code}" ;;
     esac
 }
 
@@ -376,7 +379,7 @@ test_luks_tpm
 test_ssh
 test_tailscale
 test_cloudflared
-test_sendgrid
+test_mailjet
 test_pagerduty
 test_healthchecks
 
@@ -393,7 +396,7 @@ test_healthchecks
     printf '  "booted_since": "%s",\n' "${BOOTED_SINCE}"
     printf '  "results": {\n'
     first=1
-    for k in ssh tailscale cloudflared sendgrid pagerduty healthchecks; do
+    for k in ssh tailscale cloudflared mailjet pagerduty healthchecks; do
         [[ ${first} -eq 1 ]] || printf ',\n'
         first=0
         printf '    "%s": {"result": "%s", "detail": %s}' "$k" "${RESULT[$k]}" "$(jq -Rn --arg d "${DETAIL[$k]}" '$d')"
@@ -414,7 +417,7 @@ chmod 0644 "${JSON_OUT}"
     printf '\n'
     printf '%-14s  %-5s  %s\n' FEATURE RESULT DETAIL
     printf '%-14s  %-5s  %s\n' '--------------' '-----' '------------------------------'
-    for k in ssh tailscale cloudflared sendgrid pagerduty healthchecks; do
+    for k in ssh tailscale cloudflared mailjet pagerduty healthchecks; do
         printf '%-14s  %-5s  %s\n' "$k" "${RESULT[$k]}" "${DETAIL[$k]}"
     done
 } >"${TXT_OUT}"
@@ -433,31 +436,35 @@ for k in "${!RESULT[@]}"; do
 done
 
 # ===========================================================================
-# Optional: send a summary email if SendGrid is configured
+# Optional: send a summary email if Mailjet is configured
 # ===========================================================================
-if [[ -f /etc/credstore/sendgrid-api-key ]] && [[ "${SEND_SUMMARY_EMAIL}" == "yes" ]]; then
+if [[ -f /etc/credstore/mailjet_public_key ]] && [[ -f /etc/credstore/mailjet_private_key ]] && [[ "${SEND_SUMMARY_EMAIL}" == "yes" ]]; then
     say ""
-    say "sending summary email via SendGrid..."
+    say "sending summary email via Mailjet..."
     subject_prefix="RUNTIME-VALIDATE OK"
     (( fails > 0 )) && subject_prefix="RUNTIME-VALIDATE FAIL (${fails})"
     body="$(cat "${TXT_OUT}")"
     systemd-run --pipe --wait --collect \
-        --property=LoadCredential=sendgrid-api-key:/etc/credstore/sendgrid-api-key \
+        --property=LoadCredential=mailjet-public-key:/etc/credstore/mailjet_public_key \
+        --property=LoadCredential=mailjet-private-key:/etc/credstore/mailjet_private_key \
         --property=EnvironmentFile=-/etc/default/ab-monitor \
         /bin/bash -c '
-            key="$(cat "$CREDENTIALS_DIRECTORY/sendgrid-api-key")"
+            pub="$(cat "$CREDENTIALS_DIRECTORY/mailjet-public-key")"
+            priv="$(cat "$CREDENTIALS_DIRECTORY/mailjet-private-key")"
             [[ -z "${AB_MONITOR_EMAIL_TO:-}" || -z "${AB_MONITOR_EMAIL_FROM:-}" ]] && exit 0
             payload=$(jq -n \
                 --arg to "$AB_MONITOR_EMAIL_TO" \
                 --arg from "$AB_MONITOR_EMAIL_FROM" \
+                --arg from_name "${AB_MONITOR_EMAIL_FROM_NAME:-AB Monitor}" \
                 --arg subject "['"${HOST}"'] '"${subject_prefix}"'" \
                 --arg body "'"${body//\"/\\\"}"'" \
-                "{personalizations:[{to:[{email:\$to}]}], from:{email:\$from}, subject:\$subject, content:[{type:\"text/plain\", value:\$body}]}")
+                "{Messages: [{From: {Email: \$from, Name: \$from_name}, To: [{Email: \$to}], Subject: \$subject, TextPart: \$body}]}" \
+            )
             curl --silent --max-time 10 --output /dev/null \
-                -X POST https://api.sendgrid.com/v3/mail/send \
-                -H "Authorization: Bearer $key" \
+                -X POST https://api.mailjet.com/v3.1/send \
+                --user "\$pub:\$priv" \
                 -H "Content-Type: application/json" \
-                --data-raw "$payload"
+                --data-raw "\$payload"
         ' 2>/dev/null || say "  (summary email failed to send; see journal)"
 fi
 

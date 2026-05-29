@@ -86,10 +86,16 @@
         dest: "{{ remote_project_root }}"
         remote_src: true
 
+    - name: Create remote secrets directory
+      ansible.builtin.file:
+        path: "{{ remote_project_root }}/.mkosi-secrets"
+        state: directory
+        mode: '0700'
+
     - name: Render cloudbox users.json
       ansible.builtin.template:
         src: ../templates/users.json.j2
-        dest: "{{ remote_project_root }}/.users.json"
+        dest: "{{ remote_project_root }}/.mkosi-secrets/users.json"
         mode: '0600'
 
     - name: Write cloudbox host-specific kernel command line

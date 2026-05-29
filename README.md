@@ -51,10 +51,6 @@ Define your login user under the `"users.json"` key — see
 `docs/user-provisioning.md` for all supported fields and the
 `bin/hash-password.sh` helper to generate a `password_hash`.
 
-If you prefer not to use the vault, copy `.users.json.sample` to
-`.users.json`, edit it, and create `.mkosi-secrets/` manually with the
-credential files documented in `docs/local-secret-vault.md`.
-
 ### 2. Smoke test in QEMU
 
 ```sh

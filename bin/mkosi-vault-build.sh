@@ -185,7 +185,8 @@ for name in \
     ssh-authorized-keys \
     tailscale-authkey \
     cloudflared-token \
-    sendgrid-api-key \
+    mailjet_public_key \
+    mailjet_private_key \
     pagerduty-routing-key \
     healthchecks-ping-url \
     wifi-ssid \

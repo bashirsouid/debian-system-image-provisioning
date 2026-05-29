@@ -9,7 +9,7 @@ Documentation=file:///usr/local/libexec/ab-monitor/check.sh
 OnBootSec=5min
 OnUnitActiveSec=5min
 AccuracySec=30s
-# Up to 60s jitter so three rebuilt hosts do not hit SendGrid in the
+# Up to 60s jitter so three rebuilt hosts do not hit Mailjet in the
 # same TCP second.
 RandomizedDelaySec=60s
 Unit=ab-monitor.service

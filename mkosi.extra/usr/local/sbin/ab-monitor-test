@@ -6,7 +6,7 @@
 #
 # Usage:
 #   sudo ab-monitor-test                    # trigger + immediate resolve
-#   sudo ab-monitor-test --channel sendgrid # only a specific channel
+#   sudo ab-monitor-test --channel mailjet # only a specific channel
 #   sudo ab-monitor-test --keep-open        # fire trigger but do not resolve
 #
 # The test uses alert key "monitor_self_test" so real alert dedup
@@ -39,7 +39,8 @@ systemd_run_args=(
     --pipe
     --wait
     --collect
-    --property=LoadCredential=sendgrid-api-key:/etc/credstore/sendgrid-api-key
+    --property=LoadCredential=mailjet-public-key:/etc/credstore/mailjet_public_key
+    --property=LoadCredential=mailjet-private-key:/etc/credstore/mailjet_private_key
     --property=LoadCredential=pagerduty-routing-key:/etc/credstore/pagerduty-routing-key
     --property=EnvironmentFile=-/etc/default/ab-monitor
 )
@@ -76,7 +77,7 @@ systemd-run "${systemd_run_args[@]}" \
         export AB_HOST="$(hostname -s)" AB_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         export AB_DEDUP_KEY="${AB_HOST}-${AB_KEY}"
         source /etc/default/ab-monitor 2>/dev/null || true
-        for c in ${AB_MONITOR_CHANNELS:-sendgrid pagerduty}; do
+        for c in ${AB_MONITOR_CHANNELS:-mailjet pagerduty}; do
             /usr/local/libexec/ab-monitor/notifiers/${c}.sh || true
         done' || {
     echo "resolve failed" >&2; exit 4;

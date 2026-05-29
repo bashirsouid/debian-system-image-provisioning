@@ -50,7 +50,7 @@ source "${REPO_ROOT}/scripts/lib/profile-resolver.sh"
 # Every known secret category. Order matters for the summary table.
 # ssh is special: always required (no bootable image is useful without
 # it). The rest are optional unless a selected profile declares them.
-ALL_FEATURES=(ssh tailscale cloudflared sendgrid pagerduty healthchecks wifi s3-backup)
+ALL_FEATURES=(ssh tailscale cloudflared mailjet pagerduty healthchecks wifi s3-backup)
 
 declare -A STATUS
 declare -A DETAIL
@@ -219,25 +219,37 @@ if [[ -n "${NEEDED[cloudflared]+x}" ]]; then
     fi
 fi
 
-# --- OPTIONAL: sendgrid-api-key -----------------------------------------
-# sendgrid/pagerduty are consumed by the always-on ab-monitor-alert@
+# --- OPTIONAL: mailjet_public_key + mailjet_private_key -----------------
+# mailjet/pagerduty are consumed by the always-on ab-monitor-alert@
 # template regardless of profile, so they are checked whenever a
-# secret file is present. "Missing" only warns when NEEDED[sendgrid]
+# secret file is present. "Missing" only warns when NEEDED[mailjet]
 # is set (no profile declares it today; passed-through on --no-profile
 # invocations that fall back to "check everything").
 
-if sg_path="$(resolve_secret sendgrid-api-key)" && check_file_perms "${sg_path}"; then
-    sg="$(<"${sg_path}")"; sg="${sg%$'\n'}"
-    if [[ "${sg}" != SG.* ]]; then
-        fail_soft sendgrid "key does not start with 'SG.'"
-    elif [[ "${#sg}" -lt 40 ]]; then
-        fail_soft sendgrid "key looks truncated"
+mj_pub_path="$(resolve_secret mailjet_public_key 2>/dev/null || true)"
+mj_priv_path="$(resolve_secret mailjet_private_key 2>/dev/null || true)"
+
+if [[ -n "${mj_pub_path}" || -n "${mj_priv_path}" ]]; then
+    if [[ -z "${mj_pub_path}" ]]; then
+        fail_soft mailjet "mailjet_private_key present but mailjet_public_key is missing"
+    elif [[ -z "${mj_priv_path}" ]]; then
+        fail_soft mailjet "mailjet_public_key present but mailjet_private_key is missing"
     else
-        ok sendgrid "${#sg}-char key"
+        check_file_perms "${mj_pub_path}" || true
+        check_file_perms "${mj_priv_path}" || true
+        mj_pub="$(<"${mj_pub_path}")"; mj_pub="${mj_pub%$'\n'}"
+        mj_priv="$(<"${mj_priv_path}")"; mj_priv="${mj_priv%$'\n'}"
+        if [[ ! "${mj_pub}" =~ ^[A-Za-z0-9]{32}$ ]]; then
+            fail_soft mailjet "mailjet_public_key is not 32 alphanumeric chars (got ${#mj_pub})"
+        elif [[ ! "${mj_priv}" =~ ^[A-Za-z0-9]{32}$ ]]; then
+            fail_soft mailjet "mailjet_private_key is not 32 alphanumeric chars (got ${#mj_priv})"
+        else
+            ok mailjet "configured (public key=${mj_pub:0:6}...)"
+        fi
+        unset mj_pub mj_priv
     fi
-    unset sg
-elif [[ -n "${NEEDED[sendgrid]+x}" ]]; then
-    warn "sendgrid-api-key absent — alerts will NOT send email"
+elif [[ -n "${NEEDED[mailjet]+x}" ]]; then
+    warn "mailjet credentials absent — alerts will NOT send email"
 fi
 
 # --- OPTIONAL: pagerduty-routing-key ------------------------------------

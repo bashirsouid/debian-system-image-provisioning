@@ -2,7 +2,7 @@
 # /usr/local/libexec/ab-user-provision.sh
 #
 # Runs once on first boot. Reads /etc/ab-users.json (which is placed
-# there by mkosi from .users.json) and creates/updates local accounts.
+# there by mkosi from the secrets vault's users.json) and creates/updates local accounts.
 #
 # Security properties:
 #

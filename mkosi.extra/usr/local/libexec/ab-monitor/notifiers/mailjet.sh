@@ -1,27 +1,29 @@
 #!/bin/bash
-# /usr/local/libexec/ab-monitor/notifiers/sendgrid.sh
+# /usr/local/libexec/ab-monitor/notifiers/mailjet.sh
 #
 # Reads the alert envelope from AB_* env vars (set by notify.sh), reads
-# the SendGrid API key from $CREDENTIALS_DIRECTORY/sendgrid-api-key,
-# and POSTs an email via the SendGrid v3 Mail Send API.
+# the Mailjet credentials from $CREDENTIALS_DIRECTORY/mailjet_public_key
+# and $CREDENTIALS_DIRECTORY/mailjet_private_key, and POSTs an email
+# via the Mailjet v3.1 Send API.
 #
-# API docs: https://docs.sendgrid.com/api-reference/mail-send/mail-send
+# API docs: https://dev.mailjet.com/email/guides/send-api-v31/
 
 set -uo pipefail
 
 # shellcheck source=/dev/null
 source /etc/default/ab-monitor
 
-log() { printf '[sendgrid] %s\n' "$*" >&2; }
+log() { printf '[mailjet] %s\n' "$*" >&2; }
 
-: "${CREDENTIALS_DIRECTORY:?not set; sendgrid notifier must be run from a systemd unit with LoadCredential=}"
+: "${CREDENTIALS_DIRECTORY:?not set; mailjet notifier must be run from a systemd unit with LoadCredential=}"
 
-if [[ ! -r "${CREDENTIALS_DIRECTORY}/sendgrid-api-key" ]]; then
-    log "no sendgrid-api-key credential; cannot send email."
+if [[ ! -r "${CREDENTIALS_DIRECTORY}/mailjet_public_key" || ! -r "${CREDENTIALS_DIRECTORY}/mailjet_private_key" ]]; then
+    log "no mailjet credentials; cannot send email."
     exit 1
 fi
 
-API_KEY="$(cat "${CREDENTIALS_DIRECTORY}/sendgrid-api-key")"
+MJ_PUB="$(cat "${CREDENTIALS_DIRECTORY}/mailjet_public_key")"
+MJ_PRIV="$(cat "${CREDENTIALS_DIRECTORY}/mailjet_private_key")"
 
 if [[ -z "${AB_MONITOR_EMAIL_TO:-}" || -z "${AB_MONITOR_EMAIL_FROM:-}" ]]; then
     log "AB_MONITOR_EMAIL_TO / AB_MONITOR_EMAIL_FROM not set; skipping."
@@ -64,10 +66,14 @@ payload="$(jq -n \
     --arg subject "${subject}" \
     --arg text "${text_body}" \
     '{
-        personalizations: [{ to: [{ email: $to }] }],
-        from: { email: $from, name: $from_name },
-        subject: $subject,
-        content: [{ type: "text/plain", value: $text }]
+        Messages: [
+            {
+                From: { Email: $from, Name: $from_name },
+                To: [ { Email: $to } ],
+                Subject: $subject,
+                TextPart: $text
+            }
+        ]
     }')"
 
 http_code="$(curl \
@@ -75,21 +81,21 @@ http_code="$(curl \
     --max-time "${AB_MONITOR_HTTP_TIMEOUT:-10}" \
     --output /dev/null \
     --write-out '%{http_code}' \
-    -X POST https://api.sendgrid.com/v3/mail/send \
-    -H "Authorization: Bearer ${API_KEY}" \
+    -X POST https://api.mailjet.com/v3.1/send \
+    --user "${MJ_PUB}:${MJ_PRIV}" \
     -H "Content-Type: application/json" \
     --data-raw "${payload}" 2>&1)"
 rc=$?
 
-unset API_KEY
+unset MJ_PUB MJ_PRIV
 
 if (( rc != 0 )); then
     log "curl exit ${rc}"
     exit 2
 fi
 
-if [[ "${http_code}" != "202" && "${http_code}" != "200" ]]; then
-    log "SendGrid returned HTTP ${http_code}"
+if [[ "${http_code}" != "200" ]]; then
+    log "Mailjet returned HTTP ${http_code}"
     exit 3
 fi
 

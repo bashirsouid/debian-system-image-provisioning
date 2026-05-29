@@ -3,7 +3,7 @@
 Three independent paths so one failure mode never silences all of
 them:
 
-1. **Active alerts** (SendGrid email + PagerDuty paging)
+1. **Active alerts** (Mailjet email + PagerDuty paging)
    - Runs on the host via `ab-monitor.timer` every 5 minutes.
    - Detects known failure modes (Tailscale down, cloudflared down,
      SSH down, A/B stale, etc.) and sends targeted notifications.
@@ -38,7 +38,7 @@ healthchecks.io exists precisely to cover that gap. It's simple:
 you ping, it waits, if it stops getting pings it alerts. Free tier
 is enough for a handful of hosts.
 
-## Why SendGrid on top of PagerDuty
+## Why Mailjet on top of PagerDuty
 
 Two reasons:
 
@@ -49,7 +49,7 @@ Two reasons:
    have email. Belt and suspenders.
 
 If you are on a tight budget and PD is cost-prohibitive, you can
-run email-only by setting `AB_MONITOR_CHANNELS="sendgrid"` and
+run email-only by setting `AB_MONITOR_CHANNELS="mailjet"` and
 still get healthchecks.io's missed-ping escalation as the paging path.
 
 ## Dedup and escalation
@@ -116,7 +116,7 @@ Drop a file at
 `/usr/local/libexec/ab-monitor/notifiers/<name>.sh`, then include
 `<name>` in `AB_MONITOR_CHANNELS`. The notifier reads the
 `AB_*` env vars that `notify.sh` exports and POSTs/emails/calls as
-appropriate. Look at `sendgrid.sh` for the pattern.
+appropriate. Look at `mailjet.sh` for the pattern.
 
 ## OnFailure= integration
 
