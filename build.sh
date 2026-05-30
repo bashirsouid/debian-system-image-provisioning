@@ -45,6 +45,40 @@ source "$PROJECT_ROOT/scripts/lib/build-meta.sh"
 # shellcheck source=scripts/lib/profile-resolver.sh
 source "$PROJECT_ROOT/scripts/lib/profile-resolver.sh"
 
+# ── Auto-invoke through vault wrapper if needed ─────────────────────────────
+# If an encrypted vault exists and hasn't been staged yet, automatically
+# invoke ourselves through the vault build wrapper. This allows users to
+# simply call './build.sh --host x1g13' instead of having to remember
+# 'sudo bin/mkosi-vault-build.sh -- --host x1g13'.
+#
+# This check runs only once: mkosi-vault-build.sh sets a marker file in
+# .mkosi-secrets/ to signal that it was responsible for staging.
+_try_auto_vault_unlock() {
+  # Skip if vault unlocking is disabled or we're already in a vault session
+  if [[ "${AB_AUTO_VAULT_UNLOCK:-yes}" != "yes" ]]; then
+    return 0
+  fi
+  if [[ -f "$PROJECT_ROOT/.mkosi-secrets/.generated-by-mkosi-vault-build" ]]; then
+    # Already staged by the vault wrapper, don't re-invoke
+    return 0
+  fi
+  if [[ ! -f "$DEFAULT_VAULT" ]]; then
+    # No vault to unlock
+    return 0
+  fi
+  if [[ ! -r "$DEFAULT_VAULT" ]]; then
+    # Vault exists but we can't read it (permissions error will be caught later)
+    return 0
+  fi
+
+  # Check if we need sudo by testing if we can write to mkosi.output
+  if [[ ! -w "$PROJECT_ROOT/mkosi.output" && "$(id -u)" != "0" ]]; then
+    # We need sudo and we're not root, re-invoke through vault wrapper
+    # The vault wrapper will handle decryption and re-run us
+    exec sudo "$PROJECT_ROOT/bin/mkosi-vault-build.sh" -- "${ORIGINAL_ARGS[@]}"
+  fi
+}
+
 PROFILE="devbox"
 HOST=""
 HOSTNAME_ARG=""
@@ -1509,6 +1543,9 @@ echo "==> Starting mkosi build (profile: $PROFILE${HOST:+, host: $HOST}, force: 
 
 BUILD_TARGETS=()
 
+# Try to auto-unlock vault if it exists and hasn't been staged yet
+_try_auto_vault_unlock
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)
@@ -1661,12 +1698,13 @@ if [[ ! -f "$USERS_FILE" ]]; then
 ERROR: $USERS_FILE is missing.
 
 Users are defined in the encrypted secrets vault and staged into
-.mkosi-secrets/ at build time. The recommended workflow:
+.mkosi-secrets/ at build time. When you run build.sh, it will automatically
+unlock the vault and stage the secrets for you.
 
-  bin/mkosi-vault-build.sh -- ${HOST:+--host $HOST}${HOST:- --profile devbox}
-
-This decrypts secrets/mkosi-secrets.json.age into .mkosi-secrets/,
-runs ./build.sh, and cleans up afterwards.
+To build, simply use:
+  ./build.sh --host x1g13
+or for QEMU:
+  ./build.sh
 
 If you haven't set up the vault yet:
   bin/mkosi-vault-init.sh            # one-time: create the age vault
@@ -1677,6 +1715,9 @@ docs/user-provisioning.md for the full field reference.
 
 Generate a password_hash with:
   ./bin/hash-password.sh --hash-only
+
+If vault unlocking should be disabled for this invocation:
+  AB_AUTO_VAULT_UNLOCK=no ./build.sh ...
 EOF
   exit 1
 fi
