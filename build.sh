@@ -54,29 +54,25 @@ source "$PROJECT_ROOT/scripts/lib/profile-resolver.sh"
 # This check runs only once: mkosi-vault-build.sh sets a marker file in
 # .mkosi-secrets/ to signal that it was responsible for staging.
 _try_auto_vault_unlock() {
-  # Skip if vault unlocking is disabled or we're already in a vault session
+  # Skip if vault unlocking is disabled
   if [[ "${AB_AUTO_VAULT_UNLOCK:-yes}" != "yes" ]]; then
     return 0
   fi
+  # Skip if already in a vault session
   if [[ -f "$PROJECT_ROOT/.mkosi-secrets/.generated-by-mkosi-vault-build" ]]; then
-    # Already staged by the vault wrapper, don't re-invoke
     return 0
   fi
+  # Skip if no vault exists
   if [[ ! -f "$DEFAULT_VAULT" ]]; then
-    # No vault to unlock
     return 0
   fi
+  # Skip if we can't read the vault
   if [[ ! -r "$DEFAULT_VAULT" ]]; then
-    # Vault exists but we can't read it (permissions error will be caught later)
     return 0
   fi
 
-  # Check if we need sudo by testing if we can write to mkosi.output
-  if [[ ! -w "$PROJECT_ROOT/mkosi.output" && "$(id -u)" != "0" ]]; then
-    # We need sudo and we're not root, re-invoke through vault wrapper
-    # The vault wrapper will handle decryption and re-run us
-    exec sudo "$PROJECT_ROOT/bin/mkosi-vault-build.sh" -- "${ORIGINAL_ARGS[@]}"
-  fi
+  # Always invoke through vault wrapper if vault exists and hasn't been staged
+  exec "$PROJECT_ROOT/bin/mkosi-vault-build.sh" -- "${ORIGINAL_ARGS[@]}"
 }
 
 PROFILE="devbox"

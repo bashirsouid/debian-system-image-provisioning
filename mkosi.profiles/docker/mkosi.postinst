@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Docker profile (default kernel): clean up broken initramfs hook and ensure module compatibility
+#
+# This script runs inside the mkosi chroot after package installation.
+
+set -euo pipefail
+
+if [[ "${container:-}" != "mkosi" ]]; then
+    exec mkosi-chroot "$CHROOT_SCRIPT" "$@"
+fi
+
+stage="${1:-final}"
+[[ "$stage" == "final" ]] || exit 0
+
+# Remove broken lnl-firmware hook if present (prevents initramfs build failures)
+if [[ -f /etc/initramfs-tools/hooks/lnl-firmware ]]; then
+    echo "==> [docker/postinst] Removing broken lnl-firmware hook"
+    rm -f /etc/initramfs-tools/hooks/lnl-firmware
+fi

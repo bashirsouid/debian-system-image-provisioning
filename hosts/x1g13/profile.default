@@ -1,4 +1,5 @@
 kernel-6-18
+docker-kernel-6-18
 thinkpad-g13
 laptop-screen
 display-manager-gdm3
@@ -23,7 +24,6 @@ intel-npu
 flatpak
 digikam
 zoom-web
-docker
 symlink-docker
 symlink-k3s
 user-power-control
