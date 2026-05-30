@@ -14,9 +14,26 @@
 set -euo pipefail
 
 # Source shared library
-source "${SRCDIR:-/mnt/data/Transfer/my-mkosi-test}/scripts/finalize-lib.sh"
+# SRCDIR is set by mkosi to /work/src, but scripts/ may not be visible there.
+# Use AB_PROJECT_ROOT as a fallback since scripts/ is not gitignored.
+if [[ -d "${SRCDIR}/scripts" ]]; then
+    source "${SRCDIR}/scripts/finalize-lib.sh"
+elif [[ -n "${AB_PROJECT_ROOT:-}" && -d "${AB_PROJECT_ROOT}/scripts" ]]; then
+    source "${AB_PROJECT_ROOT}/scripts/finalize-lib.sh"
+else
+    # Fallback: compute from script location (works when script runs from original location)
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "${SCRIPT_DIR}/../scripts/finalize-lib.sh"
+fi
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Determine project root for accessing .secureboot keys
+# When finalize scripts run in a sandbox (SRCDIR=/work/src), .secureboot is not
+# visible there because it's gitignored. Use AB_PROJECT_ROOT when available.
+if [[ -n "${AB_PROJECT_ROOT:-}" ]]; then
+    PROJECT_ROOT="$AB_PROJECT_ROOT"
+else
+    PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
 KEY_DIR="${PROJECT_ROOT}/.secureboot"
 
 # Check if Secure Boot key exists (opt-in for SB-enabled builds)

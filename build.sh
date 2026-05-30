@@ -1419,8 +1419,14 @@ EOF
     mkosi_args+=("--profile=$p")
   done
 
-  # SYSTEMD_OFFLINE=1 tells systemctl to treat itself as if no system
-  # bus is reachable, which is exactly the case inside mkosi's build
+# Pass project root to finalize scripts so they can access .secureboot keys.
+# finalize scripts run with BuildSources mounted at /work/src where gitignored
+# paths (like .secureboot/) are not visible. AB_PROJECT_ROOT lets scripts find
+# the actual project directory on the build host.
+mkosi_args+=("--environment=AB_PROJECT_ROOT=$PROJECT_ROOT")
+
+# SYSTEMD_OFFLINE=1 tells systemctl to treat itself as if no system
+# bus is reachable, which is exactly the case inside mkosi's build
   # sandbox (no PID1, no /run/dbus). Without it, package postinst
   # scripts that do `systemctl enable --now <unit>` (e.g. t2fanrd)
   # try to actually START the unit, fail to talk to a non-existent
