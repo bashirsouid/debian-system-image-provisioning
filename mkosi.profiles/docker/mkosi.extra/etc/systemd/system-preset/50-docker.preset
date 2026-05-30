@@ -1,0 +1,2 @@
+# Docker profile: enable Docker daemon by default
+enable docker.service

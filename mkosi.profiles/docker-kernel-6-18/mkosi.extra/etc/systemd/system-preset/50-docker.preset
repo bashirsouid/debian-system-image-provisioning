@@ -1,0 +1,2 @@
+# docker-kernel-6-18 profile: enable Docker daemon by default
+enable docker.service
