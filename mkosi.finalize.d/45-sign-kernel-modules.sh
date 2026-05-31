@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 # Sign kernel modules for Secure Boot compatibility.
 #
-# When Secure Boot is enabled in integrity lockdown mode, unsigned kernel
-# modules cannot be loaded. This script signs all kernel modules in the image
-# with the Secure Boot db key so they load under Secure Boot + lockdown.
+# IMPORTANT: this script only signs modules that are NOT already signed.
+#
+# Distribution kernels (Debian, Ubuntu, etc.) ship modules pre-signed with the
+# distro's key, which is embedded in the kernel's built-in trusted keyring.
+# Those modules load fine under Secure Boot lockdown without any action here.
+#
+# If we appended a second signature with our custom key, the kernel would check
+# only the LAST signature — overriding the distro's trusted signature with ours,
+# which is not in the built-in keyring.  That breaks every distro module.
+#
+# We therefore skip already-signed modules and only sign unsigned ones (DKMS /
+# out-of-tree modules).  For those to load, enroll the key on the target machine:
+#   mokutil --import .secureboot/db.crt
 #
 # Environment variables (set by mkosi / build.sh --environment):
 #   BUILDROOT               - mkosi image root (required, set by mkosi)
@@ -43,8 +53,8 @@ if [[ ! -d "$MODULES_DIR" ]]; then
 fi
 
 # Find sign-file on the build host. Prefer a version matching the image kernel;
-# fall back to any installed linux-headers. sign-file does not need to match the
-# image kernel version — it only performs the cryptographic operation.
+# fall back to any installed linux-headers. sign-file only does crypto — it does
+# not need to match the image kernel version.
 SIGNFILE=""
 for kernel_dir in "$MODULES_DIR"/*/; do
     kver="$(basename "$kernel_dir")"
@@ -75,11 +85,19 @@ if [[ -z "$SIGNFILE" ]]; then
     exit 0
 fi
 
-echo "==> [FINALIZE] Signing kernel modules with key: ${KEY_DIR}/db.key"
+echo "==> [FINALIZE] Scanning for unsigned kernel modules (key: ${KEY_DIR}/db.key)"
 
 MOD_COUNT=0
 MOD_SIGNED=0
+MOD_SKIPPED=0
 MOD_FAILED=0
+
+# Detect whether a decompressed .ko file already has a module signature.
+# MODULE_SIG_STRING = "~Module signature appended~\n" is always the last 28
+# bytes of a signed module file.
+_ko_is_signed() {
+    tail -c 28 "$1" 2>/dev/null | grep -qF '~Module signature appended~'
+}
 
 _sign_module() {
     local mod="$1"
@@ -88,26 +106,46 @@ _sign_module() {
     if [[ "$mod" == *.ko.xz ]]; then
         local tmp
         tmp="$(mktemp)"
-        if xz -dc "$mod" > "$tmp" \
-           && "$SIGNFILE" sha256 "$KEY_DIR/db.key" "$KEY_DIR/db.crt" "$tmp" \
-           && xz --check=crc32 -6 "$tmp" \
-           && mv "${tmp}.xz" "$mod"; then
-            sign_ok=true
+        if xz -dc "$mod" > "$tmp"; then
+            if _ko_is_signed "$tmp"; then
+                MOD_SKIPPED=$((MOD_SKIPPED + 1))
+                rm -f "$tmp"
+                return 0
+            fi
+            # Unsigned module: sign then recompress.
+            # xz --check=crc32 matches scripts/Makefile.modinst in the kernel
+            # tree — the Debian kernel has CONFIG_XZ_DEC_CRC64 disabled, so
+            # the default CRC64 produces XZ_OPTIONS_ERROR on module load.
+            if "$SIGNFILE" sha256 "$KEY_DIR/db.key" "$KEY_DIR/db.crt" "$tmp" \
+               && xz --check=crc32 -6 "$tmp" \
+               && mv "${tmp}.xz" "$mod"; then
+                sign_ok=true
+            fi
         fi
         rm -f "$tmp" "${tmp}.xz" 2>/dev/null || true
 
     elif [[ "$mod" == *.ko.zst ]]; then
         local tmp
         tmp="$(mktemp)"
-        if zstd -d --stdout "$mod" > "$tmp" \
-           && "$SIGNFILE" sha256 "$KEY_DIR/db.key" "$KEY_DIR/db.crt" "$tmp" \
-           && zstd -T0 -19 "$tmp" \
-           && mv "${tmp}.zst" "$mod"; then
-            sign_ok=true
+        if zstd -d --stdout "$mod" > "$tmp"; then
+            if _ko_is_signed "$tmp"; then
+                MOD_SKIPPED=$((MOD_SKIPPED + 1))
+                rm -f "$tmp"
+                return 0
+            fi
+            if "$SIGNFILE" sha256 "$KEY_DIR/db.key" "$KEY_DIR/db.crt" "$tmp" \
+               && zstd -T0 -19 "$tmp" \
+               && mv "${tmp}.zst" "$mod"; then
+                sign_ok=true
+            fi
         fi
         rm -f "$tmp" "${tmp}.zst" 2>/dev/null || true
 
     elif [[ "$mod" == *.ko ]]; then
+        if _ko_is_signed "$mod"; then
+            MOD_SKIPPED=$((MOD_SKIPPED + 1))
+            return 0
+        fi
         if "$SIGNFILE" sha256 "$KEY_DIR/db.key" "$KEY_DIR/db.crt" "$mod"; then
             sign_ok=true
         fi
@@ -127,7 +165,7 @@ while IFS= read -r mod; do
     _sign_module "$mod"
 done < <(find "$MODULES_DIR" \( -name "*.ko" -o -name "*.ko.xz" -o -name "*.ko.zst" \) -type f 2>/dev/null)
 
-echo "==> [FINALIZE] Signed ${MOD_SIGNED}/${MOD_COUNT} kernel modules (${MOD_FAILED} failed)"
+echo "==> [FINALIZE] Modules: ${MOD_COUNT} total, ${MOD_SIGNED} newly signed, ${MOD_SKIPPED} skipped (already signed), ${MOD_FAILED} failed"
 
 if [[ "$MOD_FAILED" -gt 0 ]]; then
     if [[ "$SB_REQUIRED" == "yes" ]]; then
