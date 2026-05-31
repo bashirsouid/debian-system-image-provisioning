@@ -965,6 +965,25 @@ ensure_secureboot_hostdeps() {
     ab_hostdeps_ensure_packages "Secure Boot signing tools" sbsigntool || exit 1
   fi
   ab_hostdeps_ensure_commands "Secure Boot signing tools" sbsign || exit 1
+
+  # Kernel module signing requires sign-file from linux-headers (not in PATH).
+  local _signfile_found=false
+  local _hdr_dir
+  for _hdr_dir in /usr/src/linux-headers-*; do
+    if [[ -x "${_hdr_dir}/scripts/sign-file" ]]; then
+      _signfile_found=true
+      break
+    fi
+  done
+  if [[ "$_signfile_found" != true ]]; then
+    cat >&2 <<'EOF'
+ERROR: sign-file not found in /usr/src/linux-headers-*/scripts/
+Kernel module signing requires sign-file from the linux-headers package.
+Install it on the build host:
+  apt-get install linux-headers-$(uname -r)
+EOF
+    exit 1
+  fi
 }
 
 verify_secureboot_signature() {
@@ -1155,6 +1174,7 @@ build_target() {
   local target_image_id target_force
   local host_dir checksum_file old_checksum built_image_path built_image_basename expected_image_path
   local generate_hostname_overlay=false
+  local sb_required=false
   local extra_args=() mkosi_args=()
 
   PROFILE="$target_profile"
@@ -1226,7 +1246,8 @@ EOF
         exit 1
       fi
       ensure_secureboot_hostdeps
-      echo "==> Secure Boot: enabled. UKI will be signed with .secureboot/db.key"
+      sb_required=true
+      echo "==> Secure Boot: enabled. UKI and kernel modules will be signed with .secureboot/db.key"
     else
       cat >&2 <<EOF
 ERROR: host $HOST has neither a Secure Boot configuration nor an
@@ -1419,11 +1440,17 @@ EOF
     mkosi_args+=("--profile=$p")
   done
 
-# Pass project root to finalize scripts so they can access .secureboot keys.
-# finalize scripts run with BuildSources mounted at /work/src where gitignored
-# paths (like .secureboot/) are not visible. AB_PROJECT_ROOT lets scripts find
-# the actual project directory on the build host.
+# Pass project root as a fallback for finalize scripts that need to reach
+# .secureboot/ (which is gitignored). Finalize scripts normally access it via
+# $SRCDIR, but AB_PROJECT_ROOT is kept as a belt-and-suspenders fallback.
 mkosi_args+=("--environment=AB_PROJECT_ROOT=$PROJECT_ROOT")
+
+# Tell 45-sign-kernel-modules.sh whether signing is required. When "yes", any
+# missing key, missing sign-file, or individual module signing failure aborts
+# the build immediately rather than silently producing an unsigned image.
+if [[ "$sb_required" == true ]]; then
+  mkosi_args+=("--environment=AB_SECUREBOOT_ENABLED=yes")
+fi
 
 # SYSTEMD_OFFLINE=1 tells systemctl to treat itself as if no system
 # bus is reachable, which is exactly the case inside mkosi's build

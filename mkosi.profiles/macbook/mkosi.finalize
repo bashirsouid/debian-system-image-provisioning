@@ -87,23 +87,6 @@ if (( ${#_t2_module_dirs_cs[@]} > 0 )); then
   _cs8409_stock="$ROOT/usr/lib/modules/$_t2_kver_cs/kernel/sound/hda/codecs/cirrus/snd-hda-codec-cs8409.ko.xz"
   _cs8409_dkms="$ROOT/lib/modules/$_t2_kver_cs/updates/dkms/snd-hda-codec-cs8409.ko.xz"
 
-  _t2_snd_tmp="$(mktemp -d)"
-  
-  # Note: The CS8409 module is already built via DKMS in the BUILD stage.
-  # The finalize stage would patch it, but due to kernel source extraction
-  # complexity across versions, we make this optional/non-fatal.
-  # The stock module works; custom patches are an enhancement, not critical.
-  
-  if git clone --depth=1 \
-      https://github.com/davidjo/snd_hda_macbookpro.git \
-      "$_t2_snd_tmp/snd_hda_macbookpro" 2>&1; then
-    echo "==> [FINALIZE] CS8409 repo cloned; skipping optional custom build"
-    echo "    (Stock DKMS module from BUILD stage is sufficient)"
-  else
-    echo "WARNING: [FINALIZE] could not clone davidjo/snd_hda_macbookpro; using stock module" >&2
-  fi
-  rm -rf "$_t2_snd_tmp"
-  
   if [[ ! -f "$_cs8409_dkms" ]]; then
     echo "WARNING: [FINALIZE] CS8409 DKMS module not found at $_cs8409_dkms" >&2
     echo "         The stock kernel module will be used instead" >&2
