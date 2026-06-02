@@ -1,5 +1,7 @@
-kernel-amd64
-docker
+#kernel-amd64
+#docker
+kernel-6-18
+docker-kernel-6-18
 thinkpad-g13
 laptop-screen
 display-manager-gdm3
