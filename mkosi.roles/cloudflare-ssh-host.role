@@ -1,0 +1,6 @@
+# cloudflare-ssh-host role — SSH server with Cloudflare Tunnel backup access.
+# This is the "Cloudbox host" image: runs sshd locally and establishes
+# an outbound Cloudflare Tunnel for backup SSH access when Tailscale is
+# unavailable.
+ssh-server
+cloudflare-tunnel

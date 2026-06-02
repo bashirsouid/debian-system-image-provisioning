@@ -1,0 +1,4 @@
+# ssh-client-cloudbox role — Client machine with Cloudflare SSH access.
+# Use this profile for machines that need to SSH into Cloudbox hosts
+# via the Cloudflare Tunnel backup path.
+ssh-client-cloudbox-profile

@@ -1,0 +1,2 @@
+description="SSH client configuration for Cloudflare Tunnel access. Adds ProxyCommand to /etc/ssh/ssh_config.d/ so any SSH connection to the tunnel hostname automatically routes through cloudflared."
+uses_secrets=""
