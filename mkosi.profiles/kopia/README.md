@@ -1,5 +1,5 @@
-# ${d%/}
+# kopia
 
-This profile configures ${d%/} related settings for mkosi.
+This profile configures kopia related settings for mkosi.
 
 No secret values are required unless otherwise documented.

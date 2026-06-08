@@ -1,5 +1,5 @@
-# ${d%/}
+# timezone-los-angeles
 
-This profile configures ${d%/} related settings for mkosi.
+This profile configures timezone-los-angeles related settings for mkosi.
 
 No secret values are required unless otherwise documented.
