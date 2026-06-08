@@ -7,6 +7,7 @@ laptop-screen
 display-manager-gdm3
 awesomewm
 dev-tools
+dev-mkosi
 dev-ansible
 devbox
 audio-pipewire
