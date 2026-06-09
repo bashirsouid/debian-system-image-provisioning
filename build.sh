@@ -44,6 +44,8 @@ source "$PROJECT_ROOT/scripts/lib/host-deps.sh"
 source "$PROJECT_ROOT/scripts/lib/build-meta.sh"
 # shellcheck source=scripts/lib/profile-resolver.sh
 source "$PROJECT_ROOT/scripts/lib/profile-resolver.sh"
+# shellcheck source=scripts/lib/host-descriptor.sh
+source "$PROJECT_ROOT/scripts/lib/host-descriptor.sh"
 
 # ── Auto-invoke through vault wrapper if needed ─────────────────────────────
 # If an encrypted vault exists and hasn't been staged yet, automatically
@@ -96,6 +98,11 @@ BASE_IMAGE_ID="${AB_IMAGE_ID:-deb-ab}"
 IMAGE_VERSION=""
 TARGET_ARCH=""
 HOST_KERNEL_ARGS=""
+# Overlay directory for the current --host target. Set per-target in
+# build_target() via ab_host_descriptor_materialize: either a synthetic
+# dir rendered from hosts.local/<host>.conf, or the legacy hosts/<host>/
+# path when no descriptor exists. Empty for no-host (QEMU) builds.
+HOST_BASE=""
 CURRENT_CHECKSUM=""
 NON_INTERACTIVE=false
 ALLOW_ROOT_LOGIN=false
@@ -219,7 +226,10 @@ read_architecture_from_configs() {
   local file
   TARGET_ARCH=""
 
-  for file in "$PROJECT_ROOT/mkosi.conf" "$PROJECT_ROOT/hosts/$HOST"/mkosi.conf.d/*.conf; do
+  # $HOST_BASE is the resolved overlay dir (descriptor or legacy); empty
+  # for no-host builds, in which case the host glob below simply matches
+  # nothing and the [[ -f ]] guard skips the unexpanded pattern.
+  for file in "$PROJECT_ROOT/mkosi.conf" "$HOST_BASE"/mkosi.conf.d/*.conf; do
     [[ -f "$file" ]] || continue
     value="$(awk -F= '
       /^[[:space:]]*Architecture[[:space:]]*=/ {
@@ -239,8 +249,8 @@ read_architecture_from_configs() {
 
 read_host_kernel_args() {
   local path
-  path="$PROJECT_ROOT/hosts/$HOST/kernel-cmdline.extra"
-  if [[ -n "$HOST" && -f "$path" ]]; then
+  path="$HOST_BASE/kernel-cmdline.extra"
+  if [[ -n "$HOST" && -n "$HOST_BASE" && -f "$path" ]]; then
     HOST_KERNEL_ARGS="$(tr '\n' ' ' < "$path" | xargs echo -n)"
   else
     HOST_KERNEL_ARGS=""
@@ -594,7 +604,9 @@ resolve_dotfiles_repo_spec() {
 host_has_persistent_home() {
   local host="$1"
   [[ -n "$host" ]] || return 1
-  local fstab="$PROJECT_ROOT/hosts/$host/mkosi.extra/etc/fstab"
+  # $HOST_BASE is the current target's resolved overlay dir (descriptor
+  # or legacy), set in build_target() before this is reached.
+  local fstab="$HOST_BASE/mkosi.extra/etc/fstab"
   [[ -f "$fstab" ]] || return 1
   awk '!/^[[:space:]]*#/ && NF >= 2 && $2 == "/home" { found=1; exit }
        END { exit !found }' "$fstab"
@@ -845,9 +857,9 @@ image_id_for_target() {
   local profile="$2"
   local host="$3"
 
-  if [[ -n "$host" && -f "$PROJECT_ROOT/hosts/$host/image-id-suffix" ]]; then
+  if [[ -n "$host" && -f "$HOST_BASE/image-id-suffix" ]]; then
     local alias
-    alias="$(sed -e 's/[[:space:]]*#.*$//' "$PROJECT_ROOT/hosts/$host/image-id-suffix" \
+    alias="$(sed -e 's/[[:space:]]*#.*$//' "$HOST_BASE/image-id-suffix" \
              | awk 'NF{print;exit}' | tr -d '[:space:]')"
     if [[ -n "$alias" ]]; then
       printf '%s-%s\n' "$base" "$(sanitize_image_component "$alias")"
@@ -906,6 +918,7 @@ compute_config_checksum() {
     mkosi.sysupdate
     deploy.repart
     hosts
+    hosts.local
     third-party
     docs
     scripts
@@ -995,9 +1008,9 @@ verify_secureboot_signature() {
     return 1
   fi
   
-  local sb_drop_in="$PROJECT_ROOT/hosts/$host/mkosi.conf.d/30-secure-boot.conf"
-  local sb_disabled="$PROJECT_ROOT/hosts/$host/secure-boot.disabled"
-  
+  local sb_drop_in="$HOST_BASE/mkosi.conf.d/30-secure-boot.conf"
+  local sb_disabled="$HOST_BASE/secure-boot.disabled"
+
   # Check if Secure Boot is enabled for this host
   if [[ -f "$sb_disabled" ]]; then
     # Secure Boot explicitly disabled, no verification needed
@@ -1184,6 +1197,16 @@ build_target() {
   HOST_KERNEL_ARGS=""
   target_force="$MKOSI_FORCE"
 
+  # Resolve the host overlay directory once per target. With a
+  # hosts.local/<host>.conf descriptor this renders a synthetic overlay
+  # under .mkosi-host/<host>/; without one it's the legacy hosts/<host>/
+  # path. Everything below reads host files through $HOST_BASE.
+  if [[ -n "$HOST" ]]; then
+    HOST_BASE="$(ab_host_descriptor_materialize "$PROJECT_ROOT" "$HOST")"
+  else
+    HOST_BASE=""
+  fi
+
   # Expand any roles in the raw profile list to atomic mkosi profiles,
   # validate each token, and dedupe. Everything downstream (mkosi
   # invocation, per-profile hostdeps, image-id suffix) operates on the
@@ -1196,8 +1219,8 @@ build_target() {
 
   ensure_profile_hostdeps "$PROFILE"
 
-  if [[ -n "$HOST" && ! -d "$PROJECT_ROOT/hosts/$HOST" ]]; then
-    echo "ERROR: host directory hosts/$HOST not found" >&2
+  if [[ -n "$HOST" && ! -d "$HOST_BASE" ]]; then
+    echo "ERROR: no host overlay for '$HOST' (looked for hosts.local/$HOST.conf and hosts/$HOST/)" >&2
     exit 1
   fi
 
@@ -1205,7 +1228,7 @@ build_target() {
     BUILD_HOSTNAME="$HOSTNAME_ARG"
     generate_hostname_overlay=true
   elif [[ -n "$HOST" ]]; then
-    local host_hostname_file="$PROJECT_ROOT/hosts/$HOST/mkosi.extra/etc/hostname"
+    local host_hostname_file="$HOST_BASE/mkosi.extra/etc/hostname"
     if [[ -f "$host_hostname_file" ]]; then
       BUILD_HOSTNAME="$(awk 'NF{print; exit}' "$host_hostname_file")"
     fi
@@ -1223,8 +1246,8 @@ build_target() {
   # No-host builds (QEMU smoke test) are exempt: they exercise image
   # contents, not the boot-trust chain, and are never flashed.
   if [[ -n "$HOST" ]]; then
-    local sb_drop_in="$PROJECT_ROOT/hosts/$HOST/mkosi.conf.d/30-secure-boot.conf"
-    local sb_disabled="$PROJECT_ROOT/hosts/$HOST/secure-boot.disabled"
+    local sb_drop_in="$HOST_BASE/mkosi.conf.d/30-secure-boot.conf"
+    local sb_disabled="$HOST_BASE/secure-boot.disabled"
     local sb_key="$PROJECT_ROOT/.secureboot/db.key"
     local sb_cert="$PROJECT_ROOT/.secureboot/db.crt"
 
@@ -1392,7 +1415,7 @@ EOF
   fi
 
   if [[ -n "$HOST" ]]; then
-    host_dir="hosts/$HOST"
+    host_dir="$HOST_BASE"
     echo "==> Including host-specific config for: $HOST"
     [[ -d "$host_dir/mkosi.conf.d" ]] && extra_args+=("--include=$host_dir/mkosi.conf.d")
     if [[ -d "$host_dir/mkosi.extra" ]]; then
@@ -1425,8 +1448,8 @@ EOF
   # Link host-specific mkosi config drop-ins into the main mkosi.conf.d/
   # so they get merged with the base config
   local host_config_links=()
-  if [[ -n "$HOST" && -d "$PROJECT_ROOT/hosts/$HOST/mkosi.conf.d" ]]; then
-    for host_conf in "$PROJECT_ROOT/hosts/$HOST/mkosi.conf.d"/*.conf; do
+  if [[ -n "$HOST" && -d "$HOST_BASE/mkosi.conf.d" ]]; then
+    for host_conf in "$HOST_BASE/mkosi.conf.d"/*.conf; do
       if [[ -f "$host_conf" ]]; then
         local conf_name="$(basename "$host_conf")"
         local link_target="$PROJECT_ROOT/mkosi.conf.d/${HOST}-${conf_name}"

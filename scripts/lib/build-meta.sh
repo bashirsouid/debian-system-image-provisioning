@@ -140,8 +140,32 @@ ab_buildmeta_update_latest_symlinks() {
 ab_buildmeta_host_default_profile() {
   local project_root="$1"
   local host="$2"
-  local path value
+  local path desc
   [[ -n "$host" ]] || return 0
+
+  # Prefer a host *instance descriptor* (hosts.local/<host>.conf — the
+  # plaintext, non-secret per-machine config). Its `profiles =` line is
+  # the source of truth when present; the legacy
+  # hosts/<host>/profile.default is the fallback for un-migrated hosts.
+  # Parsed with awk (never sourced) so a malformed descriptor cannot run
+  # code. Kept self-contained here (no extra `source`) so run.sh and the
+  # live-test/rollback tools that call this on bash 3.2 keep working.
+  desc="$project_root/hosts.local/$host.conf"
+  if [[ -f "$desc" ]]; then
+    awk '
+      /^[[:space:]]*#/ { next }
+      match($0, /^[[:space:]]*profiles[[:space:]]*=/) {
+        v = substr($0, RLENGTH + 1)
+        sub(/[[:space:]]+#.*$/, "", v)
+        sub(/^[[:space:]]+/, "", v)
+        sub(/[[:space:]]+$/, "", v)
+        print v
+        exit
+      }
+    ' "$desc"
+    return 0
+  fi
+
   path="$project_root/hosts/$host/profile.default"
   [[ -f "$path" ]] || return 0
   # Read all non-comment tokens from the file.

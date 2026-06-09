@@ -20,6 +20,15 @@ secrets/*.json
 .vault_pass
 .vault_pass.*
 
+# Host instance descriptors (plaintext, non-secret, but personal — they
+# name your machines/profiles/backup paths). Committed template lives in
+# hosts.local.example/. .mkosi-host/ is the synthetic overlay build.sh
+# renders from a descriptor at build time.
+/hosts.local/
+!/hosts.local.example/
+!/hosts.local.example/**
+.mkosi-host/
+
 # Build outputs & cache
 mkosi.cache/
 mkosi.pkgcache/
