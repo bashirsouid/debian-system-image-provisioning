@@ -1,0 +1,12 @@
+# /etc/default/cloud-backup
+# Configuration for periodic Kopia cloud backup.
+
+KOPIA_BACKUP_TYPE=s3
+
+# Default upload limits and parallelism
+KOPIA_UPLOAD_LIMIT_MB_DEFAULT=100000
+KOPIA_PARALLEL_DEFAULT=16
+
+# Config/cache overrides
+KOPIA_CONFIG_PATH=/var/lib/kopia/cloud.config
+KOPIA_CACHE_DIR=/var/cache/kopia/cloud

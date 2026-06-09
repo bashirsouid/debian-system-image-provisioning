@@ -47,9 +47,9 @@ Profile directories currently in the tree:
 | `healthchecksio` | Dead-man's-switch heartbeat to healthchecks.io |
 | `incus` | System containers / VMs |
 | `k3s` | *(stub)* single-node Kubernetes |
-| `kopia` | Kopia backup CLI (apt-source wired) |
-| `cloud-backup` | Periodic cloud backup service using kopia-backup-trigger |
-| `home-server-backup` | Periodic home server backup service using kopia-backup-trigger |
+| `kopia` | Kopia backup CLI + `kopia` system user (UID 5000) + `archivereaders` group (see [Kopia backup stack](#kopia-backup-stack) below) |
+| `cloud-backup` | Hourly S3 cloud backup service — requires `kopia` profile (see [Kopia backup stack](#kopia-backup-stack)) |
+| `home-server-backup` | Hourly local/onsite filesystem backup service — requires `kopia` profile (see [Kopia backup stack](#kopia-backup-stack)) |
 | `kernel-6-18` | Linux 6.18.x kernel from trixie-backports |
 | `macbook` | Apple T2 hardware: kernel, firmware, t2fanrd |
 | `s3-unencrypted-backup` | Hourly upload of configured files to S3-compatible storage (no encryption) |
@@ -80,6 +80,180 @@ Stubs come in two flavors:
 
 Either way, `profile.manifest` is the permanent handle; the package
 list is the work-in-progress piece.
+
+---
+
+## Kopia backup stack
+
+Three profiles work together to provide encrypted, deduplicated backups
+with automatic repository initialization, comprehensive exclude patterns,
+and failure alerting.
+
+| Profile | What it provides |
+| --- | --- |
+| `kopia` | Installs the Kopia CLI binary (third-party apt source), creates the `kopia` system user/group (UID/GID 5000) and the `archivereaders` supplemental group, and drops in `kopia-backup-trigger` — the main backup execution script. |
+| `cloud-backup` | Adds `cloud-backup.service` + `cloud-backup.timer` (hourly) for backing up to an S3-compatible endpoint. |
+| `home-server-backup` | Adds `home-server-backup.service` + `home-server-backup.timer` (hourly) for backing up to one or more local filesystem destinations (USB drives, SD cards, external disks). |
+
+`cloud-backup` and `home-server-backup` both depend on the `kopia`
+profile. Include all three in a host's `profile.default`, or use the
+`backup` role which bundles them.
+
+### Dedicated backup user
+
+Backups run as `User=kopia` / `Group=kopia`, never as root. The unit
+files grant `AmbientCapabilities=CAP_DAC_READ_SEARCH` so the kopia
+process can read all files on the system (including other users' home
+directories) without write or administrative privileges. The user is
+provisioned via `systemd-sysusers` at image build time through
+`/usr/lib/sysusers.d/kopia.conf`.
+
+### Repository auto-initialization
+
+`kopia-backup-trigger` checks repository connectivity on every run.
+If Kopia is not connected to the target repository, the script
+automatically attempts `kopia repository connect`. If that fails
+(first-ever run), it falls back to `kopia repository create`. This
+means a freshly provisioned host will self-bootstrap its backup
+repositories on the first timer tick — no manual `kopia repository
+create` step required.
+
+### Global policies and excludes
+
+On every run, `kopia-backup-trigger` applies a global policy set that
+mirrors the Ansible `kopia_backup_excludes` defaults:
+
+* **Compression**: `zstd`
+* **Retention**: 90 daily snapshots, no hourly/weekly/monthly/annual
+* **Dot-ignore**: `nobackup` (any directory containing a file named
+  `nobackup` is skipped)
+* **80+ ignore patterns** including:
+  * Build artifacts: `node_modules/`, `snap/`, `models/`, `bin/`
+  * Caches and history: `*.cache`, `*.bak`, `*.db`, `.bash_history`,
+    `.zsh_history`, `.viminfo`, `.python_history`
+  * Desktop state: `.local/`, `.config/`, `.var/`, `.gnome/`, `.mozilla/`
+  * Credentials: `.ssh/`, `.gnupg/`, `.cloudflared`, `.netrc`, `*.cert`,
+    `*.key`
+  * Large/irrelevant: `.docker/`, `.rustup/`, `.nvm/`, `anaconda3/`,
+    `VirtualBox VMs/`, `SteamLibrary/`, `GOG Games/`
+
+The full list is defined in the `set_global_policies()` function inside
+`kopia-backup-trigger`.
+
+### Filesystem destinations (`kopia-backup-destinations.json`)
+
+For `home-server-backup`, the script reads a JSON array from
+`/etc/kopia-backup-destinations.json`. Each entry describes one backup
+target:
+
+```json
+{
+  "name": "tgsdc1",
+  "description": "Personal onsite backup to Team Group SD card",
+  "path": "/mnt/tgsdc1/backup.kopia/",
+  "cache": "/var/cache/kopia/tgsdc1",
+  "config": "/var/lib/kopia/repository.tgsdc1.config",
+  "precondition": "mountpoint -q /mnt/tgsdc1/",
+  "additionalExcludes": ["/mnt/data/Pictures/"]
+}
+```
+
+| Field | Required | Purpose |
+| --- | --- | --- |
+| `name` | yes | Unique identifier; also used to locate per-destination passwords (`kopia-password-<name>`) |
+| `path` | yes | Filesystem path where the Kopia repository lives |
+| `precondition` | no | Shell command evaluated before backup. If it exits non-zero, the destination is silently skipped. Useful for removable media: `mountpoint -q /mnt/…` |
+| `config` | no | Override for the Kopia config file path (default: `/var/lib/kopia/repository.<name>.config`) |
+| `cache` | no | Override for the Kopia cache directory (default: `/var/cache/kopia/<name>`) |
+| `additionalExcludes` | no | JSON array of extra ignore patterns added on top of the global excludes (e.g. raw photo formats on a small drive) |
+
+The `home-server-backup` profile ships a default empty `[]` at
+`mkosi.profiles/home-server-backup/mkosi.extra/etc/kopia-backup-destinations.json`.
+Hosts override this file with their own destinations under
+`hosts/<host>/mkosi.extra/etc/kopia-backup-destinations.json`.
+
+### Credentials
+
+Passwords and API keys are packaged into `/etc/credstore/` at build
+time by `scripts/package-credentials.sh` and loaded at runtime via
+systemd `LoadCredential=`:
+
+| Secret file | Used by | Purpose |
+| --- | --- | --- |
+| `kopia-cloud-password` | `cloud-backup` | Repository encryption password for the S3 backend |
+| `kopia-cloud-s3-creds.json` | `cloud-backup` | S3 endpoint, bucket, access key, secret key (validated at build time) |
+| `kopia-password` | `home-server-backup` | Default repository password for all filesystem destinations |
+| `kopia-password-<name>` | `home-server-backup` | Per-destination password override (falls back to `kopia-password`) |
+| `kopia-cloud-healthcheck-url` | `cloud-backup` | Healthchecks.io ping URL (only staged if `healthchecksio` profile is active) |
+| `kopia-home-healthcheck-url` | `home-server-backup` | Healthchecks.io ping URL (only staged if `healthchecksio` profile is active) |
+
+Place secrets in `.mkosi-secrets/` (global) or
+`.mkosi-secrets/hosts/<hostname>/` (host-specific, takes precedence).
+All Kopia credentials are owned `root:kopia` (0:5000) with mode `0640`.
+
+### Alerting
+
+`kopia-backup-trigger` integrates with the project's `ab-monitor`
+alerting stack:
+
+* **On success**: calls `notify.sh --event resolve` to clear any
+  prior `kopia_backup_*` failure alert, then pings the Healthchecks.io
+  success URL (if configured).
+* **On failure**: calls `ad-hoc-alert.sh` to fire a new incident
+  through the host's configured `AB_MONITOR_CHANNELS` (Mailjet,
+  PagerDuty, journal), then pings the Healthchecks.io `/fail` URL.
+* Both systemd units also set `OnFailure=ab-monitor-alert@%n.service`
+  as a safety net for crashes that bypass the script's own alerting.
+
+### Systemd hardening
+
+Both `cloud-backup.service` and `home-server-backup.service` run with
+a strict security sandbox:
+
+```ini
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+```
+
+`StateDirectory=kopia` and `CacheDirectory=kopia` automatically create
+and manage `/var/lib/kopia` and `/var/cache/kopia` with correct
+ownership.
+
+### Environment configuration
+
+Each backup unit sources an `EnvironmentFile` from `/etc/default/`:
+
+* `/etc/default/cloud-backup` — sets `KOPIA_BACKUP_TYPE=s3`,
+  `KOPIA_CONFIG_PATH`, `KOPIA_CACHE_DIR`, upload/parallelism defaults.
+* `/etc/default/home-server-backup` — sets
+  `KOPIA_BACKUP_TYPE=filesystem`, 50 GiB upload limit default.
+
+Override these files in `hosts/<host>/mkosi.extra/etc/default/` for
+per-host tuning.
+
+### Host configuration example
+
+To enable the full Kopia stack on a host:
+
+1. Add `kopia`, `cloud-backup`, and `home-server-backup` to
+   `hosts/<host>/profile.default`.
+2. Create `hosts/<host>/mkosi.extra/etc/kopia-backup-destinations.json`
+   listing the host's filesystem backup targets.
+3. Place the required secrets in `.mkosi-secrets/hosts/<host>/`
+   (or globally in `.mkosi-secrets/`).
+
+See `hosts/x1g13/mkosi.extra/etc/kopia-backup-destinations.json` for
+a working example with six filesystem destinations including
+precondition checks and per-destination additional excludes.
 
 ---
 

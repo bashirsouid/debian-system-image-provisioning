@@ -1,0 +1,81 @@
+[
+  {
+    "name": "tgsdc1",
+    "description": "Personal onsite backup to Team Group SD card (512GB)",
+    "path": "/mnt/tgsdc1/backup.kopia/",
+    "cache": "/var/cache/kopia/tgsdc1",
+    "config": "/var/lib/kopia/repository.tgsdc1.config",
+    "precondition": "mountpoint -q /mnt/tgsdc1/"
+  },
+  {
+    "name": "samsung_512GB_1",
+    "description": "Personal onsite backup to Samsung SD card (512GB)",
+    "path": "/mnt/samsung_sd_1/backup.kopia/",
+    "cache": "/var/cache/kopia/samsung_sd_1",
+    "config": "/var/lib/kopia/repository.samsung_sd_1.config",
+    "precondition": "mountpoint -q /mnt/samsung_sd_1/"
+  },
+  {
+    "name": "samsung_512GB_2",
+    "description": "Personal onsite backup to Samsung SD card (512GB)",
+    "path": "/mnt/samsung_sd_2/backup.kopia/",
+    "cache": "/var/cache/kopia/samsung_sd_2",
+    "config": "/var/lib/kopia/repository.samsung_sd_2.config",
+    "precondition": "mountpoint -q /mnt/samsung_sd_2/"
+  },
+  {
+    "name": "seagate",
+    "description": "Personal onsite backup to Seagate data drive",
+    "path": "/mnt/seagate/backup.kopia/",
+    "cache": "/var/cache/kopia/seagate",
+    "config": "/var/lib/kopia/repository.seagate.config",
+    "precondition": "mountpoint -q /mnt/seagate/"
+  },
+  {
+    "name": "adata",
+    "description": "Personal onsite backup to ADATA data drive",
+    "path": "/mnt/adata_backup/backup.kopia/",
+    "cache": "/var/cache/kopia/adata",
+    "config": "/var/lib/kopia/repository.adata.config",
+    "precondition": "mountpoint -q /mnt/adata_backup/"
+  },
+  {
+    "name": "samsung_2",
+    "description": "Personal onsite backup to Samsung micro-USB drive (128GB)",
+    "path": "/mnt/samsung_2/backup.kopia/",
+    "cache": "/var/cache/kopia/samsung_2",
+    "config": "/var/lib/kopia/repository.samsung_2.config",
+    "precondition": "mountpoint -q /mnt/samsung_2/",
+    "additionalExcludes": [
+      "/mnt/data/Pictures/",
+      "/mnt/data/PhotoEvents/__Lost_and_Found__/*.CR2",
+      "/mnt/data/PhotoEvents/Animals/*.CR2",
+      "/mnt/data/PhotoEvents/Panoramas/*.CR2",
+      "/mnt/data/PhotoEvents/Personal/*.CR2",
+      "/mnt/data/PhotoEvents/Places/*.CR2",
+      "/mnt/data/PhotoEvents/Space/*.CR2",
+      "/mnt/data/PhotoEvents/Things/*.CR2",
+      "/mnt/data/PhotoEvents/__Lost_and_Found__/*.ARW",
+      "/mnt/data/PhotoEvents/Animals/*.ARW",
+      "/mnt/data/PhotoEvents/Panoramas/*.ARW",
+      "/mnt/data/PhotoEvents/Personal/*.ARW",
+      "/mnt/data/PhotoEvents/Places/*.ARW",
+      "/mnt/data/PhotoEvents/Space/*.ARW",
+      "/mnt/data/PhotoEvents/Things/*.ARW",
+      "/mnt/data/PhotoEvents/__Lost_and_Found__/*.RAF",
+      "/mnt/data/PhotoEvents/Animals/*.RAF",
+      "/mnt/data/PhotoEvents/Panoramas/*.RAF",
+      "/mnt/data/PhotoEvents/Personal/*.RAF",
+      "/mnt/data/PhotoEvents/Places/*.RAF",
+      "/mnt/data/PhotoEvents/Space/*.RAF",
+      "/mnt/data/PhotoEvents/Things/*.RAF",
+      "/mnt/data/PhotoEvents/__Lost_and_Found__/*.RW2",
+      "/mnt/data/PhotoEvents/Animals/*.RW2",
+      "/mnt/data/PhotoEvents/Panoramas/*.RW2",
+      "/mnt/data/PhotoEvents/Personal/*.RW2",
+      "/mnt/data/PhotoEvents/Places/*.RW2",
+      "/mnt/data/PhotoEvents/Space/*.RW2",
+      "/mnt/data/PhotoEvents/Things/*.RW2"
+    ]
+  }
+]

@@ -1,11 +1,44 @@
 [Unit]
 Description=Periodic cloud backup via Kopia
 After=network-online.target
+Wants=network-online.target
+OnFailure=ab-monitor-alert@%n.service
 
 [Service]
 Type=oneshot
+User=kopia
+Group=kopia
+
+# Load credentials
+LoadCredential=kopia-password:/etc/credstore/kopia-cloud-password
+LoadCredential=s3-creds:/etc/credstore/kopia-cloud-s3-creds.json
+LoadCredential=healthchecks-url:/etc/credstore/kopia-cloud-healthcheck-url
+
+# Sourced environment overrides
+EnvironmentFile=-/etc/default/cloud-backup
+
 ExecStart=/usr/local/bin/kopia-backup-trigger
 TimeoutStartSec=3600
+
+# Directory creation and paths
+StateDirectory=kopia
+CacheDirectory=kopia
+
+# Security and capabilities
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_NET_RAW
+AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
 
 [Install]
 WantedBy=multi-user.target

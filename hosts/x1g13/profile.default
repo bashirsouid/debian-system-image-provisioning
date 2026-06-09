@@ -33,4 +33,7 @@ user-power-control
 watchdog-battery
 solaar
 timezone-los-angeles
+kopia
+cloud-backup
+home-server-backup
 s3-unencrypted-backup
