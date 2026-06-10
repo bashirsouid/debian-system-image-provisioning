@@ -1443,8 +1443,13 @@ EOF
   mkosi_args=("--image-id=$target_image_id" "--image-version=$IMAGE_VERSION")
   if [[ -n "${AB_LUKS_PASSPHRASE_FILE:-}" ]]; then
     mkosi_args+=("--passphrase=$AB_LUKS_PASSPHRASE_FILE")
+fi
+
+  # Clean stale host config symlinks from previous builds
+  if [[ -d "$PROJECT_ROOT/mkosi.conf.d" ]]; then
+    find "$PROJECT_ROOT/mkosi.conf.d" -maxdepth 1 -type l -name '*-*.conf' -exec rm -f {} + 2>/dev/null || true
   fi
-  
+
   # Link host-specific mkosi config drop-ins into the main mkosi.conf.d/
   # so they get merged with the base config
   local host_config_links=()

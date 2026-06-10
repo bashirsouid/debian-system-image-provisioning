@@ -102,12 +102,6 @@ profile's `mkosi.extra/` the same way it staged the host overlay (sandbox
 tree during build + ExtraTree into the image), so the move is faithful —
 but a build is the real confirmation for firmware/initramfs/DKMS ordering.
 
-## Fixed in passing
-
-`hosts/macbookpro13-2019-t2/profile.default` listed `hyperland` (typo for
-`hyprland`), which made `--host macbookpro13-2019-t2` fail profile
-resolution. Corrected in both the descriptor and the legacy file.
-
 ## Not yet migrated (smaller follow-ups)
 
 `run.sh` and the live-test/rollback tools read a few host files directly

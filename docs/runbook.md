@@ -150,6 +150,15 @@ ALL outbound alerts (Mailjet, PagerDuty, healthchecks.io) fail
 closed. This is a silent-alert-disabling bug and deserves urgent
 fixing.
 
+Recovery notes:
+- The image includes `/usr/lib/clock-epoch` which systemd PID 1 uses
+  to bump obviously-wrong clocks forward during early boot. This helps
+  systems with a bad RTC get into a reasonable time range before NTP
+  completes.
+- Explicit NTP servers are configured in
+  `/etc/systemd/timesyncd.conf.d/10-default-ntp.conf` (Cloudflare
+  and Google NTP). If those are unreachable, check network/firewall.
+
 ## Box is fully dark
 
 You got a healthchecks.io "missed heartbeat" page but cannot SSH in

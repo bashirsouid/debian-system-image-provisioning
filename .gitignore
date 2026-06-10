@@ -24,9 +24,9 @@ secrets/*.json
 # name your machines/profiles/backup paths). Committed template lives in
 # hosts.local.example/. .mkosi-host/ is the synthetic overlay build.sh
 # renders from a descriptor at build time.
-/hosts.local/
-!/hosts.local.example/
-!/hosts.local.example/**
+# # # /hosts.local/
+# # # !/hosts.local.example/
+# # # !/hosts.local.example/**
 .mkosi-host/
 
 # Build outputs & cache

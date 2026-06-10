@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Time sync and clock-epoch setup for mkosi images
+#
+# This script runs in the image build chroot during final stage to:
+# 1. Ensure systemd-timesyncd is enabled (handled by preset, but explicit here too)
+# 2. Create /usr/lib/clock-epoch with a known-good timestamp
+
+set -euo pipefail
+
+stage="${1:-final}"
+[[ "$stage" == "final" ]] || exit 0
+
+# Ensure systemd-timesyncd is enabled
+systemctl enable systemd-timesyncd.service || true
+
+# Create clock-epoch file for systems with bad RTC clocks
+# systemd PID 1 uses this file's mtime to bump obviously-wrong clocks forward
+mkdir -p /usr/lib
+touch /usr/lib/clock-epoch
+
+# Use SOURCE_DATE_EPOCH for reproducibility if available
+if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+    touch -d "@${SOURCE_DATE_EPOCH}" /usr/lib/clock-epoch
+fi
