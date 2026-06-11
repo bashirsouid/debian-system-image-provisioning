@@ -180,8 +180,18 @@ PACKAGE_NAME="snd_hda_macbookpro"
 PACKAGE_VERSION="$module_version"
 PRE_BUILD="install.cirrus.driver.sh -k \$kernelver --dkms"
 MAKE="make PATCH_CIRRUS=1 KERNELRELEASE=\${kernelver} KDIR=/lib/modules/\${kernelver}/build M=\${dkms_tree}/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/build/hda CONFIG_MODULE_SIG_ALL=n"
-BUILT_MODULE_NAME[0]="snd-hda-codec-cirrus"
-BUILT_MODULE_LOCATION[0]="build/hda"
+# Module identity, both verified against the actual DKMS build tree:
+#   NAME     snd-hda-codec-cs8409  (NOT snd-hda-codec-cirrus — also what
+#            find_cs8409_override_module below and mkosi.finalize expect).
+#   LOCATION build/hda/codecs/cirrus  — relative to the DKMS build root
+#            (.../snd_hda_macbookpro/0.1/build/). The install.cirrus.driver.sh
+#            PRE_BUILD step produces the .ko at
+#            build/build/hda/codecs/cirrus/snd-hda-codec-cs8409.ko on the
+#            6.18 kernel tree; the codec still nests under codecs/cirrus.
+#            A bare "build/hda" makes DKMS's post-build locate fail even
+#            though the module compiled.
+BUILT_MODULE_NAME[0]="snd-hda-codec-cs8409"
+BUILT_MODULE_LOCATION[0]="build/hda/codecs/cirrus"
 DEST_MODULE_LOCATION[0]="/updates/codecs/cirrus"
 AUTOINSTALL="yes"
 EOF2
@@ -251,7 +261,22 @@ DKMSFRAMEWORK
     dkms add -m "$module_name" -v "$module_version"
 
     echo "==> [BUILD] building DKMS module for target kernel $target_kernel"
-    dkms build -m "$module_name" -v "$module_version" -k "$target_kernel" --force
+    local _dkms_build_rc=0
+    dkms build -m "$module_name" -v "$module_version" -k "$target_kernel" --force || _dkms_build_rc=$?
+
+    # DIAGNOSTIC (temporary): the DKMS build tree only exists inside this
+    # sandbox and is destroyed when the build ends, so print exactly which
+    # .ko was produced and where, to set BUILT_MODULE_LOCATION correctly.
+    echo "==> [BUILD][DIAG] .ko files anywhere under the DKMS module tree:"
+    find "/var/lib/dkms/$module_name" \( -name '*.ko' -o -name '*.ko.*' \) 2>/dev/null \
+        | sed "s#/var/lib/dkms/$module_name/#    #" || true
+    echo "==> [BUILD][DIAG] directory layout under the build tree (depth<=6):"
+    find "/var/lib/dkms/$module_name/$module_version/build" -maxdepth 6 -type d 2>/dev/null \
+        | sed "s#/var/lib/dkms/$module_name/$module_version/build#    .#" || true
+    if [[ "$_dkms_build_rc" -ne 0 ]]; then
+        echo "ERROR: dkms build returned $_dkms_build_rc (see [DIAG] above for the real .ko path)" >&2
+        exit "$_dkms_build_rc"
+    fi
 
     echo "==> [BUILD] installing DKMS module for target kernel $target_kernel"
     dkms install -m "$module_name" -v "$module_version" -k "$target_kernel" --force
