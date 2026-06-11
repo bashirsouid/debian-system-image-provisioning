@@ -266,6 +266,15 @@ build_macbook_cs8409_driver() {
         fi
     fi
 
+    # Build the CA trust store so the installer's wget can verify cdn.kernel.org
+    # when it downloads the matching mainline kernel source (needed for the
+    # sound/hda tree the driver patches). In a freshly-assembled chroot the
+    # bundle is often not generated yet, which surfaces during the DKMS build as
+    #   ERROR: The certificate of 'cdn.kernel.org' is not trusted
+    # (wget connects fine, but can't validate the chain) and the override silently
+    # falls back to the stock speaker_outs=0 module — i.e. no speaker/headphone audio.
+    update-ca-certificates >/dev/null 2>&1 || true
+
     module_name="snd_hda_macbookpro"
     module_version="0.1"
     dkms_src="/usr/src/${module_name}-${module_version}"
