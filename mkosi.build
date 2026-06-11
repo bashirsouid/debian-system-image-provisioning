@@ -261,22 +261,7 @@ DKMSFRAMEWORK
     dkms add -m "$module_name" -v "$module_version"
 
     echo "==> [BUILD] building DKMS module for target kernel $target_kernel"
-    local _dkms_build_rc=0
-    dkms build -m "$module_name" -v "$module_version" -k "$target_kernel" --force || _dkms_build_rc=$?
-
-    # DIAGNOSTIC (temporary): the DKMS build tree only exists inside this
-    # sandbox and is destroyed when the build ends, so print exactly which
-    # .ko was produced and where, to set BUILT_MODULE_LOCATION correctly.
-    echo "==> [BUILD][DIAG] .ko files anywhere under the DKMS module tree:"
-    find "/var/lib/dkms/$module_name" \( -name '*.ko' -o -name '*.ko.*' \) 2>/dev/null \
-        | sed "s#/var/lib/dkms/$module_name/#    #" || true
-    echo "==> [BUILD][DIAG] directory layout under the build tree (depth<=6):"
-    find "/var/lib/dkms/$module_name/$module_version/build" -maxdepth 6 -type d 2>/dev/null \
-        | sed "s#/var/lib/dkms/$module_name/$module_version/build#    .#" || true
-    if [[ "$_dkms_build_rc" -ne 0 ]]; then
-        echo "ERROR: dkms build returned $_dkms_build_rc (see [DIAG] above for the real .ko path)" >&2
-        exit "$_dkms_build_rc"
-    fi
+    dkms build -m "$module_name" -v "$module_version" -k "$target_kernel" --force
 
     echo "==> [BUILD] installing DKMS module for target kernel $target_kernel"
     dkms install -m "$module_name" -v "$module_version" -k "$target_kernel" --force

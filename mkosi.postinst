@@ -1,24 +1,30 @@
 #!/usr/bin/env bash
-# Time sync and clock-epoch setup for mkosi images
+# clock-epoch setup for mkosi images
 #
-# This script runs in the image build chroot during final stage to:
-# 1. Ensure systemd-timesyncd is enabled (handled by preset, but explicit here too)
-# 2. Create /usr/lib/clock-epoch with a known-good timestamp
+# Runs in the mkosi sandbox during the final stage. The sandbox's own /
+# is the (read-only) tools tree — the image being built is at $BUILDROOT,
+# so every write MUST target $BUILDROOT. This mirrors mkosi.finalize,
+# which uses the same $BUILDROOT convention.
+#
+# systemd-timesyncd is enabled separately via the system-preset
+# (mkosi.extra/etc/systemd/system-preset/90-ab.preset), so it is NOT
+# enabled here — the previous `systemctl enable` ran against the sandbox
+# (not the image), failed with "Unit does not exist", and was redundant.
 
 set -euo pipefail
 
 stage="${1:-final}"
 [[ "$stage" == "final" ]] || exit 0
 
-# Ensure systemd-timesyncd is enabled
-systemctl enable systemd-timesyncd.service || true
+ROOT="${BUILDROOT:?BUILDROOT is required}"
 
-# Create clock-epoch file for systems with bad RTC clocks
-# systemd PID 1 uses this file's mtime to bump obviously-wrong clocks forward
-mkdir -p /usr/lib
-touch /usr/lib/clock-epoch
+# Create /usr/lib/clock-epoch for systems with a bad RTC. systemd PID 1
+# uses this file's mtime as a floor and bumps an obviously-wrong clock
+# forward to it at boot.
+mkdir -p "$ROOT/usr/lib"
+touch "$ROOT/usr/lib/clock-epoch"
 
-# Use SOURCE_DATE_EPOCH for reproducibility if available
+# Pin its mtime to SOURCE_DATE_EPOCH for reproducibility when available.
 if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
-    touch -d "@${SOURCE_DATE_EPOCH}" /usr/lib/clock-epoch
+    touch -d "@${SOURCE_DATE_EPOCH}" "$ROOT/usr/lib/clock-epoch"
 fi

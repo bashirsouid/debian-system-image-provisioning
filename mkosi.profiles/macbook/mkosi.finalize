@@ -64,26 +64,14 @@ _t2_module_dirs_cs=("$ROOT"/usr/lib/modules/*-t2-*)
 shopt -u nullglob
 if (( ${#_t2_module_dirs_cs[@]} > 0 )); then
   _t2_kver_cs="$(basename "${_t2_module_dirs_cs[0]}")"
-  _t2_headers_pkg_cs="linux-headers-${_t2_kver_cs}"
 
-  echo "==> [FINALIZE] installing T2 kernel headers: $_t2_headers_pkg_cs"
-  if ! chroot "$ROOT" env DEBIAN_FRONTEND=noninteractive \
-      apt-get install -y --no-install-recommends \
-      -o Acquire::Check-Valid-Until=false "$_t2_headers_pkg_cs"; then
-    echo "ERROR: [FINALIZE] failed to install $_t2_headers_pkg_cs — CS8409 build will fail" >&2
-    exit 1
-  fi
-
-  # Create /lib/modules/<kver>/build symlink that the installer expects.
-  _modules_build="$ROOT/lib/modules/$_t2_kver_cs/build"
-  _headers_src="/usr/src/linux-headers-$_t2_kver_cs"
-  if [[ ! -e "$_modules_build" ]] && [[ -d "$ROOT$_headers_src" ]]; then
-    echo "==> [FINALIZE] creating /lib/modules/$_t2_kver_cs/build → $_headers_src"
-    mkdir -p "$(dirname "$_modules_build")"
-    ln -snf "$_headers_src" "$_modules_build"
-  fi
-
-
+  # The CS8409 DKMS module is built and installed earlier, in mkosi.build
+  # (build_macbook_cs8409_driver) — that phase has the t2-ubuntu-repo apt
+  # source and kernel headers available. This finalize step only VERIFIES
+  # the result and runs depmod, so it needs no headers of its own. (The
+  # old install-headers / build-symlink / purge dance here was dead
+  # leftover from when the module was built in finalize; it failed because
+  # finalize's apt environment has no t2 repo configured.)
   _cs8409_stock="$ROOT/usr/lib/modules/$_t2_kver_cs/kernel/sound/hda/codecs/cirrus/snd-hda-codec-cs8409.ko.xz"
   _cs8409_dkms="$ROOT/lib/modules/$_t2_kver_cs/updates/dkms/snd-hda-codec-cs8409.ko.xz"
 
@@ -94,10 +82,6 @@ if (( ${#_t2_module_dirs_cs[@]} > 0 )); then
     echo "==> [FINALIZE] CS8409 DKMS module verified at $_cs8409_dkms"
     chroot "$ROOT" depmod -a "$_t2_kver_cs"
   fi
-
-  echo "==> [FINALIZE] removing T2 kernel headers (no longer needed)"
-  chroot "$ROOT" env DEBIAN_FRONTEND=noninteractive \
-      apt-get purge -y -o Acquire::Check-Valid-Until=false "$_t2_headers_pkg_cs" || true
 
   # ── T2 audio DSP config: kekrby/t2-better-audio ──────────────────────────
   # The CS8409 DKMS driver makes the audio hardware visible to ALSA, but
@@ -121,8 +105,7 @@ if (( ${#_t2_module_dirs_cs[@]} > 0 )); then
   fi
   rm -rf "$_t2_audio_tmp"
 
-  unset _t2_kver_cs _t2_headers_pkg_cs _modules_build _headers_src \
-        _cs8409_stock _cs8409_dkms
+  unset _t2_kver_cs _cs8409_stock _cs8409_dkms
 fi
 unset _t2_module_dirs_cs
 
