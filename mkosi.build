@@ -179,9 +179,9 @@ patch_macbook_driver_tree() {
 PACKAGE_NAME="snd_hda_macbookpro"
 PACKAGE_VERSION="$module_version"
 PRE_BUILD="install.cirrus.driver.sh -k \$kernelver --dkms"
-MAKE="make KERNELRELEASE=\${kernelver} KDIR=/lib/modules/\${kernelver}/build M=\${dkms_tree}/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/build/build/hda CFLAGS_MODULE='-DAPPLE_PINSENSE_FIXUP -DAPPLE_CODECS -DCONFIG_SND_HDA_RECONFIG=1 -Wno-unused-variable -Wno-unused-function -Wno-error -Wno-incompatible-pointer-types'"
-BUILT_MODULE_NAME[0]="snd-hda-codec-cs8409"
-BUILT_MODULE_LOCATION[0]="build/hda/codecs/cirrus"
+MAKE="make PATCH_CIRRUS=1 KERNELRELEASE=\${kernelver} KDIR=/lib/modules/\${kernelver}/build M=\${dkms_tree}/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/build/hda CONFIG_MODULE_SIG_ALL=n"
+BUILT_MODULE_NAME[0]="snd-hda-codec-cirrus"
+BUILT_MODULE_LOCATION[0]="build/hda"
 DEST_MODULE_LOCATION[0]="/updates/codecs/cirrus"
 AUTOINSTALL="yes"
 EOF2
@@ -232,6 +232,15 @@ build_macbook_cs8409_driver() {
     mkdir -p "$dkms_src"
     cp -a "$audio_src/." "$dkms_src/"
     patch_macbook_driver_tree "$dkms_src" "$module_version"
+
+    # Disable DKMS module signing
+    echo "==> [BUILD] disabling module signing for DKMS build"
+    mkdir -p /etc/dkms
+    cat > /etc/dkms/framework.conf <<'DKMSFRAMEWORK'
+sign_file=none
+mok_signing_key=
+mok_certificate=
+DKMSFRAMEWORK
 
     pushd "$dkms_src" >/dev/null
 
