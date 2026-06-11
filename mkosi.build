@@ -174,6 +174,24 @@ patch_macbook_driver_tree() {
     } > "$tree/install.cirrus.driver.sh.tmp"
     mv "$tree/install.cirrus.driver.sh.tmp" "$tree/install.cirrus.driver.sh"
 
+    # GCC 14+ promotes -Wincompatible-pointer-types to a hard error by
+    # default, which this out-of-tree driver trips on with newer kernels.
+    # The upstream Makefile's `all` target compiles with
+    # CFLAGS_MODULE=$(KBUILD_EXTRA_CFLAGS) and OVERWRITES any CFLAGS_MODULE
+    # passed on the dkms MAKE line, so the only place that reliably reaches
+    # the compiler is KBUILD_EXTRA_CFLAGS in the Makefile itself. Append the
+    # suppressions there. (They were present originally and got dropped in a
+    # refactor, which is why the build regressed.)
+    echo "==> [BUILD] relaxing -Werror/-Wincompatible-pointer-types in upstream Makefile"
+    if [[ -f "$tree/Makefile" ]]; then
+        sed -i -E '/^[[:space:]]*KBUILD_EXTRA_CFLAGS[[:space:]]*=/ s/"[[:space:]]*$/ -Wno-error -Wno-incompatible-pointer-types"/' "$tree/Makefile"
+        if ! grep -qE '^[[:space:]]*KBUILD_EXTRA_CFLAGS[[:space:]]*=.*-Wno-incompatible-pointer-types' "$tree/Makefile"; then
+            echo "WARNING: [BUILD] could not append suppressions to KBUILD_EXTRA_CFLAGS in $tree/Makefile" >&2
+        fi
+    else
+        echo "WARNING: [BUILD] $tree/Makefile not found; cannot relax compiler flags" >&2
+    fi
+
     echo "==> [BUILD] patching DKMS metadata for newer kernels and GCC"
     cat > "$tree/dkms.conf" <<EOF2
 PACKAGE_NAME="snd_hda_macbookpro"
@@ -261,7 +279,21 @@ DKMSFRAMEWORK
     dkms add -m "$module_name" -v "$module_version"
 
     echo "==> [BUILD] building DKMS module for target kernel $target_kernel"
-    dkms build -m "$module_name" -v "$module_version" -k "$target_kernel" --force
+    if ! dkms build -m "$module_name" -v "$module_version" -k "$target_kernel" --force; then
+        # The build tree (and its make.log) live only inside this sandbox
+        # and are destroyed when the build ends, so surface the compiler
+        # error here rather than pointing at a path that won't exist later.
+        local _make_log="/var/lib/dkms/$module_name/$module_version/build/make.log"
+        echo "ERROR: [BUILD] dkms build failed for $module_name/$module_version on $target_kernel" >&2
+        if [[ -f "$_make_log" ]]; then
+            echo "----- make.log (tail -80) -----" >&2
+            tail -n 80 "$_make_log" >&2
+            echo "----- end make.log -----" >&2
+        else
+            echo "  (no make.log at $_make_log)" >&2
+        fi
+        exit 1
+    fi
 
     echo "==> [BUILD] installing DKMS module for target kernel $target_kernel"
     dkms install -m "$module_name" -v "$module_version" -k "$target_kernel" --force
