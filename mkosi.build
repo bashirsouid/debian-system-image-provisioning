@@ -244,11 +244,26 @@ build_macbook_cs8409_driver() {
         cp -a "$repo_tree/etc/apt/trusted.gpg.d/." "$repo_key_dir/"
     fi
 
+    # ── Best-effort from here down ──────────────────────────────────────
+    # The upstream driver assembles its build tree by downloading mainline
+    # kernel source over the network mid-build, which is inherently fragile
+    # (TLS/cert/DNS inside the sandbox). By project decision, a failure to
+    # build the CS8409 override must NOT fail the whole image: warn and keep
+    # the stock in-kernel snd-hda-codec-cs8409 module instead. mkosi.finalize
+    # already reports whether the override is present and falls back to stock.
+    _cs8409_giveup() {
+        echo "WARNING: [BUILD] CS8409 override not built ($1)." >&2
+        echo "         Image will use the stock in-kernel snd-hda-codec-cs8409 module;" >&2
+        echo "         MacBook speaker routing may be wrong until the override builds." >&2
+    }
+
     if [[ ! -d "/usr/src/linux-headers-$target_kernel" ]] || ! command -v wget >/dev/null 2>&1 || ! command -v openssl >/dev/null 2>&1; then
         echo "==> [BUILD] installing CS8409 build prerequisites for kernel $target_kernel"
-        apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            patch wget openssl ca-certificates xz-utils "linux-headers-$target_kernel"
+        if ! { apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                patch wget openssl ca-certificates xz-utils "linux-headers-$target_kernel"; }; then
+            _cs8409_giveup "prerequisite/header install failed"
+            return 0
+        fi
     fi
 
     module_name="snd_hda_macbookpro"
@@ -276,7 +291,11 @@ DKMSFRAMEWORK
     dkms remove -m "$module_name" -v "$module_version" --all >/dev/null 2>&1 || true
 
     echo "==> [BUILD] adding DKMS module for $module_name/$module_version"
-    dkms add -m "$module_name" -v "$module_version"
+    if ! dkms add -m "$module_name" -v "$module_version"; then
+        popd >/dev/null
+        _cs8409_giveup "dkms add failed"
+        return 0
+    fi
 
     echo "==> [BUILD] building DKMS module for target kernel $target_kernel"
     if ! dkms build -m "$module_name" -v "$module_version" -k "$target_kernel" --force; then
@@ -284,7 +303,6 @@ DKMSFRAMEWORK
         # and are destroyed when the build ends, so surface the compiler
         # error here rather than pointing at a path that won't exist later.
         local _make_log="/var/lib/dkms/$module_name/$module_version/build/make.log"
-        echo "ERROR: [BUILD] dkms build failed for $module_name/$module_version on $target_kernel" >&2
         if [[ -f "$_make_log" ]]; then
             echo "----- make.log (tail -80) -----" >&2
             tail -n 80 "$_make_log" >&2
@@ -292,19 +310,24 @@ DKMSFRAMEWORK
         else
             echo "  (no make.log at $_make_log)" >&2
         fi
-        exit 1
+        popd >/dev/null
+        _cs8409_giveup "dkms build failed"
+        return 0
     fi
 
     echo "==> [BUILD] installing DKMS module for target kernel $target_kernel"
-    dkms install -m "$module_name" -v "$module_version" -k "$target_kernel" --force
+    if ! dkms install -m "$module_name" -v "$module_version" -k "$target_kernel" --force; then
+        popd >/dev/null
+        _cs8409_giveup "dkms install failed"
+        return 0
+    fi
 
     popd >/dev/null
 
     module_path="$(find_cs8409_override_module "$target_kernel" || true)"
     if [[ -z "$module_path" ]]; then
-        echo "ERROR: CS8409 driver install did not produce an override module under /lib/modules/$target_kernel/updates" >&2
-        echo "       Looked for snd-hda-codec-cs8409.ko* recursively under /lib/modules/$target_kernel/updates." >&2
-        exit 1
+        _cs8409_giveup "override module not found under /lib/modules/$target_kernel/updates"
+        return 0
     fi
 
     echo "==> [BUILD] CS8409 DKMS override installed at $module_path"
