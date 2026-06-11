@@ -89,16 +89,28 @@ if (( ${#_t2_module_dirs_cs[@]} > 0 )); then
   # silently mis-routed.  kekrby/t2-better-audio provides:
   #   - UCM2 configs  → /usr/share/alsa/ucm2/
   #   - PipeWire DSP  → /usr/share/pipewire/filter-chain.conf.d/
-  # DESTDIR= is critical: install.sh must not restart dbus/pipewire inside
-  # the sandbox.  The script respects DESTDIR and only copies files.
+  # The upstream install.sh is incompatible with chroot + DESTDIR (it tries
+  # to re-invoke with sudo). Instead, we manually copy the profile files.
   _t2_audio_tmp="$(mktemp -d)"
   if git clone --depth=1 \
       https://github.com/kekrby/t2-better-audio.git \
       "$_t2_audio_tmp/t2-better-audio" 2>&1; then
-    if DESTDIR="$ROOT" bash "$_t2_audio_tmp/t2-better-audio/install.sh"; then
-      echo "==> [FINALIZE] kekrby/t2-better-audio UCM2 + PipeWire DSP configs installed"
+    # Manually copy the audio configs that the install.sh would copy
+    _audio_installed=0
+    for _audio_dir in "/usr/share/alsa-card-profile/mixer" "/usr/share/pulseaudio/alsa-mixer"; do
+      if [[ -d "$ROOT$_audio_dir" ]]; then
+        cp -rv "$_t2_audio_tmp/t2-better-audio/files/profile-sets" "$ROOT$_audio_dir/" 2>/dev/null && \
+        cp -rv "$_t2_audio_tmp/t2-better-audio/files/paths" "$ROOT$_audio_dir/" 2>/dev/null && \
+        _audio_installed=1
+      fi
+    done
+    if cp -v "$_t2_audio_tmp/t2-better-audio/files/91-audio-custom.rules" "$ROOT/usr/lib/udev/rules.d/" 2>/dev/null; then
+      _audio_installed=1
+    fi
+    if (( _audio_installed )); then
+      echo "==> [FINALIZE] kekrby/t2-better-audio audio configs installed"
     else
-      echo "WARNING: [FINALIZE] t2-better-audio install.sh failed; speaker routing may be wrong" >&2
+      echo "WARNING: [FINALIZE] t2-better-audio files not found or target directories missing" >&2
     fi
   else
     echo "WARNING: [FINALIZE] could not clone kekrby/t2-better-audio; speaker routing may be wrong" >&2
