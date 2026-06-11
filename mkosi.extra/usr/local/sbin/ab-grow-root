@@ -1,0 +1,55 @@
+#!/bin/sh
+# ab-grow-root — grow the root filesystem to fill its A/B slot, on boot.
+#
+# The build image is sized to its content (mkosi.repart/10-root.conf uses
+# Minimize=) so build artifacts stay small. The deployed A/B root slot is
+# larger (deploy.repart, 15G..50G). This oneshot grows the root fs to use the
+# whole slot, so a running system that does mid-week apt upgrades between A/B
+# reflashes doesn't run out of root space. It is idempotent: a no-op once the
+# fs already fills the slot, so it can run on every boot and naturally covers
+# each freshly-flashed slot's first boot after an A/B update.
+#
+# For a LUKS-encrypted root the dm-crypt mapping must be grown first
+# (cryptsetup resize), then the ext4 grown online (resize2fs). The volume key
+# is already in the kernel keyring from the boot-time unlock, so no passphrase
+# prompt is needed. Everything here is best-effort and never blocks boot: if a
+# step can't run, the system simply keeps the (smaller) working filesystem.
+set -u
+
+log() { echo "ab-grow-root: $*"; }
+
+src="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+if [ -z "$src" ]; then
+    log "could not determine the root source device; skipping"
+    exit 0
+fi
+
+# Resolve through any symlink (e.g. /dev/mapper/* -> /dev/dm-N) for resize2fs.
+dev="$(readlink -f "$src" 2>/dev/null || echo "$src")"
+
+case "$src" in
+    /dev/mapper/*)
+        name="${src#/dev/mapper/}"
+        if command -v cryptsetup >/dev/null 2>&1; then
+            log "growing LUKS mapping '$name' to fill its partition"
+            cryptsetup resize "$name" \
+                || log "cryptsetup resize failed (no key in keyring?); leaving fs as-is"
+        else
+            log "cryptsetup not found; cannot grow the LUKS mapping"
+        fi
+        ;;
+    *)
+        log "root ($src) is not a LUKS mapper; growing the filesystem only"
+        ;;
+esac
+
+if command -v resize2fs >/dev/null 2>&1; then
+    # Online grow to the (now full-size) device. Prints a harmless
+    # "Nothing to do!" and exits 0 when the fs already fills the device.
+    log "resizing ext4 on $dev to fill the device"
+    resize2fs "$dev" || log "resize2fs reported nothing to do / failed; continuing"
+else
+    log "resize2fs not found; cannot grow the filesystem"
+fi
+
+exit 0

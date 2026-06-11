@@ -12,13 +12,26 @@ ROOT="${BUILDROOT:?BUILDROOT is required}"
 # /etc/initramfs-tools/modules has no effect on the shipped image.
 if chroot "$ROOT" command -v update-initramfs >/dev/null 2>&1; then
   echo "==> [FINALIZE] regenerating initramfs to pick up ExtraTrees modules"
-  if ! chroot "$ROOT" update-initramfs -u -k all; then
-    echo "WARNING: [FINALIZE] update-initramfs failed; T2 keyboard may not work in early boot" >&2
+  # update-initramfs needs /proc (uname(1) in some hooks) and /dev (mknod).
+  # Without them the regen can fail or silently drop modules — and since this
+  # profile finalize runs AFTER mkosi.finalize.d/50-initramfs.sh (which DOES
+  # bind-mount them), an unmounted regen here was the LAST one before the UKI
+  # got sealed and clobbered the good initrd, leaving the T2 keyboard/storage
+  # modules out of the shipped image.
+  for _mp in proc dev; do mount --bind "/$_mp" "$ROOT/$_mp" 2>/dev/null || true; done
+  _t2_initrd_rc=0
+  chroot "$ROOT" update-initramfs -u -k all || _t2_initrd_rc=$?
+  for _mp in dev proc; do umount "$ROOT/$_mp" 2>/dev/null || true; done
+  if [[ "$_t2_initrd_rc" -ne 0 ]]; then
+    echo "ERROR: [FINALIZE] update-initramfs failed (rc=$_t2_initrd_rc)" >&2
+    exit 1
   fi
 
-  # Diagnostic: list whether the critical Apple T2 modules made it into the
-  # initrd. We look at every initrd in /boot rather than guessing the kernel
-  # version because linux-t2 can leave multiple installed during upgrades.
+  # Verify the critical Apple T2 modules actually made it into the initrd. A
+  # missing module means no built-in keyboard in early boot (so a LUKS
+  # passphrase prompt is unusable) — fail the build rather than silently ship
+  # it. Override with AB_ALLOW_MISSING_T2_MODULES=yes (e.g. if you boot with an
+  # external USB keyboard) to downgrade this back to a warning.
   if chroot "$ROOT" command -v lsinitramfs >/dev/null 2>&1; then
     shopt -s nullglob
     for _initrd in "$ROOT"/boot/initrd.img-*; do
@@ -28,10 +41,19 @@ if chroot "$ROOT" command -v update-initramfs >/dev/null 2>&1; then
       if [[ -n "$_hits" ]]; then
         echo "==> [FINALIZE] /boot/initrd.img-$_kver contains T2 modules:"
         echo "$_hits" | sed 's/^/        /'
+      elif [[ "${AB_ALLOW_MISSING_T2_MODULES:-no}" == "yes" ]]; then
+        echo "WARNING: [FINALIZE] /boot/initrd.img-$_kver lacks Apple T2 modules" >&2
+        echo "         (AB_ALLOW_MISSING_T2_MODULES=yes set — continuing; early-boot" >&2
+        echo "         keyboard will need an external USB keyboard)." >&2
       else
-        echo "WARNING: [FINALIZE] /boot/initrd.img-$_kver does NOT contain Apple T2 modules" >&2
-        echo "         /etc/initramfs-tools/modules may have been ignored. Confirm the file" >&2
-        echo "         is present in the chroot and lists apple_bce / apple_ib_drv / appletb." >&2
+        echo "ERROR: [FINALIZE] /boot/initrd.img-$_kver does NOT contain Apple T2 modules" >&2
+        echo "       (apple_bce / apple_ib_* / appletb). The built-in MacBook keyboard" >&2
+        echo "       will not work in early boot and a LUKS passphrase prompt would be" >&2
+        echo "       unusable. Check the modules exist for this kernel:" >&2
+        echo "         find $ROOT/usr/lib/modules/$_kver -name 'apple*'" >&2
+        echo "       and that /etc/initramfs-tools/modules lists them. Set" >&2
+        echo "       AB_ALLOW_MISSING_T2_MODULES=yes to build anyway (USB keyboard)." >&2
+        exit 1
       fi
     done
     shopt -u nullglob

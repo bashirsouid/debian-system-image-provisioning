@@ -1973,6 +1973,41 @@ echo -n "$LUKS_PASSPHRASE" > "$PASSPHRASE_FILE"
 chmod 600 "$PASSPHRASE_FILE"
 AB_LUKS_PASSPHRASE_FILE="$PASSPHRASE_FILE"
 
+# Preflight: the LUKS-encrypted root image is written NON-SPARSE, and
+# systemd-repart stages an intermediate copy before encrypting into the final
+# raw, so a build transiently needs roughly 2x the root image size of free
+# scratch on the workspace filesystem (the repo, ../.mkosi.workspace, mkosi.tmp
+# and the caches all live there). Fail fast with a clear, actionable message
+# instead of dying deep inside systemd-repart with an opaque
+# "No space left on device".
+ensure_build_space() {
+  local min_gb="${AB_MIN_FREE_GB:-20}"
+  local avail_kb avail_gb fs
+  avail_kb="$(df -Pk "$PROJECT_ROOT" 2>/dev/null | awk 'NR==2 {print $4}')"
+  if [[ -z "$avail_kb" ]]; then
+    echo "WARNING: could not determine free space on the build filesystem; skipping space preflight" >&2
+    return 0
+  fi
+  avail_gb=$(( avail_kb / 1024 / 1024 ))
+  fs="$(df -P "$PROJECT_ROOT" 2>/dev/null | awk 'NR==2 {print $6}')"
+  if (( avail_gb < min_gb )); then
+    cat >&2 <<EOF
+ERROR: only ${avail_gb}G free on the build filesystem (${fs:-$PROJECT_ROOT}).
+       Building the LUKS-encrypted root image needs ~${min_gb}G of transient
+       scratch: it is written non-sparse and systemd-repart stages an
+       intermediate copy (~2x the root image size), all on this filesystem
+       alongside the caches and workspace.
+       Free space and retry:
+         ./clean.sh --all          # reclaims caches + builddir + workspace
+       or, if you know the build fits, override the guard:
+         AB_MIN_FREE_GB=<n> ./build.sh ...
+EOF
+    exit 1
+  fi
+  echo "==> Build space OK: ${avail_gb}G free on ${fs:-$PROJECT_ROOT} (need ~${min_gb}G; override via AB_MIN_FREE_GB)"
+}
+ensure_build_space
+
 for target in "${BUILD_TARGETS[@]}"; do
   build_target "${target%%|*}" "${target#*|}"
 done

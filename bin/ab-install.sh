@@ -1302,6 +1302,17 @@ prune_old_boot_entries() {
 
     [[ -d "$entries_dir" ]] || return 0
 
+    # Never prune the entry for the currently-active (mounted) slot. When the
+    # same build image is flashed to BOTH A/B slots they share the baked LUKS
+    # header UUID, the luks_uuid_to_pu map below collapses them into one bucket,
+    # and the active slot's fallback entry gets pruned as a "duplicate" — which
+    # is how a working slot loses its boot entry. We protect it by the slot
+    # device encoded in the entry filename (..._<slotdev>.conf), which stays
+    # unambiguous even under a LUKS-UUID collision. (Resolved below once the
+    # PARTUUID->device mapping is known.)
+    local active_pu active_basename=""
+    active_pu="$(detect_active_root_partuuid 2>/dev/null || true)"
+
     # PARTUUIDs of every current root-shaped slot on the target disk,
     # plus a luks_uuid -> PARTUUID map so we can identify entries whose
     # cmdline uses `rd.luks.uuid=...` instead of `root=PARTUUID=...`.
@@ -1320,6 +1331,9 @@ prune_old_boot_entries() {
         pu="$(blkid -s PARTUUID -o value "$NAME" 2>/dev/null || true)"
         [[ -n "$pu" ]] || continue
         valid_pus_glob="${valid_pus_glob}|${pu^^}"
+        if [[ -n "$active_pu" && "${pu^^}" == "${active_pu^^}" ]]; then
+            active_basename="$(basename "$NAME")"
+        fi
         if [[ "$FSTYPE" == "crypto_LUKS" ]]; then
             lu="$(blkid -s UUID -o value "$NAME" 2>/dev/null || true)"
             [[ -n "$lu" ]] && luks_uuid_to_pu[${lu,,}]="${pu^^}"
@@ -1406,6 +1420,14 @@ prune_old_boot_entries() {
                 break
             fi
         done
+        # Protect the currently-active slot's entry regardless of the per-PU
+        # winner selection above (which can mis-bucket it under a LUKS-UUID
+        # collision). Keyed on the slot device in the filename.
+        if [[ "$is_winner" == "no" && -n "$active_basename" \
+              && "$(basename "$conf")" == *"_${active_basename}.conf" ]]; then
+            is_winner=yes
+            echo "    - keeping active-slot boot entry (protected fallback): $(basename "$conf")"
+        fi
         if [[ "$is_winner" == "yes" ]]; then
             while IFS= read -r f; do
                 [[ -n "$f" ]] && kept_files[$f]=1

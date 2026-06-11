@@ -85,3 +85,57 @@ startx
 
 That tests your real Awesome config without making the guest depend on a shared
 persistent `/home` design.
+
+## 3. Root slot sizing: tiny build image, grown to fill the slot
+
+The built root image is intentionally **much smaller than the partition it
+gets deployed to**. This is deliberate; it is not a misconfiguration.
+
+There are two independent size knobs, and they are easy to confuse:
+
+- **`mkosi.repart/10-root.conf` — the build image.** Uses `Minimize=guess`, so
+  the encrypted root `.raw` is sized to **each host's actual content** rather
+  than a fixed size. This matters because hosts vary widely — a server is a few
+  GB, while a full desktop host (steam, chromium, vscode, digikam, …) is much
+  larger — so no single fixed size fits them all; `Minimize` adapts per host.
+  `SizeMaxBytes=50G` is only a sanity ceiling (matched to the largest deploy
+  slot). Why keeping it small matters: the root is LUKS-encrypted, and an
+  encrypted partition **cannot be sparse** — every block is written as
+  ciphertext. A fixed 15–30G build image therefore wrote 15–30G of real bytes
+  during the build and needed roughly twice that in scratch space, which is
+  what caused `systemd-repart` "No space left on device" failures. Sizing to
+  content keeps builds small and fast and lets you keep more build images
+  around before `./clean.sh`. (`Minimize` measures content by populating the
+  filesystem an extra time — the "Pre-populating … twice" pass — which is a
+  small build-time cost for getting the right size on every host automatically.)
+
+- **`deploy.repart/10-root-a.conf`, `11-root-b.conf` — the physical slots.**
+  `SizeMinBytes=15G`, `SizeMaxBytes=50G`. This is what actually carves the
+  target disk when `bin/ab-install.sh` partitions it. Each root slot is
+  15–50G; the persistent `DATA` partition (`/mnt/data`, default `rest`) soaks
+  up whatever is left. **This `SizeMaxBytes` is the real ceiling on how large
+  the running root can get** — not the build-image value.
+
+### Bridging the two: `ab-grow-root.service`
+
+Because the encrypted root can't be grown by the deploy tooling
+(`bin/ab-install.sh` skips `resize2fs` for LUKS roots), the image instead grows
+itself **at boot**. `ab-grow-root.service` (enabled via the base preset) runs
+`/usr/local/sbin/ab-grow-root` on every boot:
+
+1. `cryptsetup resize <root-mapper>` — extend the dm-crypt mapping to fill the
+   whole partition (volume key is already in the kernel keyring from the
+   boot-time unlock, so no passphrase prompt).
+2. `resize2fs <dev>` — online-grow the ext4 to fill the (now full-size) device.
+
+It grows to the **actual partition size** on the target — i.e. up to the
+`deploy.repart` `SizeMaxBytes` (50G), not the build image's 15G guard. It is
+idempotent (a no-op once the fs already fills the slot), so it also grows each
+freshly-flashed slot on its first boot after an A/B update. This keeps the
+running root from filling up between weekly/monthly reflashes (e.g. mid-week
+`apt` upgrades) while keeping the build images tiny.
+
+To change how large the deployed root can grow, edit `SizeMaxBytes` in **both**
+`deploy.repart/10-root-a.conf` and `11-root-b.conf` (keep them equal so the A
+and B slots match). Verify after boot with `df -h /` and
+`journalctl -b -u ab-grow-root`.

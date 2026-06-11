@@ -13,6 +13,10 @@ enable ab-dns-ensure.timer
 enable systemd-timesyncd.service
 enable systemd-oomd.service
 enable ab-runtime-validate-firstboot.service
+# Grow the root fs to fill its A/B slot on boot (image is built small via
+# Minimize=; the slot is larger). Idempotent; also grows freshly-flashed
+# slots on their first boot after an A/B update.
+enable ab-grow-root.service
 # Disable systemd-boot-update on the test/sysupdate path. It runs
 # `bootctl update` against /boot, which on a USB ESP can take 60-90
 # seconds (FAT32 + slow USB writes), and the live-test USB doesn't

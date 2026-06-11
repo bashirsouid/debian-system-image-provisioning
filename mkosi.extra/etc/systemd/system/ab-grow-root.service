@@ -1,0 +1,16 @@
+[Unit]
+Description=Grow root filesystem to fill its A/B slot
+Documentation=file:///usr/local/sbin/ab-grow-root
+# Root is already mounted by the time local-fs.target is reached; grow it
+# before multi-user.target so logins / apt / services see the full slot.
+After=local-fs.target
+Before=multi-user.target
+ConditionPathExists=/usr/local/sbin/ab-grow-root
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ab-grow-root
+
+[Install]
+WantedBy=multi-user.target
