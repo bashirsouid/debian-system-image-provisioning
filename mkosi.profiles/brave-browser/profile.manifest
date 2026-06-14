@@ -1,0 +1,2 @@
+description="Brave Browser – free for Linux users. Installs brave-browser from Brave's official apt repository."
+uses_secrets=""
