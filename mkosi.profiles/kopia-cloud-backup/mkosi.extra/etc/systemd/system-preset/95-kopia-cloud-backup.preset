@@ -1,0 +1,3 @@
+# Enable kopia-cloud-backup timer when kopia-cloud-backup profile is selected
+enable kopia-cloud-backup.timer
+enable kopia-cloud-backup.service

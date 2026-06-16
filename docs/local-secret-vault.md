@@ -74,6 +74,12 @@ with `jq`. Top-level keys map directly to files under
     "secretAccessKey": "YOUR_SECRET_KEY",
     "bucket": "your-backup-bucket"
   },
+  "kopia-password": "long-random-repository-passphrase",
+  "kopia-s3-creds-wasabi.json": {
+    "accessKeyId": "YOUR_S3_ACCESS_KEY",
+    "secretAccessKey": "YOUR_S3_SECRET_KEY",
+    "bucket": "your-kopia-bucket"
+  },
   "users.json": [
     {
       "username": "you",
@@ -116,6 +122,15 @@ The `users.json` key defines local login accounts baked into the image.
 Top-level `users.json` is shared across all hosts; per-host
 `hosts.<name>.users.json` replaces the top-level array for that host.
 See `docs/user-provisioning.md` for the full field reference.
+
+The Kopia backup stack (profiles `kopia-cloud-backup` /
+`kopia-filesystem-backup`) reads two kinds of secret:
+`kopia-password` (the shared repository passphrase for every target — the
+backup fails if it is missing/empty) and one
+`kopia-s3-creds-<name>.json` (`{accessKeyId, secretAccessKey, bucket}`)
+per cloud target named in the host's `kopia_cloud_targets` descriptor
+list. The S3 endpoint is non-secret and lives in the descriptor, not
+here. See the Kopia backup stack section of `mkosi.profiles/README.md`.
 
 All other keys are optional except the secrets required by the profiles
 you select. `scripts/verify-build-secrets.sh` remains the authority for
@@ -162,4 +177,7 @@ keys, and copy service credentials into the image.
 
 Inside the built image, secrets live under `/etc/credstore/` on the
 LUKS-encrypted root filesystem and are exposed to services with
-systemd `LoadCredential=`.
+systemd `LoadCredential=`. (The Kopia backup services are an exception:
+because their set of per-target S3 credential files is dynamic, they
+read `/etc/credstore/` directly as the `kopia` group — the files are
+staged `root:kopia 0640`.)

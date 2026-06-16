@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly Kopia filesystem backup timer
+
+[Timer]
+OnCalendar=hourly
+# No catch-up: a missed run (drive detached, machine off) is not replayed on
+# boot — the next hourly tick is soon enough.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

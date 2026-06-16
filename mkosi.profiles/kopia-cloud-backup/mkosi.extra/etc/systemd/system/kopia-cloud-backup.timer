@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly Kopia cloud (S3) backup timer
+
+[Timer]
+OnCalendar=hourly
+# No catch-up: a missed run (machine asleep/off) is not replayed on boot —
+# the next hourly tick is soon enough.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

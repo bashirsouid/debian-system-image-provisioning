@@ -1,3 +1,0 @@
-# Enable home-server-backup timer when home-server-backup profile is selected
-enable home-server-backup.timer
-enable home-server-backup.service

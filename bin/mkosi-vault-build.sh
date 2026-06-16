@@ -197,6 +197,14 @@ do
     write_value ".[\"${name}\"]" "${name}"
 done
 
+# Kopia secrets are dynamically named (kopia-password, kopia-password-<name>,
+# kopia-s3-creds-<name>.json, kopia-*-healthcheck-url), so enumerate every
+# top-level key with the kopia- prefix rather than listing them above.
+while IFS= read -r name; do
+    [[ -n "${name}" ]] || continue
+    write_value ".[\"${name}\"]" "${name}"
+done < <(jq -r 'keys[] | select(startswith("kopia-"))' "${tmp_json}")
+
 while IFS= read -r host; do
     [[ -n "${host}" ]] || continue
     while IFS= read -r name; do

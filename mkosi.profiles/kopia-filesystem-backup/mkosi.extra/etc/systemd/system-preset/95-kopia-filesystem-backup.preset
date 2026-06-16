@@ -1,0 +1,3 @@
+# Enable kopia-filesystem-backup timer when kopia-filesystem-backup profile is selected
+enable kopia-filesystem-backup.timer
+enable kopia-filesystem-backup.service

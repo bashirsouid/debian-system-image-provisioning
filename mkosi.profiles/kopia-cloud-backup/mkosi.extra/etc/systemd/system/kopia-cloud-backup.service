@@ -1,0 +1,46 @@
+[Unit]
+Description=Periodic encrypted cloud (S3) backup via Kopia
+After=network-online.target
+Wants=network-online.target
+OnFailure=ab-monitor-alert@%n.service
+
+[Service]
+Type=oneshot
+User=kopia
+Group=kopia
+
+# Credentials (passphrase + per-target S3 creds + optional healthcheck URL)
+# are read directly from /etc/credstore, which is staged at build time by
+# scripts/package-credentials.sh as root:kopia 0640. The kopia user is a
+# member of group kopia, so it can read them even under ProtectSystem=strict
+# (which leaves /etc read-only but readable). Per-file LoadCredential= is not
+# used because the set of S3 targets is dynamic (one creds file per target).
+
+# Sourced environment overrides
+EnvironmentFile=-/etc/default/kopia-cloud-backup
+
+ExecStart=/usr/lib/kopia/kopia.backup.s3.bash
+TimeoutStartSec=3600
+
+# Directory creation and paths
+StateDirectory=kopia
+CacheDirectory=kopia
+
+# Security and capabilities
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_NET_RAW
+AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+
+[Install]
+WantedBy=multi-user.target

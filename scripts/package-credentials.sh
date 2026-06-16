@@ -230,58 +230,62 @@ else
 fi
 
 # --- OPTIONAL: Kopia credentials ---------------------------------------
-if profile_selected cloud-backup || profile_selected home-server-backup; then
-    # Stage generic/named Kopia passwords from global and host-specific folders
-    declare -A seen_passwords
-    # First check host-specific passwords
+# Helper: stage every secret whose basename matches a glob, host-specific
+# files winning over global ones of the same name. Staged root:kopia 0640 so
+# the kopia user (group kopia) can read them under ProtectSystem=strict.
+stage_kopia_glob() {
+    local glob="$1" f name
+    declare -A _seen=()
     if [[ -n "${HOST}" && -d "${SECRETS_DIR}/hosts/${HOST}" ]]; then
-        for f in "${SECRETS_DIR}/hosts/${HOST}"/kopia-password*; do
+        for f in "${SECRETS_DIR}/hosts/${HOST}"/${glob}; do
             [[ -f "$f" ]] || continue
             name="$(basename "$f")"
             stage_credential "${name}" "$f" "${CREDSTORE}/${name}"
-            chown 0:5000 "${CREDSTORE}/${name}"
-            chmod 0640 "${CREDSTORE}/${name}"
-            seen_passwords["${name}"]=1
+            chown 0:5000 "${CREDSTORE}/${name}"; chmod 0640 "${CREDSTORE}/${name}"
+            _seen["${name}"]=1
         done
     fi
-    # Then check global passwords
-    for f in "${SECRETS_DIR}"/kopia-password*; do
+    for f in "${SECRETS_DIR}"/${glob}; do
         [[ -f "$f" ]] || continue
         name="$(basename "$f")"
-        if [[ -z "${seen_passwords[${name}]:-}" ]]; then
-            stage_credential "${name}" "$f" "${CREDSTORE}/${name}"
-            chown 0:5000 "${CREDSTORE}/${name}"
-            chmod 0640 "${CREDSTORE}/${name}"
-        fi
+        [[ -n "${_seen[${name}]:-}" ]] && continue
+        stage_credential "${name}" "$f" "${CREDSTORE}/${name}"
+        chown 0:5000 "${CREDSTORE}/${name}"; chmod 0640 "${CREDSTORE}/${name}"
     done
+}
+
+if profile_selected kopia-cloud-backup || profile_selected kopia-filesystem-backup; then
+    # Shared repository passphrase (kopia-password) plus any per-target
+    # overrides (kopia-password-<name>).
+    stage_kopia_glob 'kopia-password*'
 fi
 
-if profile_selected cloud-backup; then
-    if kc_path="$(resolve_secret kopia-cloud-s3-creds.json)"; then
-        if ! jq -e '.endpoint and .bucket and .accessKeyId and .secretAccessKey' <"${kc_path}" >/dev/null 2>&1; then
-            fail "kopia-cloud-s3-creds.json failed validation (must contain endpoint, bucket, accessKeyId, secretAccessKey)"
+if profile_selected kopia-cloud-backup; then
+    # One S3 creds file per cloud target: kopia-s3-creds-<name>.json with
+    # {accessKeyId, secretAccessKey, bucket}. Endpoint is non-secret and lives
+    # in the host descriptor (kopia_cloud_targets), not here.
+    for f in "${SECRETS_DIR}/hosts/${HOST}"/kopia-s3-creds-*.json "${SECRETS_DIR}"/kopia-s3-creds-*.json; do
+        [[ -f "$f" ]] || continue
+        if ! jq -e '.accessKeyId and .secretAccessKey and .bucket' <"$f" >/dev/null 2>&1; then
+            fail "$(basename "$f") failed validation (must contain accessKeyId, secretAccessKey, bucket)"
         fi
-        stage_credential kopia-cloud-s3-creds.json "${kc_path}" "${CREDSTORE}/kopia-cloud-s3-creds.json"
-        chown 0:5000 "${CREDSTORE}/kopia-cloud-s3-creds.json"
-        chmod 0640 "${CREDSTORE}/kopia-cloud-s3-creds.json"
-    else
-        warn "kopia-cloud-s3-creds.json absent; skipping."
-    fi
+    done
+    stage_kopia_glob 'kopia-s3-creds-*.json'
 fi
 
 if profile_selected healthchecksio; then
-    if profile_selected cloud-backup; then
+    if profile_selected kopia-cloud-backup; then
         if hc_cloud_path="$(resolve_secret kopia-cloud-healthcheck-url)"; then
             stage_credential kopia-cloud-healthcheck-url "${hc_cloud_path}" "${CREDSTORE}/kopia-cloud-healthcheck-url"
             chown 0:5000 "${CREDSTORE}/kopia-cloud-healthcheck-url"
             chmod 0640 "${CREDSTORE}/kopia-cloud-healthcheck-url"
         fi
     fi
-    if profile_selected home-server-backup; then
-        if hc_home_path="$(resolve_secret kopia-home-healthcheck-url)"; then
-            stage_credential kopia-home-healthcheck-url "${hc_home_path}" "${CREDSTORE}/kopia-home-healthcheck-url"
-            chown 0:5000 "${CREDSTORE}/kopia-home-healthcheck-url"
-            chmod 0640 "${CREDSTORE}/kopia-home-healthcheck-url"
+    if profile_selected kopia-filesystem-backup; then
+        if hc_fs_path="$(resolve_secret kopia-filesystem-healthcheck-url)"; then
+            stage_credential kopia-filesystem-healthcheck-url "${hc_fs_path}" "${CREDSTORE}/kopia-filesystem-healthcheck-url"
+            chown 0:5000 "${CREDSTORE}/kopia-filesystem-healthcheck-url"
+            chmod 0640 "${CREDSTORE}/kopia-filesystem-healthcheck-url"
         fi
     fi
 fi

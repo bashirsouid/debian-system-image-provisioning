@@ -1,0 +1,13 @@
+# /etc/default/kopia-cloud-backup
+# Tunables for the hourly encrypted Kopia cloud (S3) backup.
+# Which clouds get backed up is defined by the host's kopia_cloud_targets
+# descriptor list (rendered to /etc/kopia/targets.json), not here.
+
+# Upload throttle and parallelism for `kopia snapshot create`.
+KOPIA_UPLOAD_LIMIT_MB_DEFAULT=100000
+KOPIA_PARALLEL_DEFAULT=16
+
+# Cache caps (per repository) so a restore/verify can never fill the disk.
+# Defaults live in the scripts; uncomment to override.
+#KOPIA_CONTENT_CACHE_MB=1000
+#KOPIA_METADATA_CACHE_MB=500

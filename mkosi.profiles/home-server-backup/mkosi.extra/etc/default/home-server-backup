@@ -1,8 +1,0 @@
-# /etc/default/home-server-backup
-# Configuration for periodic Kopia home server / filesystem backup.
-
-KOPIA_BACKUP_TYPE=filesystem
-
-# Default upload limits and parallelism
-KOPIA_UPLOAD_LIMIT_MB_DEFAULT=50000
-KOPIA_PARALLEL_DEFAULT=16

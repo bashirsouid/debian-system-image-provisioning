@@ -48,6 +48,10 @@ than encrypted.
 | `persistent_home` | `hosts/<name>/mkosi.extra/etc/fstab` | `<source> [fstype]` |
 | `packages` | `[Content] Packages=` drop-in | space-separated; prefer a profile |
 | `backup_paths` | `…/etc/s3-backup-paths.conf` | optional; space-separated |
+| `kopia_filesystem_targets` | `…/etc/kopia/targets.json` (`.filesystem`) | optional; space-separated `name:/mountpoint` entries |
+| `kopia_cloud_targets` | `…/etc/kopia/targets.json` (`.cloud`) | optional; space-separated `name:https://endpoint` entries (endpoint split on first `:`) |
+| `kopia_sources` | `…/etc/kopia/sources.conf` | optional; space-separated paths to snapshot (default `/home`) |
+| `kopia_extra_excludes` | `…/etc/kopia/excludes.local.conf` | optional; space-separated extra ignore patterns |
 
 Anything that cannot be a `key = value` scalar — firmware blobs, quirk
 systemd units, driver configs — is **not** a descriptor key. It belongs

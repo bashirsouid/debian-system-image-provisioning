@@ -31,6 +31,10 @@
 #     persistent_home = LABEL=HOME ext4   # "<source> [fstype]"; generates fstab
 #     packages        = firmware-linux    # optional host-only [Content] Packages=
 #     backup_paths    = /etc/s3-backup-paths.conf /home   # -> /etc/s3-backup-paths.conf
+#     kopia_filesystem_targets = ext1:/mnt/ext1 ext2:/mnt/ext2  # -> /etc/kopia/targets.json
+#     kopia_cloud_targets      = wasabi:https://s3.wasabi.com    # -> /etc/kopia/targets.json
+#     kopia_sources            = /home                  # -> /etc/kopia/sources.conf
+#     kopia_extra_excludes     = *.iso /mnt/data/Cache/ # -> /etc/kopia/excludes.local.conf
 #
 # When a descriptor exists, ab_host_descriptor_materialize renders a
 # synthetic host overlay under .mkosi-host/<name>/ that is byte-for-byte
@@ -108,6 +112,7 @@ ab_host_descriptor_materialize() {
 
   local profiles hostname image_id_suffix kernel_cmdline secure_boot
   local persistent_home backup_paths architecture packages
+  local kopia_filesystem_targets kopia_cloud_targets kopia_extra_excludes kopia_sources
   profiles="$(ab_host_descriptor_value "$desc" profiles)"
   hostname="$(ab_host_descriptor_value "$desc" hostname)"
   image_id_suffix="$(ab_host_descriptor_value "$desc" image_id_suffix)"
@@ -117,6 +122,10 @@ ab_host_descriptor_materialize() {
   backup_paths="$(ab_host_descriptor_value "$desc" backup_paths)"
   architecture="$(ab_host_descriptor_value "$desc" architecture)"
   packages="$(ab_host_descriptor_value "$desc" packages)"
+  kopia_filesystem_targets="$(ab_host_descriptor_value "$desc" kopia_filesystem_targets)"
+  kopia_cloud_targets="$(ab_host_descriptor_value "$desc" kopia_cloud_targets)"
+  kopia_extra_excludes="$(ab_host_descriptor_value "$desc" kopia_extra_excludes)"
+  kopia_sources="$(ab_host_descriptor_value "$desc" kopia_sources)"
 
   [[ -n "$profiles" ]]        && printf '%s\n' "$profiles"        > "$out/profile.default"
   [[ -n "$image_id_suffix" ]] && printf '%s\n' "$image_id_suffix" > "$out/image-id-suffix"
@@ -217,6 +226,74 @@ SB
         printf '%s\n' "$_p"
       done
     } > "$out/mkosi.extra/etc/s3-backup-paths.conf"
+  fi
+
+  # Kopia backup stack — non-secret per-host config. Targets are rendered into
+  # /etc/kopia/targets.json (consumed by /usr/lib/kopia/kopia.backup.*.bash).
+  # Secrets (passphrase, S3 keys) stay in the age vault, NOT here.
+  #
+  #   kopia_filesystem_targets = name:/mnt/point  name2:/mnt/point2
+  #   kopia_cloud_targets      = name:https://endpoint  name2:https://endpoint2
+  #   kopia_extra_excludes     = pattern1 pattern2     (-> excludes.local.conf)
+  #   kopia_sources            = /home /etc/important  (-> sources.conf)
+  if [[ -n "$kopia_filesystem_targets" || -n "$kopia_cloud_targets" \
+        || -n "$kopia_extra_excludes" || -n "$kopia_sources" ]]; then
+    command -v jq >/dev/null 2>&1 || {
+      printf 'ab_host_descriptor: ERROR: jq is required to render kopia targets for %s\n' "$host" >&2
+      return 1
+    }
+    install -d -m 0755 "$out/mkosi.extra/etc/kopia"
+  fi
+
+  if [[ -n "$kopia_filesystem_targets" || -n "$kopia_cloud_targets" ]]; then
+    local _fs_json="[]" _cloud_json="[]" _entry _nm _rest
+    local -a _objs=()
+    if [[ -n "$kopia_filesystem_targets" ]]; then
+      _objs=()
+      for _entry in $kopia_filesystem_targets; do
+        _nm="${_entry%%:*}"; _rest="${_entry#*:}"
+        if [[ "$_nm" == "$_entry" || -z "$_rest" ]]; then
+          printf 'ab_host_descriptor: ERROR: kopia_filesystem_targets entry %q must be name:/mountpoint\n' "$_entry" >&2
+          return 1
+        fi
+        _objs+=("$(jq -n --arg n "$_nm" --arg m "$_rest" '{name:$n, mount:$m}')")
+      done
+      _fs_json="$(printf '%s\n' "${_objs[@]}" | jq -s '.')"
+    fi
+    if [[ -n "$kopia_cloud_targets" ]]; then
+      _objs=()
+      for _entry in $kopia_cloud_targets; do
+        _nm="${_entry%%:*}"; _rest="${_entry#*:}"
+        if [[ "$_nm" == "$_entry" || -z "$_rest" ]]; then
+          printf 'ab_host_descriptor: ERROR: kopia_cloud_targets entry %q must be name:https://endpoint\n' "$_entry" >&2
+          return 1
+        fi
+        _objs+=("$(jq -n --arg n "$_nm" --arg e "$_rest" '{name:$n, endpoint:$e}')")
+      done
+      _cloud_json="$(printf '%s\n' "${_objs[@]}" | jq -s '.')"
+    fi
+    jq -n --argjson fs "$_fs_json" --argjson cloud "$_cloud_json" \
+      '{filesystem:$fs, cloud:$cloud}' > "$out/mkosi.extra/etc/kopia/targets.json"
+  fi
+
+  if [[ -n "$kopia_extra_excludes" ]]; then
+    {
+      printf '# Generated from hosts.local/%s.conf (kopia_extra_excludes).\n' "$host"
+      local _ex
+      for _ex in $kopia_extra_excludes; do
+        printf '%s\n' "$_ex"
+      done
+    } > "$out/mkosi.extra/etc/kopia/excludes.local.conf"
+  fi
+
+  if [[ -n "$kopia_sources" ]]; then
+    {
+      printf '# Generated from hosts.local/%s.conf (kopia_sources).\n' "$host"
+      local _s
+      for _s in $kopia_sources; do
+        printf '%s\n' "$_s"
+      done
+    } > "$out/mkosi.extra/etc/kopia/sources.conf"
   fi
 
   printf '%s\n' "$out"
