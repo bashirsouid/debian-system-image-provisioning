@@ -1,0 +1,2 @@
+description="Stable Debian kernel (meta-package; auto-tracks the pinned stable archive). amd64/arm64 selected by build architecture."
+uses_secrets=""

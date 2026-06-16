@@ -50,7 +50,8 @@ Profile directories currently in the tree:
 | `kopia` | Kopia backup CLI + `kopia` system user (UID 5000) + `archivereaders` group + the `/usr/lib/kopia/*.bash` scripts and `/etc/kopia` config (see [Kopia backup stack](#kopia-backup-stack) below) |
 | `kopia-cloud-backup` | Hourly encrypted S3 cloud backup service — requires `kopia` profile (see [Kopia backup stack](#kopia-backup-stack)) |
 | `kopia-filesystem-backup` | Hourly encrypted filesystem backup service for rotating local/USB drives — requires `kopia` profile (see [Kopia backup stack](#kopia-backup-stack)) |
-| `kernel-6-18` | Linux 6.18.x kernel from trixie-backports |
+| `kernel-lts` | Stable Debian kernel (meta-package; amd64/arm64 auto-selected) |
+| `kernel-rolling` | Newest kernel from trixie-backports, auto-tracked (amd64/arm64 auto-selected) |
 | `macbook` | Apple T2 hardware: kernel, firmware, t2fanrd |
 | `s3-unencrypted-backup` | Hourly upload of configured files to S3-compatible storage (no encryption) |
 | `server` | Minimal headless CLI baseline |

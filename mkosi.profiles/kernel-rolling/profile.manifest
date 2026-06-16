@@ -1,0 +1,2 @@
+description="Newest Linux kernel from trixie-backports (auto-tracked, never pinned). amd64/arm64 selected by build architecture. Newer hardware support than stable."
+uses_secrets=""

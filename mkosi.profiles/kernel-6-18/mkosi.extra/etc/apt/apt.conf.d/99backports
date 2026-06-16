@@ -1,3 +1,0 @@
-APT {
-  Default-Release "trixie-backports";
-};

@@ -20,5 +20,5 @@ On x86-64: `linux-image-amd64` (Debian stock kernel).
 On ARM64: `linux-image-arm64`.
 
 The kernel is selected by the base mkosi config; the `server` profile does not
-override it. Use the `kernel-6-18` profile to pull a newer kernel from
-`trixie-backports`.
+override it. Use the `kernel-rolling` profile to pull a newer kernel from
+`trixie-backports`, or `kernel-lts` to make the stable-kernel choice explicit.

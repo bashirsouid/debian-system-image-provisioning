@@ -1,0 +1,25 @@
+# Pull the Linux kernel stack from trixie-backports for kernel-rolling.
+#
+# These pins are deliberately VERSION-AGNOSTIC (globs, no point release),
+# so the meta-packages resolve to whatever the newest backports kernel is
+# at build time. This is what stops the profile from going stale when
+# backports rolls forward and drops the old ABI. Priority 600 > the 500
+# of the pinned stable archive, so backports wins for these packages
+# only; everything else still comes from the reproducible snapshot mirror.
+Package: linux-image-amd64 linux-headers-amd64 linux-image-arm64 linux-headers-arm64
+Pin: release a=trixie-backports
+Pin-Priority: 600
+
+# The versioned packages the meta-packages pull in (e.g.
+# linux-image-7.0.10+deb13-amd64, linux-headers-*-common, linux-kbuild-*).
+# Pinned so the whole kernel stack stays ABI-consistent on backports.
+Package: linux-image-*-amd64 linux-headers-*-amd64 linux-image-*-arm64 linux-headers-*-arm64 linux-headers-*-common linux-kbuild-*
+Pin: release a=trixie-backports
+Pin-Priority: 600
+
+# Newer firmware from backports to match the newer kernel (e.g. Intel
+# BE201 Wi-Fi, recent GPUs/NPUs). Same rationale as the old kernel-6-18
+# firmware-backports.pref, kept version-agnostic.
+Package: firmware-*
+Pin: release a=trixie-backports
+Pin-Priority: 600

@@ -1,2 +1,0 @@
-description="Linux kernel 6.18.x from trixie-backports. Provides newer hardware support than Debian stable kernel."
-uses_secrets=""
