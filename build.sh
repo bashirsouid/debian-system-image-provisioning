@@ -1913,6 +1913,7 @@ else
   ensure_managed_sources_once normal
 fi
 
+echo "==> Computing config checksum and resolving image version..."
 compute_config_checksum
 
 # IMAGE_VERSION resolution order:
@@ -1950,10 +1951,14 @@ if [[ -z "${LUKS_PASSPHRASE:-}" ]]; then
     echo "       Set the LUKS_PASSPHRASE environment variable before running." >&2
     exit 1
   fi
-  echo "==> LUKS Encryption enabled."
-  read -r -s -p "Enter LUKS passphrase for the new image(s): " LUKS_PASSPHRASE
   echo
-  read -r -s -p "Confirm LUKS passphrase: " LUKS_PASSPHRASE_CONFIRM
+  echo "==> Disk encryption: the image's root filesystem is LUKS-encrypted."
+  echo "    This passphrase is SEPARATE from the secret-vault passphrase you may"
+  echo "    have just entered — you will type it at boot to unlock each image."
+  echo "    (Set LUKS_PASSPHRASE in the environment beforehand to skip this prompt.)"
+  read -r -s -p "    Enter a NEW LUKS passphrase for the image(s): " LUKS_PASSPHRASE
+  echo
+  read -r -s -p "    Confirm LUKS passphrase: " LUKS_PASSPHRASE_CONFIRM
   echo
   if [[ "$LUKS_PASSPHRASE" != "$LUKS_PASSPHRASE_CONFIRM" ]]; then
     echo "ERROR: Passphrases do not match." >&2

@@ -75,14 +75,26 @@ decrypt_vault() {
     mode="${mode:-passphrase}"
     identity="${MKOSI_VAULT_IDENTITY:-${IDENTITY:-$(config_value identity || true)}}"
 
+    # Make the upcoming age prompt unambiguous: it wants the VAULT passphrase,
+    # which is distinct from the per-image LUKS disk passphrase build.sh asks
+    # for later, and from any login password.
+    vault_prompt_banner() {
+        printf '\n==> Unlocking encrypted secret vault: %s\n' "$VAULT" >&2
+        printf '    At the prompt below, enter the VAULT passphrase\n' >&2
+        printf '    (the age secret-vault password — NOT your login or LUKS disk passphrase).\n\n' >&2
+    }
+
     case "$mode" in
         passphrase)
+            vault_prompt_banner
             age --decrypt "$VAULT" >"$dest"
             ;;
         recipient)
             if [[ -n "$identity" ]]; then
+                printf '\n==> Unlocking encrypted secret vault %s with age identity %s\n' "$VAULT" "$identity" >&2
                 age --decrypt --identity "$(expand_path "$identity")" "$VAULT" >"$dest"
             else
+                vault_prompt_banner
                 age --decrypt "$VAULT" >"$dest"
             fi
             ;;
