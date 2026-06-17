@@ -1,6 +1,9 @@
 Types: deb
-URIs: https://pkg.kopia.io/deb
-Suites: ./
-# Components: main
+# Kopia's official APT repo. Host is packages.kopia.io (NOT pkg.kopia.io,
+# which does not resolve) and it is a standard suite repo (stable main),
+# not a flat repo. See https://kopia.io/docs/installation/.
+URIs: https://packages.kopia.io/apt/
+Suites: stable
+Components: main
 Architectures: amd64
 Signed-By: /etc/apt/keyrings/kopia.gpg
