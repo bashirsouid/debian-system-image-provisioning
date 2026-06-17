@@ -8,12 +8,22 @@ Type=oneshot
 User=kopia
 Group=kopia
 
+# Credentials for notification ability
+LoadCredential=kopia-password.key:/etc/credstore/kopia-password.key
+LoadCredential=pagerduty.key:/etc/credstore/pagerduty.key
+LoadCredential=mailjet.key:/etc/credstore/mailjet.key
+LoadCredential=mailjet.secret:/etc/credstore/mailjet.secret
+
 # Credentials (the shared kopia-password passphrase + optional healthcheck URL)
 # are read directly from /etc/credstore (root:kopia 0640; kopia is in group
 # kopia). See the kopia-cloud-backup.service comment for the rationale.
 
 # Sourced environment overrides
 EnvironmentFile=-/etc/default/kopia-filesystem-backup
+Environment=KOPIA_CACHE_DIRECTORY=/var/cache/kopia
+Environment=KOPIA_LOG_DIR=/var/cache/kopia
+Environment=HOME=/var/lib/kopia
+Environment=KOPIA_CHECK_FOR_UPDATES=false
 
 ExecStart=/usr/lib/kopia/kopia.backup.filesystem.bash
 TimeoutStartSec=3600
