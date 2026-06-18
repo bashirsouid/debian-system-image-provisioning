@@ -1,1 +1,2 @@
-description="Periodic encrypted cloud (S3) backups via Kopia. Walks the per-host kopia_cloud_targets list; requires the kopia profile."
+description="Periodic encrypted cloud (S3) backups via Kopia. Walks the per-host kopia_cloud_targets list. Auto-pulls in kopia-base."
+requires="kopia-base"

@@ -1,4 +1,6 @@
-# Backup role: periodic encrypted backups using Kopia
-kopia
+# Backup role: periodic encrypted backups using Kopia.
+# kopia-base is pulled in automatically (requires= in the manifests), but it is
+# listed here too so the role reads as the complete stack.
+kopia-base
 kopia-cloud-backup
 kopia-filesystem-backup

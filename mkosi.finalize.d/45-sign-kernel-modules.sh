@@ -53,21 +53,26 @@ if [[ ! -d "$MODULES_DIR" ]]; then
 fi
 
 # Find sign-file on the build host. Prefer a version matching the image kernel;
-# fall back to any installed linux-headers. sign-file only does crypto — it does
-# not need to match the image kernel version.
+# fall back to any installed copy. sign-file only does crypto — it does not need
+# to match the image kernel version. Debian ships it in the linux-kbuild package
+# at /usr/lib/linux-kbuild-*/scripts/sign-file; the linux-headers tree often
+# symlinks to it under /usr/src/linux-headers-*/scripts/. Accept either.
 SIGNFILE=""
 for kernel_dir in "$MODULES_DIR"/*/; do
     kver="$(basename "$kernel_dir")"
-    if [[ -x "/usr/src/linux-headers-${kver}/scripts/sign-file" ]]; then
-        SIGNFILE="/usr/src/linux-headers-${kver}/scripts/sign-file"
-        echo "==> [FINALIZE] sign-file: /usr/src/linux-headers-${kver}/scripts/sign-file"
-        break
-    fi
+    for _cand in "/usr/src/linux-headers-${kver}/scripts/sign-file" \
+                 "/usr/lib/linux-kbuild-${kver}/scripts/sign-file"; do
+        if [[ -x "$_cand" ]]; then
+            SIGNFILE="$_cand"
+            echo "==> [FINALIZE] sign-file: ${SIGNFILE}"
+            break 2
+        fi
+    done
 done
 if [[ -z "$SIGNFILE" ]]; then
-    for header_dir in /usr/src/linux-headers-*; do
-        if [[ -x "$header_dir/scripts/sign-file" ]]; then
-            SIGNFILE="$header_dir/scripts/sign-file"
+    for _cand in /usr/src/linux-headers-*/scripts/sign-file /usr/lib/linux-kbuild-*/scripts/sign-file; do
+        if [[ -x "$_cand" ]]; then
+            SIGNFILE="$_cand"
             echo "==> [FINALIZE] sign-file (version mismatch): ${SIGNFILE}"
             break
         fi
@@ -76,9 +81,9 @@ fi
 
 if [[ -z "$SIGNFILE" ]]; then
     if [[ "$SB_REQUIRED" == "yes" ]]; then
-        echo "ERROR: [FINALIZE] sign-file not found in /usr/src/linux-headers-*/scripts/" >&2
-        echo "ERROR: [FINALIZE] Install kernel headers on the build host:" >&2
-        echo "ERROR: [FINALIZE]   apt-get install linux-headers-\$(uname -r)" >&2
+        echo "ERROR: [FINALIZE] sign-file not found in /usr/src/linux-headers-*/scripts/ or /usr/lib/linux-kbuild-*/scripts/" >&2
+        echo "ERROR: [FINALIZE] Install the kbuild tools on the build host:" >&2
+        echo "ERROR: [FINALIZE]   apt-get install linux-headers-amd64   # pulls linux-kbuild (provides sign-file)" >&2
         exit 1
     fi
     echo "==> [FINALIZE] sign-file not found on build host; skipping module signing"

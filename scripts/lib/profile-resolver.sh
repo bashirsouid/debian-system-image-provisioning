@@ -60,19 +60,78 @@ _ab_read_role_members() {
 #   * unknown profile/role name
 #   * a role file referencing another role (nesting is disallowed)
 #   * a role file referencing an unknown profile
+# Add one atomic profile to the in-progress resolution, FIRST pulling in any
+# profiles it declares via `requires=` in its profile.manifest (so a dependency
+# always lands before the profile that needs it). This is what lets a host
+# select `kopia-filesystem-backup` alone and get `kopia-base` automatically —
+# no need to remember the shared base. Recurses for transitive requires; a
+# requires cycle is reported rather than looping forever.
+#
+# Operates on the module-level _ab_resolved / _ab_seen / _ab_inprogress strings
+# that ab_resolve_profiles resets at the start of each call (globals, not
+# locals, so this recursive helper can see them — bash 3.2 has no namerefs).
+_ab_emit_profile() {
+  local p="$1" profiles_root="$2"
+
+  # Already emitted -> nothing to do.
+  case "$_ab_seen" in *" $p "*) return 0 ;; esac
+
+  if [[ ! -d "$profiles_root/$p" ]]; then
+    ab_profile_fail "unknown profile '$p' (no $profiles_root/$p/)" || return 1
+  fi
+
+  # Cycle guard: p is already being expanded higher up the recursion.
+  case "$_ab_inprogress" in
+    *" $p "*) ab_profile_fail "requires cycle detected at profile '$p'" || return 1 ;;
+  esac
+  _ab_inprogress+="$p "
+
+  # Emit declared dependencies first. requires= is a space-separated list of
+  # atomic profile names, parsed safely (never sourced) via the manifest reader.
+  local reqs req _rsplit
+  reqs="$(ab_profile_manifest_value "$p" requires)"
+  if [[ -n "$reqs" ]]; then
+    _rsplit="$(printf '%s' "$reqs" | tr -s '[:space:]' '\n')"
+    while IFS= read -r req; do
+      [[ -n "$req" ]] || continue
+      if [[ ! "$req" =~ $ab_profile_token_regex ]]; then
+        ab_profile_fail "profile '$p' lists invalid requires token: '$req'" || return 1
+      fi
+      if [[ -f "$(ab_roles_root)/$req.role" ]]; then
+        ab_profile_fail "profile '$p' requires '$req', which is a role; requires= may only name atomic profiles" || return 1
+      fi
+      if [[ ! -d "$profiles_root/$req" ]]; then
+        ab_profile_fail "profile '$p' requires unknown profile '$req' (no $profiles_root/$req/)" || return 1
+      fi
+      _ab_emit_profile "$req" "$profiles_root" || return 1
+    done <<< "$_rsplit"
+  fi
+
+  _ab_inprogress="${_ab_inprogress/ $p / }"
+
+  # A transitive require may already have emitted p; re-check before adding.
+  case "$_ab_seen" in
+    *" $p "*) : ;;
+    *)
+      _ab_seen+="$p "
+      _ab_resolved+="${_ab_resolved:+ }$p"
+      ;;
+  esac
+}
+
 ab_resolve_profiles() {
   local raw="${1:-}"
   local profiles_root roles_root
   profiles_root="$(ab_profiles_root)"
   roles_root="$(ab_roles_root)"
 
-  # Deliberately using a plain space-padded string for the "seen" set
-  # rather than `declare -A`, because this library also gets sourced
-  # by tooling that happens to run on macOS's bash 3.2 (which can't do
-  # associative arrays). The dataset is tiny (max ~25 entries) so the
-  # O(n) lookup is fine.
-  local resolved=""
-  local seen=" "
+  # Module-level accumulators (see _ab_emit_profile), reset per call.
+  # Deliberately plain space-padded strings rather than `declare -A`, because
+  # this library also gets sourced by tooling that runs on macOS's bash 3.2
+  # (no associative arrays). The dataset is tiny (max ~25 entries).
+  _ab_resolved=""
+  _ab_seen=" "
+  _ab_inprogress=" "
   local tok member role_file
 
   # Tokenize via a read loop instead of `for tok in $raw` so this
@@ -106,32 +165,22 @@ ab_resolve_profiles() {
         if [[ ! -d "$profiles_root/$member" ]]; then
           ab_profile_fail "role '$tok' references unknown profile '$member' (no $profiles_root/$member/)" || return 1
         fi
-        case "$seen" in
-          *" $member "*) : ;;
-          *)
-            seen+="$member "
-            resolved+="${resolved:+ }$member"
-            ;;
-        esac
+        # Route through _ab_emit_profile so role members also pull in their
+        # own requires= dependencies.
+        _ab_emit_profile "$member" "$profiles_root" || return 1
       done < <(_ab_read_role_members "$role_file")
       continue
     fi
 
     if [[ -d "$profiles_root/$tok" ]]; then
-      case "$seen" in
-        *" $tok "*) : ;;
-        *)
-          seen+="$tok "
-          resolved+="${resolved:+ }$tok"
-          ;;
-      esac
+      _ab_emit_profile "$tok" "$profiles_root" || return 1
       continue
     fi
 
     ab_profile_fail "unknown profile or role: '$tok' (no $profiles_root/$tok/ or $roles_root/$tok.role)" || return 1
   done <<< "$_split"
 
-  printf '%s' "$resolved"
+  printf '%s' "$_ab_resolved"
 }
 
 # Return the value for a single key in a profile's manifest, or empty.

@@ -1,0 +1,3 @@
+description="ThinkPad X1 Gen13 (Lunar Lake) hardware enablement: Lunar Lake firmware (iwlwifi BE201, xe GPU, SOF audio, VPU/NPU, Bluetooth), Xorg/libinput/trackpoint, eDP framebuffer, TLP, speaker-DAC units. Layers on thinkpad-g13."
+uses_secrets=""
+requires="debian-backports"

@@ -1,0 +1,2 @@
+description="Repo-only base: enables the trixie-backports apt suite. Pulled in automatically (requires=) by profiles that need backports; not selected directly."
+uses_secrets=""

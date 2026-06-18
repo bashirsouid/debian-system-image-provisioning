@@ -39,6 +39,9 @@ Profile directories currently in the tree:
 | `joystickwake` | Prevents DPMS timeout on controller input |
 | `bluetooth` | Bluetooth support with bluez stack |
 | `cloudflare-tunnel` | cloudflared connector for backup SSH |
+| `brave-repo` | *(repo-only base, auto-pulled via `requires=`)* Brave apt source + signing key |
+| `cloudflared-repo` | *(repo-only base, auto-pulled via `requires=`)* Cloudflare apt source + key for the `cloudflared` package |
+| `debian-backports` | *(repo-only base, auto-pulled via `requires=`)* enables the `trixie-backports` apt suite |
 | `devbox` | Liquorix kernel + spice-vdagent (QEMU/virt guest) |
 | `dev-tools` | Baseline CLI: git, curl, vim, htop, tmux, rsync, less, jq |
 | `digikam` | Photo manager |
@@ -47,9 +50,9 @@ Profile directories currently in the tree:
 | `healthchecksio` | Dead-man's-switch heartbeat to healthchecks.io |
 | `incus` | System containers / VMs |
 | `k3s` | *(stub)* single-node Kubernetes |
-| `kopia` | Kopia backup CLI + `kopia` system user (UID 5000) + `archivereaders` group + the `/usr/lib/kopia/*.bash` scripts and `/etc/kopia` config (see [Kopia backup stack](#kopia-backup-stack) below) |
-| `kopia-cloud-backup` | Hourly encrypted S3 cloud backup service — requires `kopia` profile (see [Kopia backup stack](#kopia-backup-stack)) |
-| `kopia-filesystem-backup` | Hourly encrypted filesystem backup service for rotating local/USB drives — requires `kopia` profile (see [Kopia backup stack](#kopia-backup-stack)) |
+| `kopia-base` | Shared base for the backup stack: Kopia CLI + `kopia` system user (UID 5000) + the `/usr/lib/kopia/*.bash` scripts and `/etc/kopia` config. Pulled in automatically by the backup profiles (`requires=`); not selected directly. (see [Kopia backup stack](#kopia-backup-stack) below) |
+| `kopia-cloud-backup` | Hourly encrypted S3 cloud backup service — auto-pulls `kopia-base` (see [Kopia backup stack](#kopia-backup-stack)) |
+| `kopia-filesystem-backup` | Hourly encrypted filesystem backup service for rotating local/USB drives — auto-pulls `kopia-base` (see [Kopia backup stack](#kopia-backup-stack)) |
 | `kernel-lts` | Stable Debian kernel (meta-package; amd64/arm64 auto-selected) |
 | `kernel-rolling` | Newest kernel from trixie-backports, auto-tracked (amd64/arm64 auto-selected) |
 | `macbook` | Apple T2 hardware: kernel, firmware, t2fanrd |
@@ -94,11 +97,13 @@ descriptor plus its vault entries.
 
 | Profile | What it provides |
 | --- | --- |
-| `kopia` | Installs the Kopia CLI (third-party apt source) plus `jq`, `curl`, `fuse3`; creates the `kopia` system user/group (UID/GID 5000) and the `archivereaders` group; ships the backup scripts under `/usr/lib/kopia/` and the config under `/etc/kopia/`. |
+| `kopia-base` | Installs the Kopia CLI (third-party apt source) plus `jq`, `curl`, `fuse3`; creates the `kopia` system user/group (UID/GID 5000); ships the backup scripts under `/usr/lib/kopia/` and the config under `/etc/kopia/`. Pulled in automatically by the two backup profiles via `requires=kopia-base`. |
 | `kopia-cloud-backup` | Adds `kopia-cloud-backup.service` + `.timer` (hourly), running `/usr/lib/kopia/kopia.backup.s3.bash` over the host's cloud targets. |
 | `kopia-filesystem-backup` | Adds `kopia-filesystem-backup.service` + `.timer` (hourly), running `/usr/lib/kopia/kopia.backup.filesystem.bash` over the host's filesystem targets (rotating local/USB drives), skipping any drive that is not currently mounted. |
 
-Both backup profiles depend on `kopia`. Use the `backup` role to bundle all
+Both backup profiles declare `requires=kopia-base`, so selecting either one
+pulls in `kopia-base` automatically — you never list it by hand. Use the
+`backup` role to bundle all
 three.
 
 ### Scripts (`/usr/lib/kopia/`, image-managed)
@@ -136,7 +141,7 @@ kopia_cloud_targets      = wasabi:https://s3.us-west-1.wasabisys.com
   `https://…` survives). The endpoint is non-secret; the bucket and keys are
   in the vault (see below).
 
-The `kopia` profile ships a default empty `/etc/kopia/targets.json`
+The `kopia-base` profile ships a default empty `/etc/kopia/targets.json`
 (`{"filesystem":[],"cloud":[]}`); the descriptor render overrides it.
 
 ### Sources and excludes (config)
@@ -216,7 +221,7 @@ write repositories on mounted drives.
 
 ### Enabling the stack on a host
 
-1. Add `kopia kopia-cloud-backup kopia-filesystem-backup` (or the `backup`
+1. Add `kopia-cloud-backup kopia-filesystem-backup` (or the `backup`
    role) to the host descriptor's `profiles =`.
 2. Declare `kopia_filesystem_targets` / `kopia_cloud_targets` (and optionally
    `kopia_sources` / `kopia_extra_excludes`) in the same descriptor.
@@ -313,7 +318,7 @@ Pre-defined roles:
 | `group_photo` | `digikam kopia` |
 | `group_game` | `flatpak steam` |
 | `symlinks` | `symlink-docker symlink-k3s` |
-| `backup` | `kopia kopia-cloud-backup kopia-filesystem-backup` |
+| `backup` | `kopia-base kopia-cloud-backup kopia-filesystem-backup` |
 
 You can use role names anywhere a profile name is accepted:
 `--profile "macbook awesomewm group_dev wifi ssh-server"` or in

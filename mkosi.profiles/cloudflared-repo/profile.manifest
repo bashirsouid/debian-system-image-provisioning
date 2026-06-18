@@ -1,0 +1,2 @@
+description="Repo-only base: Cloudflare apt source + signing key for the cloudflared package. Pulled in automatically (requires=) by cloudflare-tunnel / ssh-client-cloudbox-profile; not selected directly."
+uses_secrets=""

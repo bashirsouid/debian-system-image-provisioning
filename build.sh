@@ -979,21 +979,24 @@ ensure_secureboot_hostdeps() {
   fi
   ab_hostdeps_ensure_commands "Secure Boot signing tools" sbsign || exit 1
 
-  # Kernel module signing requires sign-file from linux-headers (not in PATH).
+  # Kernel module signing requires sign-file (not in PATH). Debian ships it in
+  # the linux-kbuild package at /usr/lib/linux-kbuild-*/scripts/sign-file; the
+  # linux-headers tree usually symlinks to it under
+  # /usr/src/linux-headers-*/scripts/. Accept either location.
   local _signfile_found=false
-  local _hdr_dir
-  for _hdr_dir in /usr/src/linux-headers-*; do
-    if [[ -x "${_hdr_dir}/scripts/sign-file" ]]; then
+  local _cand
+  for _cand in /usr/src/linux-headers-*/scripts/sign-file /usr/lib/linux-kbuild-*/scripts/sign-file; do
+    if [[ -x "${_cand}" ]]; then
       _signfile_found=true
       break
     fi
   done
   if [[ "$_signfile_found" != true ]]; then
     cat >&2 <<'EOF'
-ERROR: sign-file not found in /usr/src/linux-headers-*/scripts/
-Kernel module signing requires sign-file from the linux-headers package.
-Install it on the build host:
-  apt-get install linux-headers-$(uname -r)
+ERROR: sign-file not found in /usr/src/linux-headers-*/scripts/ or /usr/lib/linux-kbuild-*/scripts/
+Kernel module signing requires sign-file from the linux-kbuild package.
+Install it on the build host (the linux-headers-amd64 meta pulls it in):
+  apt-get install linux-headers-amd64
 EOF
     exit 1
   fi

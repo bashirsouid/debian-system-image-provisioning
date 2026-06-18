@@ -1,1 +1,2 @@
-description="Periodic encrypted filesystem backups via Kopia (rotating local/USB drives). Walks the per-host kopia_filesystem_targets list, skipping unmounted drives; requires the kopia profile."
+description="Periodic encrypted filesystem backups via Kopia (rotating local/USB drives). Walks the per-host kopia_filesystem_targets list, skipping unmounted drives. Auto-pulls in kopia-base."
+requires="kopia-base"
