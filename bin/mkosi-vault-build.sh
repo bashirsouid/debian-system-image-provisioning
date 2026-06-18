@@ -25,7 +25,8 @@ Vault options:
   --vault PATH        encrypted age JSON file
                       (default: secrets/mkosi-secrets.json.age)
   --identity PATH     age identity file for recipient-encrypted vaults
-  --replace-staging  replace an existing .mkosi-secrets/ directory
+  --replace-staging  deprecated no-op: a stale .mkosi-secrets/ is now always
+                     replaced automatically
   --keep-unlocked    leave .mkosi-secrets/ in place after the build
   -h, --help         show this help
 
@@ -146,19 +147,21 @@ ab_hostdeps_ensure_commands "local secret vault prerequisites" age jq || exit 1
 
 [[ -f "${VAULT}" ]] || fail "vault not found: ${VAULT}"
 
+# The staging dir holds the DECRYPTED vault — it is ephemeral and must never
+# survive between runs. Always clear any leftover (e.g. from a previous build
+# that was interrupted before its cleanup trap fired) so the user never has to
+# remove it by hand. --keep-unlocked only affects the POST-build cleanup below,
+# not this pre-clean. --replace-staging is now the default and kept only for
+# backward-compatible invocations.
 if [[ -e "${SECRETS_DIR}" ]]; then
-    if [[ "${REPLACE_STAGING}" != true ]]; then
-        if [[ -d "${SECRETS_DIR}" && -z "$(find "${SECRETS_DIR}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-            rmdir -- "${SECRETS_DIR}"
-        else
-            fail "${SECRETS_DIR} already exists. Move it aside, or rerun with --replace-staging."
-        fi
-    else
-        rm -rf -- "${SECRETS_DIR}"
-    fi
+    rm -rf -- "${SECRETS_DIR}" 2>/dev/null \
+        || fail "could not remove stale ${SECRETS_DIR} (owned by another user — a prior 'sudo' run?). Remove it manually: sudo rm -rf '${SECRETS_DIR}'"
 fi
 
 tmp_json="$(mktemp "$(tmp_parent)/mkosi-secrets.XXXXXX.json")"
+# Scrub all plaintext secrets the instant we leave — normal completion, error,
+# or Ctrl-C (e.g. at build.sh's LUKS passphrase prompt) — so decrypted material
+# lives on disk only while the build genuinely needs it.
 cleanup() {
     rm -f -- "${tmp_json}"
     if [[ "${KEEP_UNLOCKED}" != true && -f "${MARKER}" ]]; then
@@ -166,6 +169,9 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 decrypt_vault "${tmp_json}"
 chmod 0600 "${tmp_json}"

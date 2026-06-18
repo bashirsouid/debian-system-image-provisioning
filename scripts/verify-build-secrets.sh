@@ -50,7 +50,7 @@ source "${REPO_ROOT}/scripts/lib/profile-resolver.sh"
 # Every known secret category. Order matters for the summary table.
 # ssh is special: always required (no bootable image is useful without
 # it). The rest are optional unless a selected profile declares them.
-ALL_FEATURES=(ssh tailscale cloudflared mailjet pagerduty healthchecks wifi s3-backup)
+ALL_FEATURES=(ssh tailscale cloudflared mailjet pagerduty healthchecks wifi s3-backup kopia)
 
 declare -A STATUS
 declare -A DETAIL
@@ -341,6 +341,28 @@ if [[ -n "${NEEDED[s3-backup]+x}" ]]; then
         fi
     else
         warn "s3-backup-credentials.json absent — s3-unencrypted-backup profile selected but backup disabled"
+    fi
+fi
+
+# --- REQUIRED (when a kopia backup profile is selected): kopia-password ------
+# Declared via uses_secrets="kopia" on kopia-base (pulled in by
+# kopia-cloud-backup / kopia-filesystem-backup). Unlike the optional secrets
+# above, a missing repository passphrase is FATAL: the backup stack is useless
+# without it and the failure otherwise only appears at runtime on the booted
+# machine ("no repository passphrase at /etc/credstore/kopia-password").
+
+if [[ -n "${NEEDED[kopia]+x}" ]]; then
+    if kp_path="$(resolve_secret kopia-password)" && check_file_perms "${kp_path}"; then
+        kp="$(<"${kp_path}")"; kp="${kp%$'\n'}"
+        if [[ -z "${kp}" ]]; then
+            fail_hard "kopia-password is present but EMPTY. Set a long random passphrase in the age vault (bin/mkosi-vault-edit.sh) and rebuild."
+        else
+            [[ "${#kp}" -lt 16 ]] && warn "kopia-password is only ${#kp} chars; prefer a longer random passphrase"
+            ok kopia "${#kp}-char repository passphrase"
+        fi
+        unset kp
+    else
+        fail_hard "kopia-password is REQUIRED (a kopia backup profile is selected) but missing from ${SECRETS_DIR}. Add 'kopia-password' to the age vault (bin/mkosi-vault-edit.sh) and rebuild."
     fi
 fi
 

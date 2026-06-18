@@ -256,7 +256,13 @@ stage_kopia_glob() {
 
 if profile_selected kopia-cloud-backup || profile_selected kopia-filesystem-backup; then
     # Shared repository passphrase (kopia-password) plus any per-target
-    # overrides (kopia-password-<name>).
+    # overrides (kopia-password-<name>). The shared passphrase is REQUIRED:
+    # every backup and restore needs it, and a missing one otherwise stays
+    # invisible until it surfaces at runtime on the booted machine. Fail the
+    # build now, exactly like ssh-authorized-keys above.
+    if ! resolve_secret kopia-password >/dev/null; then
+        fail "kopia-password is REQUIRED when a kopia backup profile is selected, but it is not present in ${SECRETS_DIR}. Add 'kopia-password' to the age vault (bin/mkosi-vault-edit.sh) and rebuild."
+    fi
     stage_kopia_glob 'kopia-password*'
 fi
 

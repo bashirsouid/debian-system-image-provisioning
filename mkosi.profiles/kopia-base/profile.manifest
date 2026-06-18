@@ -1,2 +1,2 @@
 description="Shared base for the Kopia backup stack: kopia CLI (apt source + pinned signing key), the kopia system user, helper scripts, and /etc/kopia config. Pulled in automatically by kopia-cloud-backup / kopia-filesystem-backup; not selected directly."
-uses_secrets=""
+uses_secrets="kopia"

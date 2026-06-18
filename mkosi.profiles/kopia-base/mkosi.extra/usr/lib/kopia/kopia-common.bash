@@ -20,6 +20,8 @@ KOPIA_CREDSTORE="${KOPIA_CREDSTORE:-${CREDENTIALS_DIRECTORY:-/etc/credstore}}"
 KOPIA_EXCLUDES_FILE="${KOPIA_EXCLUDES_FILE:-/etc/kopia/excludes.conf}"
 KOPIA_EXCLUDES_LOCAL_FILE="${KOPIA_EXCLUDES_LOCAL_FILE:-/etc/kopia/excludes.local.conf}"
 KOPIA_SOURCES_FILE="${KOPIA_SOURCES_FILE:-/etc/kopia/sources.conf}"
+KOPIA_CONFIG_DIR="${KOPIA_CONFIG_DIR:-/var/lib/kopia}"
+KOPIA_CACHE_DIR="${KOPIA_CACHE_DIR:-/var/cache/kopia}"
 
 KOPIA_UPLOAD_LIMIT_MB="${KOPIA_UPLOAD_LIMIT_MB_DEFAULT:-50000}"
 KOPIA_PARALLEL="${KOPIA_PARALLEL_DEFAULT:-16}"
@@ -71,6 +73,93 @@ read_targets() {
     | [ (.name // ""), (.mount // ""), (.endpoint // ""), (.path // "") ]
     | join("\u001f")
   ' "${KOPIA_TARGETS_FILE}"
+}
+
+# Human-readable list of configured targets and their current status. Shared by
+# the interactive mount/restore helpers (printed to stdout).
+list_targets() {
+  local name mount endpoint path status any
+  printf 'Filesystem targets:\n'
+  any=0
+  while IFS="${KOPIA_FS}" read -r name mount endpoint path; do
+    [[ -n "${name}" ]] || continue
+    any=1
+    if mountpoint -q "${mount}" 2>/dev/null; then status="attached"; else status="not mounted"; fi
+    printf '  %-20s %s  (%s)\n' "${name}" "${mount}" "${status}"
+  done < <(read_targets filesystem)
+  [[ ${any} -eq 1 ]] || printf '  (none)\n'
+
+  printf 'Cloud targets:\n'
+  any=0
+  while IFS="${KOPIA_FS}" read -r name mount endpoint path; do
+    [[ -n "${name}" ]] || continue
+    any=1
+    printf '  %-20s %s\n' "${name}" "${endpoint}"
+  done < <(read_targets cloud)
+  [[ ${any} -eq 1 ]] || printf '  (none)\n'
+}
+
+# Look up a single target by name across both lists. On success sets globals:
+#   T_TYPE T_NAME T_MOUNT T_ENDPOINT T_PATH
+find_target() {
+  local want="$1" type name mount endpoint path
+  for type in filesystem cloud; do
+    while IFS="${KOPIA_FS}" read -r name mount endpoint path; do
+      if [[ "${name}" == "${want}" ]]; then
+        T_TYPE="${type}"; T_NAME="${name}"; T_MOUNT="${mount}"
+        T_ENDPOINT="${endpoint}"; T_PATH="${path}"
+        return 0
+      fi
+    done < <(read_targets "${type}")
+  done
+  return 1
+}
+
+# Connect READ-ONLY (never create) to the named target for browsing/restore.
+# On success sets two globals for the caller:
+#   KOPIA_TARGET_CONFIG  path to the kopia --config-file to use
+#   KOPIA_TARGET_DESC    human-readable repo description (for log lines)
+# Requires load_password to have run first. This is for the INTERACTIVE mount
+# and restore helpers only; the scheduled backup services manage their own
+# connect/create lifecycle (connect_or_create_*).
+connect_target_readonly() {
+  local want="$1"
+  find_target "${want}" || fail "no backup target named '${want}'. Run 'list' to see configured targets."
+
+  if [[ "${T_TYPE}" == "filesystem" ]]; then
+    [[ -n "${T_MOUNT}" ]] || fail "filesystem target '${T_NAME}' has no mountpoint."
+    mountpoint -q "${T_MOUNT}" || fail "drive for '${T_NAME}' is not mounted at ${T_MOUNT}."
+    local repo_path="${T_PATH}"
+    [[ -n "${repo_path}" ]] || repo_path="${T_MOUNT%/}/backup.kopia"
+    KOPIA_TARGET_CONFIG="${KOPIA_CONFIG_DIR}/repository.${T_NAME}.config"
+    local cache="${KOPIA_CACHE_DIR}/${T_NAME}"
+    mkdir -p "$(dirname "${KOPIA_TARGET_CONFIG}")" "${cache}"
+    kopia repository connect filesystem \
+      --config-file="${KOPIA_TARGET_CONFIG}" --cache-directory="${cache}" --path="${repo_path}" \
+      || fail "could not connect to repository at ${repo_path}."
+    KOPIA_TARGET_DESC="${repo_path}"
+  else
+    local creds="${KOPIA_CREDSTORE}/kopia-s3-creds-${T_NAME}.json"
+    [[ -f "${creds}" ]] || fail "missing ${creds}."
+    local bucket access secret
+    bucket="$(jq -r '.bucket // empty' "${creds}")"
+    access="$(jq -r '.accessKeyId // empty' "${creds}")"
+    secret="$(jq -r '.secretAccessKey // empty' "${creds}")"
+    [[ -n "${bucket}" && -n "${access}" && -n "${secret}" ]] || fail "${creds} missing bucket/accessKeyId/secretAccessKey."
+    [[ -n "${T_ENDPOINT}" ]] || fail "cloud target '${T_NAME}' has no endpoint."
+    KOPIA_TARGET_CONFIG="${KOPIA_CONFIG_DIR}/repository.cloud.${T_NAME}.config"
+    local cache="${KOPIA_CACHE_DIR}/cloud-${T_NAME}"
+    mkdir -p "$(dirname "${KOPIA_TARGET_CONFIG}")" "${cache}"
+    if ! kopia repository status --config-file="${KOPIA_TARGET_CONFIG}" >/dev/null 2>&1; then
+      kopia repository connect s3 \
+        --config-file="${KOPIA_TARGET_CONFIG}" --cache-directory="${cache}" \
+        --bucket="${bucket}" --endpoint="${T_ENDPOINT}" \
+        --access-key="${access}" --secret-access-key="${secret}" \
+        || fail "could not connect to s3://${bucket}."
+    fi
+    KOPIA_TARGET_DESC="s3://${bucket}"
+  fi
+  apply_cache_limits "${KOPIA_TARGET_CONFIG}"
 }
 
 # Print the source paths to snapshot, one per line, from /etc/kopia/sources.conf
