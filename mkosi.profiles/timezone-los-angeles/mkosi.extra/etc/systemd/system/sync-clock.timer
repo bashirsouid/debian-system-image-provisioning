@@ -1,0 +1,11 @@
+[Unit]
+Description=Synchronize system clock with RTC timer
+Wants=network-online.target
+
+[Timer]
+OnBootSec=5s
+OnUnitActiveSec=1h
+Persistent=yes
+
+[Install]
+WantedBy=timers.target

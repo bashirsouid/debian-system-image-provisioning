@@ -1,0 +1,10 @@
+[Unit]
+Description=Synchronize system clock with RTC
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/timedatectl set-time now
+ExecStart=/usr/sbin/hwclock --systohc
+RemainAfterExit=yes
