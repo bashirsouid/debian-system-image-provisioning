@@ -69,18 +69,33 @@ ab_host_descriptor_value() {
   awk -v k="$key" '
     /^[[:space:]]*#/ { next }
     {
-      if (match($0, /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/)) {
-        name = substr($0, RSTART, RLENGTH)
+      sub(/[[:space:]]+#.*$/, "")
+      if (continuation) {
+        current_val = current_val " " $0
+      } else {
+        current_val = $0
+      }
+
+      if (current_val ~ /\\$/) {
+        sub(/\\$/, "", current_val)
+        continuation = 1
+        next
+      } else {
+        continuation = 0
+      }
+
+      if (match(current_val, /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/)) {
+        name = substr(current_val, RSTART, RLENGTH)
         sub(/[[:space:]]*=[[:space:]]*$/, "", name)
         sub(/^[[:space:]]+/, "", name)
         if (name == k) {
-          val = substr($0, RSTART + RLENGTH)
-          sub(/[[:space:]]+#.*$/, "", val)
+          val = substr(current_val, RSTART + RLENGTH)
           sub(/^[[:space:]]+/, "", val)
           sub(/[[:space:]]+$/, "", val)
           if (match(val, /^".*"$/) || match(val, /^'\''.*'\''$/)) {
             val = substr(val, 2, length(val) - 2)
           }
+          gsub(/[[:space:]]+/, " ", val)
           print val
           exit
         }
@@ -111,7 +126,7 @@ ab_host_descriptor_materialize() {
   install -d -m 0755 "$out" "$out/mkosi.conf.d" "$out/mkosi.extra/etc"
 
   local profiles hostname image_id_suffix kernel_cmdline secure_boot
-  local persistent_home backup_paths architecture packages
+  local persistent_home backup_paths architecture packages extra_mounts
   local kopia_filesystem_targets kopia_cloud_targets kopia_extra_excludes kopia_sources
   profiles="$(ab_host_descriptor_value "$desc" profiles)"
   hostname="$(ab_host_descriptor_value "$desc" hostname)"
@@ -119,6 +134,7 @@ ab_host_descriptor_materialize() {
   kernel_cmdline="$(ab_host_descriptor_value "$desc" kernel_cmdline)"
   secure_boot="$(ab_host_descriptor_value "$desc" secure_boot)"
   persistent_home="$(ab_host_descriptor_value "$desc" persistent_home)"
+  extra_mounts="$(ab_host_descriptor_value "$desc" extra_mounts)"
   backup_paths="$(ab_host_descriptor_value "$desc" backup_paths)"
   architecture="$(ab_host_descriptor_value "$desc" architecture)"
   packages="$(ab_host_descriptor_value "$desc" packages)"
@@ -199,11 +215,14 @@ SB
       ;;
   esac
 
-  # Persistent /home -> generate the standard fstab line. Options mirror
-  # the long-standing hosts/*/mkosi.extra/etc/fstab template: nofail so a
-  # missing HOME partition (QEMU, fresh USB) is not a boot failure, and a
-  # short device-timeout so those boots don't stall for 90s. Value is
-  # "<source> [fstype]"; fstype defaults to ext4.
+  # Persistent /home and extra_mounts -> generate the standard fstab entries.
+  # Options for /home mirror the long-standing hosts/*/mkosi.extra/etc/fstab
+  # template: nofail so a missing HOME partition (QEMU, fresh USB) is not a boot
+  # failure, and a short device-timeout so those boots don't stall for 90s.
+  if [[ -n "$persistent_home" || -n "$extra_mounts" ]]; then
+    : > "$out/mkosi.extra/etc/fstab"
+  fi
+
   if [[ -n "$persistent_home" ]]; then
     local home_src home_fstype
     home_src="${persistent_home%% *}"
@@ -213,7 +232,43 @@ SB
       printf '# Generated from hosts.local/%s.conf (persistent_home).\n' "$host"
       printf '# /home lives outside the slot image so A/B root updates never replace user data.\n'
       printf '%s /home %s nofail,x-systemd.device-timeout=2s 0 2\n' "$home_src" "$home_fstype"
-    } > "$out/mkosi.extra/etc/fstab"
+    } >> "$out/mkosi.extra/etc/fstab"
+  fi
+
+  if [[ -n "$extra_mounts" ]]; then
+    {
+      printf '# Generated from hosts.local/%s.conf (extra_mounts).\n' "$host"
+      local entry src mountpoint fstype options
+      for entry in $extra_mounts; do
+        # entry is src:mountpoint[:fstype[:options]]
+        IFS=':' read -r src mountpoint fstype options <<< "$entry"
+
+        [[ -n "$src" && -n "$mountpoint" ]] || {
+          printf 'ab_host_descriptor: ERROR: extra_mounts entry %q must be source:mountpoint[:fstype[:options]]\n' "$entry" >&2
+          return 1
+        }
+
+        if [[ -z "$fstype" ]]; then
+          fstype="auto"
+        fi
+        if [[ -z "$options" ]]; then
+          options="nofail,x-systemd.device-timeout=2s"
+        fi
+
+        printf '%s %s %s %s 0 2\n' "$src" "$mountpoint" "$fstype" "$options"
+      done
+    } >> "$out/mkosi.extra/etc/fstab"
+
+    # Pre-create mount point directories in the host's overlay tree
+    # so they are baked into the read-only root image at build time.
+    local entry src mountpoint fstype options
+    for entry in $extra_mounts; do
+      IFS=':' read -r src mountpoint fstype options <<< "$entry"
+      if [[ -n "$mountpoint" ]]; then
+        local local_mountpoint_dir="${mountpoint#/}"
+        install -d -m 0755 "$out/mkosi.extra/$local_mountpoint_dir"
+      fi
+    done
   fi
 
   # Optional non-secret backup paths -> /etc/s3-backup-paths.conf

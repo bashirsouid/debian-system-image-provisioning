@@ -46,6 +46,7 @@ than encrypted.
 | `architecture` | `[Distribution] Architecture=` drop-in | e.g. `arm64`; omit for x86-64 |
 | `secure_boot` | `30-secure-boot.conf` / `secure-boot.disabled` | `yes` or `no` |
 | `persistent_home` | `hosts/<name>/mkosi.extra/etc/fstab` | `<source> [fstype]` |
+| `extra_mounts` | `hosts/<name>/mkosi.extra/etc/fstab` | optional; space-separated `source:mountpoint[:fstype[:options]]` |
 | `packages` | `[Content] Packages=` drop-in | space-separated; prefer a profile |
 | `backup_paths` | `…/etc/s3-backup-paths.conf` | optional; space-separated |
 | `kopia_filesystem_targets` | `…/etc/kopia/targets.json` (`.filesystem`) | optional; space-separated `name:/mountpoint` entries |
