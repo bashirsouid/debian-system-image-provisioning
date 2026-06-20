@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=X-XFCE-Helper
+Version=1.0
+Name=kitty
+Icon=kitty
+X-XFCE-Binaries=kitty
+X-XFCE-Category=TerminalEmulator
+X-XFCE-Commands=kitty
+X-XFCE-CommandsWithParameter=kitty -e %s
