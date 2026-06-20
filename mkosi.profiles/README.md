@@ -41,6 +41,7 @@ Profile directories currently in the tree:
 | `cloudflare-tunnel` | cloudflared connector for backup SSH |
 | `brave-repo` | *(repo-only base, auto-pulled via `requires=`)* Brave apt source + signing key |
 | `cloudflared-repo` | *(repo-only base, auto-pulled via `requires=`)* Cloudflare apt source + key for the `cloudflared` package |
+| `cosmic` | *(stub)* COSMIC desktop environment (Wayland) — uncomment Packages= to enable |
 | `debian-backports` | *(repo-only base, auto-pulled via `requires=`)* enables the `trixie-backports` apt suite |
 | `devbox` | Liquorix kernel + spice-vdagent (QEMU/virt guest) |
 | `dev-tools` | Baseline CLI: git, curl, vim, htop, tmux, rsync, less, jq |

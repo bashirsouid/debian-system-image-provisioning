@@ -1,0 +1,2 @@
+description="(stub) COSMIC desktop environment (Wayland). Packages commented out pending a Debian package source."
+uses_secrets=""
