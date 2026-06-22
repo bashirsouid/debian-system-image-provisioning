@@ -1,2 +1,0 @@
-disable flatpak-flathub-init.service
-enable flatpak-flathub-init.timer

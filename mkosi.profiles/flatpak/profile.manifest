@@ -1,2 +1,2 @@
-description="Flatpak package manager + retrying timer that adds the Flathub remote idempotently once DNS/network are ready."
+description="Flatpak with full desktop integration, portals, and Flathub remote setup via systemd timer."
 uses_secrets=""
