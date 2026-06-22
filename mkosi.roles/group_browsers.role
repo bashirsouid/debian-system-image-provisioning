@@ -1,0 +1,6 @@
+# group_browsers role — web browsers group. Includes Firefox, Chromium,
+# Brave Browser (full-featured), and Brave Origin (de-bloated).
+firefox
+chromium
+brave-browser
+brave-origin
