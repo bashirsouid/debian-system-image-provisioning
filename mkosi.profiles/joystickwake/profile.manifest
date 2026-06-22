@@ -1,1 +1,1 @@
-description="Prevents DPMS timeout on controller input using joystickwake daemon."
+description="Joystickwake: Prevents DPMS timeout on controller/joystick input using systemd user service autostart."

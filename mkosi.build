@@ -342,6 +342,45 @@ DKMSFRAMEWORK
     echo "==> [BUILD] CS8409 DKMS override installed at $module_path"
 }
 
-build_awesome_from_source
+build_joystickwake_from_source() {
+    # The joystickwake profile is configured with systemd user service autostart,
+    # which requires /usr/bin/joystickwake to be present. Upstream provides an
+    # executable script at the root of the git repository that can be run directly.
+    #
+    # If the system has a joystickwake package already (e.g., from Debian), use it.
+    # Otherwise, clone from upstream Codeberg or use third-party vendor tree.
+    if command -v joystickwake >/dev/null 2>&1; then
+        echo "==> [BUILD] joystickwake found in PATH; skipping source build"
+        return 0
+    fi
+
+    local joystickwake_src joystickwake_script
+    joystickwake_src="$SRCDIR/third-party/joystickwake"
+
+    # If source is not vendored in third-party yet, clone from upstream.
+    if [[ ! -d "$joystickwake_src/.git" && ! -f "$joystickwake_src/joystickwake" ]]; then
+        echo "==> [BUILD] cloning joystickwake from upstream Codeberg"
+        git clone --depth=1 https://codeberg.org/forestix/joystickwake.git "$joystickwake_src" 2>&1 || {
+            echo "ERROR: Failed to clone joystickwake from Codeberg" >&2
+            exit 1
+        }
+    fi
+
+    if [[ ! -f "$joystickwake_src/joystickwake" ]]; then
+        echo "ERROR: joystickwake executable not found at $joystickwake_src/joystickwake" >&2
+        exit 1
+    fi
+
+    joystickwake_script="$joystickwake_src/joystickwake"
+
+    echo "==> [BUILD] installing joystickwake to /usr/bin"
+    chmod +x "$joystickwake_script"
+    install -D -m 0755 "$joystickwake_script" "$DESTDIR/usr/bin/joystickwake"
+
+    echo "==> [BUILD] joystickwake installed successfully at /usr/bin/joystickwake"
+}
+
+
 install_vicious_lib
 build_macbook_cs8409_driver
+build_joystickwake_from_source
