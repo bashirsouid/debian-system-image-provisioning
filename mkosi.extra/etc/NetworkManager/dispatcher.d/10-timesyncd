@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Restart systemd-timesyncd when NetworkManager reports connectivity.
+#
+# systemd-timesyncd uses sd_network_monitor() to detect network state,
+# which only works with systemd-networkd.  Since this image uses
+# NetworkManager (with iwd), timesyncd never sees "network online" on
+# its own and stays at "Server: n/a / Packet count: 0" forever.
+#
+# This dispatcher script bridges the gap: NetworkManager calls it
+# whenever an interface changes state, and we poke timesyncd so it
+# re-evaluates and begins NTP synchronization.
+
+IFACE="$1"
+ACTION="$2"
+
+case "$ACTION" in
+    up|connectivity-change)
+        systemctl try-restart systemd-timesyncd.service 2>/dev/null || true
+        ;;
+esac

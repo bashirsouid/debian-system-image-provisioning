@@ -142,8 +142,21 @@ Meaning: `timedatectl` reports `NTPSynchronized=no`.
 Steps:
 1. `systemctl status systemd-timesyncd.service`
 2. `timedatectl timesync-status`
-3. Common causes: NTP port blocked by upstream router / ISP. Try
-   `Chronyd` with `iburst` and fallback pool servers.
+3. If `Server: n/a` and `Packet count: 0`:
+   - The NM dispatcher script at
+     `/etc/NetworkManager/dispatcher.d/10-timesyncd` may be missing
+     or not executable. Verify with `ls -la` and `chmod 755` if
+     needed, then `nmcli connection up <iface>` to re-trigger.
+   - Background: `systemd-timesyncd` uses `sd_network_monitor()`
+     which reads `/run/systemd/netif/` — files only populated by
+     `systemd-networkd`. Since this image uses NetworkManager, the
+     dispatcher script bridges the gap by restarting timesyncd when
+     NM reports connectivity.
+4. If timesyncd has a server selected but sync still fails:
+   NTP port (UDP/123) blocked by upstream router / ISP. Try a
+   different network or manually set the clock with
+   `sudo date -s "YYYY-MM-DD HH:MM:SS"` and
+   `sudo hwclock --systohc`.
 
 Why this matters: without correct time, TLS certs look invalid and
 ALL outbound alerts (Mailjet, PagerDuty, healthchecks.io) fail
@@ -158,6 +171,10 @@ Recovery notes:
 - Explicit NTP servers are configured in
   `/etc/systemd/timesyncd.conf.d/10-default-ntp.conf` (Cloudflare
   and Google NTP). If those are unreachable, check network/firewall.
+- The NetworkManager dispatcher script at
+  `/etc/NetworkManager/dispatcher.d/10-timesyncd` restarts
+  `systemd-timesyncd` on `up` and `connectivity-change` events to
+  work around the `sd_network` / `systemd-networkd` dependency.
 
 ## Box is fully dark
 
