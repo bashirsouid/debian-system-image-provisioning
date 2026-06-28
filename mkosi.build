@@ -380,11 +380,34 @@ build_joystickwake_from_source() {
     echo "==> [BUILD] joystickwake installed successfully at /usr/bin/joystickwake"
 }
 
-# TODO: Is it possible to only build if it is actually used for a profile? Currently it is always built for all profiles, which is wasteful.
+profile_selected() {
+    # AB_PROFILES is a space-separated list of profiles passed from build.sh.
+    # If it is not set (e.g. direct mkosi invocation), we fall back to checking $PROFILE
+    # or checking package/kernel presence.
+    if [[ -n "${AB_PROFILES:-}" ]]; then
+        [[ " ${AB_PROFILES} " == *" $1 "* ]]
+    else
+        if [[ "$1" == "awesomewm" ]]; then
+            command -v awesome >/dev/null 2>&1
+        elif [[ "$1" == "macbook" ]]; then
+            [[ "${PROFILE:-}" == "macbook" ]] || find /lib/modules -mindepth 1 -maxdepth 1 -type d -name '*t2*' -print -quit | grep -q .
+        else
+            [[ " ${PROFILE:-} " == *" $1 "* ]]
+        fi
+    fi
+}
 
-install_vicious_lib
-build_awesome_from_source
-build_macbook_cs8409_driver
+if profile_selected awesomewm; then
+    install_vicious_lib
+    build_awesome_from_source
+fi
 
-# Currently broken for unknown reason.
-#build_joystickwake_from_source
+if profile_selected macbook; then
+    build_macbook_cs8409_driver
+fi
+
+if profile_selected joystickwake; then
+    # Currently broken for unknown reason.
+    #build_joystickwake_from_source
+    :
+fi
