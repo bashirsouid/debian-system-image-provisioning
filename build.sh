@@ -1745,7 +1745,11 @@ fi
 if [[ "$BUILD_ALL" == false && "$PROFILE_SET" == false && "$HOST_SET" == true ]]; then
   host_default_profile="$(ab_buildmeta_host_default_profile "$PROJECT_ROOT" "$HOST")"
   if [[ -n "$host_default_profile" ]]; then
-    echo "==> Using default profile from hosts/$HOST/profile.default: $host_default_profile"
+    if [[ -f "$PROJECT_ROOT/hosts.local/$HOST.conf" ]]; then
+      echo "==> Using default profile from hosts.local/$HOST.conf: $host_default_profile"
+    else
+      echo "==> Using default profile from hosts/$HOST/profile.default: $host_default_profile"
+    fi
     PROFILE="$host_default_profile"
   fi
 fi

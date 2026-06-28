@@ -380,7 +380,11 @@ build_joystickwake_from_source() {
     echo "==> [BUILD] joystickwake installed successfully at /usr/bin/joystickwake"
 }
 
+# TODO: Is it possible to only build if it is actually used for a profile? Currently it is always built for all profiles, which is wasteful.
 
 install_vicious_lib
+build_awesome_from_source
 build_macbook_cs8409_driver
-build_joystickwake_from_source
+
+# Currently broken for unknown reason.
+#build_joystickwake_from_source

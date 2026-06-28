@@ -153,14 +153,37 @@ ab_buildmeta_host_default_profile() {
   desc="$project_root/hosts.local/$host.conf"
   if [[ -f "$desc" ]]; then
     awk '
-      /^[[:space:]]*#/ { next }
-      match($0, /^[[:space:]]*profiles[[:space:]]*=/) {
-        v = substr($0, RLENGTH + 1)
-        sub(/[[:space:]]+#.*$/, "", v)
-        sub(/^[[:space:]]+/, "", v)
-        sub(/[[:space:]]+$/, "", v)
-        print v
-        exit
+      function trim(s) {
+        sub(/^[[:space:]]+/, "", s)
+        sub(/[[:space:]]+$/, "", s)
+        return s
+      }
+      {
+        line = $0
+        sub(/[[:space:]]+#.*$/, "", line)
+        if (continuation) {
+          current = current " " line
+        } else {
+          current = line
+        }
+
+        if (current ~ /\\$/) {
+          sub(/\\$/, "", current)
+          continuation = 1
+          next
+        }
+        continuation = 0
+
+        if (match(current, /^[[:space:]]*profiles[[:space:]]*=/)) {
+          v = substr(current, RLENGTH + 1)
+          v = trim(v)
+          if (match(v, /^".*"$/) || match(v, /^'"'"'.*'"'"'$/)) {
+            v = substr(v, 2, length(v) - 2)
+          }
+          gsub(/[[:space:]]+/, " ", v)
+          print v
+          exit
+        }
       }
     ' "$desc"
     return 0
