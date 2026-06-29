@@ -10,6 +10,7 @@ fi
 build_awesome_from_source() {
     # The shared mkosi.build hook is invoked for every profile. The server profile
     # does not install AwesomeWM, so skip cleanly there.
+    echo "==> [DEBUG] build_awesome_from_source called"
     if ! command -v awesome >/dev/null 2>&1; then
         echo "==> [BUILD] AwesomeWM package not present in this image; skipping source overlay build"
         return 0
@@ -384,6 +385,7 @@ profile_selected() {
     # AB_PROFILES is a space-separated list of profiles passed from build.sh.
     # If it is not set (e.g. direct mkosi invocation), we fall back to checking $PROFILE
     # or checking package/kernel presence.
+    echo "==> [DEBUG] profile_selected called with: $1, AB_PROFILES='${AB_PROFILES:-}'"
     if [[ -n "${AB_PROFILES:-}" ]]; then
         [[ " ${AB_PROFILES} " == *" $1 "* ]]
     else
@@ -407,7 +409,5 @@ if profile_selected macbook; then
 fi
 
 if profile_selected joystickwake; then
-    # Currently broken for unknown reason.
-    #build_joystickwake_from_source
-    :
+    build_joystickwake_from_source
 fi

@@ -1475,7 +1475,8 @@ fi
 # .secureboot/ (which is gitignored). Finalize scripts normally access it via
 # $SRCDIR, but AB_PROJECT_ROOT is kept as a belt-and-suspenders fallback.
 mkosi_args+=("--environment=AB_PROJECT_ROOT=$PROJECT_ROOT")
-mkosi_args+=("--environment=AB_PROFILES=$PROFILE")
+# Quote the value to preserve spaces in profile list
+mkosi_args+=("--environment=AB_PROFILES='$PROFILE'")
 mkosi_args+=("--environment=AB_HOST=$HOST")
 
 # Tell 45-sign-kernel-modules.sh whether signing is required. When "yes", any

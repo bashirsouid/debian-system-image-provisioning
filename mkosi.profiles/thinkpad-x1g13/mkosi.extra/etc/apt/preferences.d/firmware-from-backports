@@ -10,5 +10,5 @@
 # TODO: remove this file (and trixie-backports.sources) once trixie stable
 # ships firmware-nonfree >= 20241210.
 Package: firmware-iwlwifi firmware-misc-nonfree firmware-sof-signed
-Pin: release a=trixie-backports
+Pin: release n=trixie-backports
 Pin-Priority: 600

@@ -83,6 +83,8 @@ update_git_repo awesome https://github.com/awesomewm/awesome.git
 # vendoring.
 update_git_repo vicious https://github.com/vicious-widgets/vicious.git
 update_git_repo snd_hda_macbookpro https://github.com/davidjo/snd_hda_macbookpro.git
+# joystickwake - prevents DPMS timeout on controller input
+update_git_repo joystickwake https://codeberg.org/forestix/joystickwake.git
 
 echo "==> Fetching third-party GPG keys..."
 "$PROJECT_ROOT/scripts/fetch-third-party-keys.sh"
