@@ -6,36 +6,46 @@
 wifi_up() { ls /sys/class/net/wl* >/dev/null 2>&1; }
 snd_up()  { ls /sys/class/sound/card* >/dev/null 2>&1; }
 npu_up()  { [ -e /dev/accel/accel0 ]; }
+bt_up()   { [ -e /sys/class/bluetooth/hci0 ]; }
+
+# modprobe loads can trigger a firmware request that blocks in uninterruptible
+# sleep on this platform; wrap them so a single wedged load can't hang the
+# whole oneshot (and, with TimeoutStartSec in the unit, the boot).
+mp() { timeout 15 modprobe "$@" 2>/dev/null || true; }
 
 # WiFi: Intel BE201 (iwlwifi bz-b0-fm-c0)
 if ! wifi_up; then
     echo "lnl-reload: no WiFi interface — reloading iwlwifi"
-    modprobe -r iwlmvm 2>/dev/null || true
-    modprobe -r iwlwifi 2>/dev/null || true
-    modprobe iwlwifi || true
+    mp -r iwlmvm
+    mp -r iwlwifi
+    mp iwlwifi
 fi
 
 # Bluetooth: Intel CNVi/PCIe (btintel_pcie + ibt-0190 firmware).
 #
 # On Lunar Lake, the kernel can create /sys/class/bluetooth/hci0 while the HCI
 # management interface is still wedged, leaving BlueZ with "No default
-# controller available".  Reload after rootfs firmware is available and before
-# bluetooth.service starts.
-echo "lnl-reload: reloading btintel_pcie"
-modprobe -r btintel_pcie 2>/dev/null || true
-modprobe -r btintel 2>/dev/null || true
-modprobe btintel_pcie || true
+# controller available".  Only reload when hci0 is ABSENT: reloading an
+# already-present controller has been observed to wedge btintel_pcie's
+# firmware download indefinitely, blocking boot. The harmless "hci0: Failed to
+# read codec capabilities (-95)" log line does NOT mean the controller is down.
+if ! bt_up; then
+    echo "lnl-reload: no Bluetooth controller — reloading btintel_pcie"
+    mp -r btintel_pcie
+    mp -r btintel
+    mp btintel_pcie
+fi
 
 # SOF audio: sof-audio-pci-intel-lnl (sof-lnl.ri IPC4)
 if ! snd_up; then
     echo "lnl-reload: no sound card — reloading snd_sof_pci_intel_lnl"
-    modprobe -r snd_sof_pci_intel_lnl 2>/dev/null || true
-    modprobe snd_sof_pci_intel_lnl || true
+    mp -r snd_sof_pci_intel_lnl
+    mp snd_sof_pci_intel_lnl
 fi
 
 # NPU: intel_vpu (vpu_40xx_v1.bin)
 if ! npu_up; then
     echo "lnl-reload: no NPU device — reloading intel_vpu"
-    modprobe -r intel_vpu 2>/dev/null || true
-    modprobe intel_vpu || true
+    mp -r intel_vpu
+    mp intel_vpu
 fi

@@ -15,6 +15,10 @@ ConditionPathExists=/etc/credstore/tailscale-authkey
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# `tailscale up` can block indefinitely waiting on network/auth. Bound the
+# start so a hang turns into a failure that Restart=on-failure can actually
+# retry — without a timeout the unit would sit in "activating" and never retry.
+TimeoutStartSec=90s
 
 # Decrypt on the fly into $CREDENTIALS_DIRECTORY. The plaintext lives
 # only for the lifetime of this process, in a tmpfs that only this unit

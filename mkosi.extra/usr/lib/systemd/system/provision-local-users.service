@@ -6,6 +6,9 @@ Before=systemd-user-sessions.service getty.target display-manager.service multi-
 
 [Service]
 Type=oneshot
+# Ordered Before=getty.target/display-manager/multi-user/graphical: bound it so
+# a hang becomes a visible failure instead of blocking the login prompt forever.
+TimeoutStartSec=120s
 ExecStart=/usr/local/libexec/provision-local-users
 
 [Install]

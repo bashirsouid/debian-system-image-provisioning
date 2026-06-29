@@ -12,6 +12,10 @@ RequiresMountsFor=/etc /var/lib
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/libexec/ab-user-provision.sh
+# Ordered Before=getty.target/multi-user.target/graphical.target: a hang here
+# means no login ever appears. Bound it so a hang converts to a visible failure
+# (which ab-health-gate already acts on) instead of an indefinite stall.
+TimeoutStartSec=120s
 
 # We need root to create users, chpasswd, etc. No ProtectSystem=strict
 # because useradd mutates /etc/passwd, /etc/shadow, /etc/group.

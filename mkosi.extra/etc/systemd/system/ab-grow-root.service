@@ -11,6 +11,10 @@ ConditionPathExists=/usr/local/sbin/ab-grow-root
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/ab-grow-root
+# Ordered Before=multi-user.target, so a wedged growpart/resize2fs blocks the
+# login prompt. 5min covers a legitimate large-fs resize on slow media; past
+# that, treat it as hung and let the boot proceed rather than wait forever.
+TimeoutStartSec=300s
 
 [Install]
 WantedBy=multi-user.target

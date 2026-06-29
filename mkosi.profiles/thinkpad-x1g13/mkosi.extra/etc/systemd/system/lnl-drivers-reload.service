@@ -7,6 +7,11 @@ Before=network-pre.target bluetooth.service blueman-mechanism.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# Bound the start: a modprobe that wedges in uninterruptible sleep (seen with
+# btintel_pcie firmware download on this platform) must never gate sysinit
+# forever. On timeout systemd marks this unit failed and continues booting;
+# because sysinit.target only Wants= this unit, a failure does not fail boot.
+TimeoutStartSec=45s
 ExecStart=/usr/local/bin/lnl-drivers-reload
 
 [Install]

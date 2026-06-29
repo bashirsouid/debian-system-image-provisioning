@@ -8,6 +8,9 @@ Wants=systemd-resolved.service network-pre.target
 
 [Service]
 Type=oneshot
+# On the sysinit critical path (Before=network-pre.target). Bound it so a stuck
+# resolvectl/restart can never hang early boot; the script's own work is <5s.
+TimeoutStartSec=30s
 ExecStart=/usr/local/libexec/ab-dns-ensure
 
 [Install]

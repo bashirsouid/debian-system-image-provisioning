@@ -8,6 +8,10 @@ After=local-fs.target
 Type=oneshot
 ExecStart=/usr/local/bin/create-swap.sh
 RemainAfterExit=yes
+# Pulled by local-fs.target — if fallocate/mkswap/swapon wedges on slow or
+# failing media, an unbounded oneshot stalls the critical path forever. 3min is
+# ample for a multi-GB swap file on slow USB; on timeout the boot continues.
+TimeoutStartSec=180s
 
 [Install]
 WantedBy=local-fs.target
