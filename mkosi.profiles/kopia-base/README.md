@@ -60,6 +60,43 @@ descriptor:
 - `kopia_cloud_targets = name:https://endpoint …` → S3-compatible buckets.
 - `kopia_sources = …` (default `/home`), `kopia_extra_excludes = …`.
 
+## One-off include/exclude edits
+
+The include/exclude lists are re-read on **every** backup run, so you can tweak
+them between mkosi builds without rebuilding the image — handy for a one-off
+"back up this extra folder tonight" or "skip this huge directory for now". Edit
+in place as root:
+
+| file | controls | descriptor key it's rendered from |
+|---|---|---|
+| `/etc/kopia/sources.conf` | paths to snapshot (includes) | `kopia_sources` |
+| `/etc/kopia/excludes.conf` | global ignore patterns | (shipped in the profile) |
+| `/etc/kopia/excludes.local.conf` | per-host extra ignores | `kopia_extra_excludes` |
+| `/etc/kopia/clear.excludes.conf` | patterns to **re-enable** (un-ignore) | (shipped in the profile, empty) |
+
+All four take one entry per line, with `#` comments and blank lines ignored.
+The edit applies on the next backup run (the timer, or `systemctl start …`); the
+next `mkosi` build regenerates the file from the host descriptor — or, for the
+shipped files, restores the template — and discards your edit. That's the point:
+the build stays the source of truth, so update the descriptor too if you want
+the change to persist.
+
+**Adding vs. re-enabling an exclude.** *Adding* a pattern to `excludes.conf` /
+`excludes.local.conf` takes effect on the next run. *Removing* one does not —
+the backup scripts only ever `kopia policy set --add-ignore`, and Kopia persists
+ignore rules in the repository's global policy, so a deleted line stays in
+force. To re-enable an excluded path, **don't** delete it from the excludes
+file; instead add the exact pattern to `/etc/kopia/clear.excludes.conf`. On the
+next run the scripts call `--remove-ignore` for each listed pattern (after the
+add pass), surgically dropping just those rules from the policy without touching
+any other repository state. The pattern must match the excluded entry exactly,
+trailing slash included — `excludes.conf` carries both `.zoom` and `.zoom/`, so
+re-enabling that folder means listing both.
+
+Includes (`sources.conf`) need none of this: they're passed straight to
+`kopia snapshot create`, so both adding and removing a path take full effect on
+the next run.
+
 ## Triggering a backup by hand
 
 Run the unit (gives you the exact env, credentials, and hardening the timer

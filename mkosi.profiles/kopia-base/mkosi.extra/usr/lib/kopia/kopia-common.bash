@@ -19,6 +19,7 @@ KOPIA_TARGETS_FILE="${KOPIA_TARGETS_FILE:-/etc/kopia/targets.json}"
 KOPIA_CREDSTORE="${KOPIA_CREDSTORE:-${CREDENTIALS_DIRECTORY:-/etc/credstore}}"
 KOPIA_EXCLUDES_FILE="${KOPIA_EXCLUDES_FILE:-/etc/kopia/excludes.conf}"
 KOPIA_EXCLUDES_LOCAL_FILE="${KOPIA_EXCLUDES_LOCAL_FILE:-/etc/kopia/excludes.local.conf}"
+KOPIA_EXCLUDES_CLEAR_FILE="${KOPIA_EXCLUDES_CLEAR_FILE:-/etc/kopia/clear.excludes.conf}"
 KOPIA_SOURCES_FILE="${KOPIA_SOURCES_FILE:-/etc/kopia/sources.conf}"
 KOPIA_CONFIG_DIR="${KOPIA_CONFIG_DIR:-/var/lib/kopia}"
 KOPIA_CACHE_DIR="${KOPIA_CACHE_DIR:-/var/cache/kopia}"
@@ -193,7 +194,8 @@ apply_cache_limits() {
 }
 
 # Apply global compression/retention and the exclude patterns sourced from
-# /etc/kopia/excludes.conf (+ optional per-host excludes.local.conf).
+# /etc/kopia/excludes.conf (+ optional per-host excludes.local.conf), then
+# re-enable any patterns listed in /etc/kopia/clear.excludes.conf.
 apply_policies() {
   local config="$1"
   kopia policy set --global --config-file="${config}" --compression=zstd >/dev/null 2>&1 || true
@@ -217,6 +219,29 @@ apply_policies() {
   done
   if [[ ${had} -eq 1 ]]; then
     "${cmd[@]}" >/dev/null 2>&1 || log_error "Failed to apply some ignore patterns for ${config}."
+  fi
+
+  # Re-enable specific paths that excludes.conf/excludes.local.conf would
+  # otherwise ignore. We surgically drop just those rules from the global
+  # policy with --remove-ignore (never a blanket --clear-ignore, which would
+  # wipe unrelated repo state). This runs AFTER the --add-ignore pass above, so
+  # a pattern present in both an excludes file and the clear file ends up
+  # re-enabled. Patterns must match the excluded entry exactly (trailing slash
+  # included), since --remove-ignore deletes by exact string.
+  local -a rmcmd=("kopia" "policy" "set" "--global" "--config-file=${config}")
+  local rmhad=0
+  if [[ -f "${KOPIA_EXCLUDES_CLEAR_FILE}" ]]; then
+    while IFS= read -r line; do
+      line="${line%%#*}"
+      line="${line#"${line%%[![:space:]]*}"}"   # ltrim
+      line="${line%"${line##*[![:space:]]}"}"   # rtrim
+      [[ -n "$line" ]] || continue
+      rmcmd+=("--remove-ignore" "$line")
+      rmhad=1
+    done < "${KOPIA_EXCLUDES_CLEAR_FILE}"
+  fi
+  if [[ ${rmhad} -eq 1 ]]; then
+    "${rmcmd[@]}" >/dev/null 2>&1 || log_error "Failed to re-enable some ignore patterns for ${config}."
   fi
 }
 

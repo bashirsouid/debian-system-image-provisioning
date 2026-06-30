@@ -333,7 +333,19 @@ SB
 
   if [[ -n "$kopia_extra_excludes" ]]; then
     {
-      printf '# Generated from hosts.local/%s.conf (kopia_extra_excludes).\n' "$host"
+      printf '%s\n' \
+        "# /etc/kopia/excludes.local.conf -- per-host Kopia ignore patterns, one" \
+        "# per line, merged on top of /etc/kopia/excludes.conf. '#' starts a" \
+        "# comment; blank lines are ignored." \
+        "#" \
+        "# Generated from hosts.local/${host}.conf (kopia_extra_excludes) by the" \
+        "# last mkosi build. One-off change between builds: edit this file in" \
+        "# place -- it is re-read on every backup run, no rebuild needed." \
+        "# *Adding* a pattern takes effect immediately; to *re-enable* an" \
+        "# excluded path, add it to /etc/kopia/clear.excludes.conf rather than" \
+        "# deleting it here (see kopia-base/README.md). The next mkosi build" \
+        "# regenerates this file from the descriptor, discarding edits." \
+        ""
       local _ex
       for _ex in $kopia_extra_excludes; do
         printf '%s\n' "$_ex"
@@ -343,7 +355,17 @@ SB
 
   if [[ -n "$kopia_sources" ]]; then
     {
-      printf '# Generated from hosts.local/%s.conf (kopia_sources).\n' "$host"
+      printf '%s\n' \
+        "# /etc/kopia/sources.conf -- filesystem paths to snapshot, one per line." \
+        "# Applies to every backup target (filesystem and cloud). '#' starts a" \
+        "# comment; blank lines are ignored." \
+        "#" \
+        "# Generated from hosts.local/${host}.conf (kopia_sources) by the last" \
+        "# mkosi build. One-off change between builds: edit this file in place --" \
+        "# it is re-read on every backup run (no rebuild needed) and takes full" \
+        "# effect immediately. The next mkosi build regenerates it from the" \
+        "# descriptor, discarding edits. See kopia-base/README.md." \
+        ""
       local _s
       for _s in $kopia_sources; do
         printf '%s\n' "$_s"
