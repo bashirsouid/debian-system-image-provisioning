@@ -1,0 +1,18 @@
+#!/bin/sh
+#
+# Lenovo X1 Carbon Gen 13 / Intel Bluetooth PCIe suspend workaround.
+#
+# btintel_pcie at 0000:00:14.7 can fail D2 entry during s2idle with
+# error -16 (EBUSY), immediately aborting suspend. Unload the Bluetooth
+# stack before sleep; load it again after resume.
+#
+case "$1/$2" in
+  pre/suspend|pre/hibernate)
+    /usr/bin/systemctl stop bluetooth.service
+    /usr/sbin/modprobe -r btintel_pcie btintel btusb btrtl btbcm bluetooth
+    ;;
+  post/suspend|post/hibernate)
+    /usr/sbin/modprobe btintel_pcie
+    /usr/bin/systemctl start bluetooth.service
+    ;;
+ esac

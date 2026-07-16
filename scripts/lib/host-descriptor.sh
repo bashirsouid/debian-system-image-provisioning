@@ -125,6 +125,15 @@ ab_host_descriptor_materialize() {
   rm -rf "$out"
   install -d -m 0755 "$out" "$out/mkosi.conf.d" "$out/mkosi.extra/etc"
 
+  # Preserve the legacy per-host overlay layout too: if a host has a
+  # committed hosts/<host>/mkosi.extra tree, merge it into the generated
+  # descriptor overlay so host-specific files (like suspend hooks) still
+  # participate in host builds.
+  local legacy_host_dir="$root/hosts/$host"
+  if [[ -d "$legacy_host_dir/mkosi.extra" ]]; then
+    cp -a "$legacy_host_dir/mkosi.extra/." "$out/mkosi.extra/"
+  fi
+
   local profiles hostname image_id_suffix kernel_cmdline secure_boot
   local persistent_home backup_paths architecture packages extra_mounts
   local kopia_filesystem_targets kopia_cloud_targets kopia_extra_excludes kopia_sources
