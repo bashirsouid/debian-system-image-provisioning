@@ -169,7 +169,7 @@ ab_hostdeps_install_packages() {
 
   ab_hostdeps_log "$context: installing missing host packages: ${packages[*]}"
   if [[ -z "${AB_HOST_DEPS_APT_UPDATED:-}" ]]; then
-    "${runner[@]}" apt-get update
+    "${runner[@]}" apt-get -o Acquire::Check-Valid-Until=false -o Acquire::AllowReleaseInfoChange=true update
     AB_HOST_DEPS_APT_UPDATED=1
   fi
   "${runner[@]}" apt-get install -y --no-install-recommends "${packages[@]}"
