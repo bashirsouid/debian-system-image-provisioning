@@ -61,9 +61,7 @@ Both are idempotent (gated by `ConditionPathExists=!.../done`), require no
 packages, and are composed into the image at build time:
 
 ```bash
-./build.sh --profile "devbox symlink-docker symlink-k3s" --host mylaptop
-# or using the convenience role:
-./build.sh --profile "devbox symlinks" --host mylaptop
+./build.sh --host mylaptop
 ```
 
 ## What still remains out of scope

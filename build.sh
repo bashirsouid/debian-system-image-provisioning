@@ -77,11 +77,10 @@ _try_auto_vault_unlock() {
   exec "$PROJECT_ROOT/bin/mkosi-vault-build.sh" -- "${ORIGINAL_ARGS[@]}"
 }
 
-PROFILE="devbox"
+PROFILE=""
 HOST=""
 HOSTNAME_ARG=""
 BUILD_HOSTNAME=""
-PROFILE_SET=false
 HOST_SET=false
 BUILD_ALL=false
 FORCE_REBUILD=false
@@ -124,23 +123,17 @@ usage() {
 Usage: ./build.sh [options]
 
 Options:
-  --profile LIST           space-separated profile and/or role names (default: devbox).
-                           Each token must exist as mkosi.profiles/<name>/ or
-                           mkosi.roles/<name>.role; roles expand to their member
-                           profiles before mkosi is invoked.
-                           Example: --profile "macbook awesomewm group_dev wifi ssh-server"
   --host NAME              include host-specific overlay from hosts/NAME/.
-                           When --host is given without --profile, the profile
-                           list is read from hosts/NAME/profile.default.
+                           The profile list is read from hosts/NAME/profile.default
+                           or hosts.local/NAME.conf. Hosts are required for builds.
   --hostname NAME          set the image hostname. Defaults to --host when a
-                           host build is requested; no-host builds keep qemu.
+                           host build is requested.
   --force                  pass mkosi -f
   --clean                  pass mkosi -f -f
   --force-rebuild          clean all generated state, refresh managed third-party
                            checkouts from clean clones, then rebuild
   --all                    build the standard target matrix in one invocation.
-                           Includes one no-host QEMU smoke build (profile=devbox)
-                           plus one build per hosts/*/ directory (excluding
+                           Includes one build per hosts/*/ directory (excluding
                            example-host), each using that host's profile.default.
   --sync-host-ids=yes|no   when username matches the invoking host user,
                            copy that user's uid/gid/group into the image
@@ -165,6 +158,70 @@ Environment variables:
   MKOSI_DOTFILES_OFFLINE=1 reuse the cached clone as-is instead of fetching
                            from the remote (errors out if no cache exists)
 USAGE
+}
+
+list_defined_hosts() {
+  local host
+  local host_files
+  local host_dirs
+  local names=()
+  shopt -s nullglob
+  for host_files in "$PROJECT_ROOT"/hosts.local/*.conf; do
+    [[ -f "$host_files" ]] || continue
+    host="$(basename "$host_files" .conf)"
+    [[ "$host" == "example-host" ]] && continue
+    names+=("$host")
+  done
+  for host_dirs in "$PROJECT_ROOT"/hosts/*/; do
+    [[ -d "$host_dirs" ]] || continue
+    host="$(basename "$host_dirs")"
+    [[ "$host" == "example-host" ]] && continue
+    if [[ ! -f "$PROJECT_ROOT/hosts.local/$host.conf" ]]; then
+      names+=("$host")
+    fi
+  done
+  shopt -u nullglob
+  if [[ ${#names[@]} -eq 0 ]]; then
+    return 1
+  fi
+  printf '%s
+' "${names[@]}" | sort -u
+}
+
+prompt_for_host_selection() {
+  local host
+  local hosts
+  mapfile -t hosts < <(list_defined_hosts)
+  if [[ ${#hosts[@]} -eq 0 ]]; then
+    echo "ERROR: no hosts defined under hosts.local/ or hosts/" >&2
+    return 1
+  fi
+  if [[ ${#hosts[@]} -eq 1 ]]; then
+    HOST="${hosts[0]}"
+    HOST_SET=true
+    echo "==> Using only configured host: $HOST"
+    return 0
+  fi
+  if [[ "$NON_INTERACTIVE" == true || ! -t 0 ]]; then
+    echo "ERROR: no --host specified and interactive host selection is unavailable." >&2
+    echo "       Pass --host <name> instead." >&2
+    return 1
+  fi
+
+  echo "==> Choose a host to build:"
+  PS3="Select a host (1-${#hosts[@]}): "
+  select host in "${hosts[@]}" "Quit"; do
+    if [[ "$REPLY" -gt 0 && "$REPLY" -le ${#hosts[@]} ]]; then
+      HOST="$host"
+      HOST_SET=true
+      break
+    fi
+    if [[ "$REPLY" -eq $(( ${#hosts[@]} + 1 )) ]]; then
+      echo "Build cancelled." >&2
+      return 1
+    fi
+    echo "Invalid selection. Please choose a number from 1 to ${#hosts[@]}."
+  done
 }
 
 hash_password() {
@@ -1037,7 +1094,7 @@ Verify that:
   - sbsign is in PATH and executable
   - mkosi config includes [Validation] section with SecureBoot=yes
 
-Run ./build.sh --profile <profile> --host $host again with full output
+Run ./build.sh --host $host again with full output
 to debug the signing failure.
 EOF
       return 1
@@ -1611,11 +1668,6 @@ _try_auto_vault_unlock
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --profile)
-      PROFILE="${2:?missing profile name}"
-      PROFILE_SET=true
-      shift 2
-      ;;
     --host)
       HOST="${2:?missing host name}"
       HOST_SET=true
@@ -1725,8 +1777,8 @@ if [[ "$ALLOW_ROOT_LOGIN" == true ]]; then
   ROOT_PASSWORD_HASH="$(hash_password "$root_pass")"
 fi
 
-if [[ "$BUILD_ALL" == true && ( "$PROFILE_SET" == true || "$HOST_SET" == true ) ]]; then
-  echo "ERROR: --all cannot be combined with explicit --profile or --host" >&2
+if [[ "$BUILD_ALL" == true && "$HOST_SET" == true ]]; then
+  echo "ERROR: --all cannot be combined with explicit --host" >&2
   exit 1
 fi
 
@@ -1735,17 +1787,16 @@ if [[ "$BUILD_ALL" == true && -n "$HOSTNAME_ARG" ]]; then
   exit 1
 fi
 
+if [[ "$BUILD_ALL" == false && "$HOST_SET" == false ]]; then
+  prompt_for_host_selection || exit 1
+fi
+
 # Per-host default profile resolution.
 #
 # Precedence:
-#   1. --profile on the command line always wins.
-#   2. If only --host was given, read hosts/<host>/profile.default.
-#   3. Fall back to the hardcoded default ("devbox") set at the top.
-#
-# This lets `./build.sh --host cloudbox` do the obviously-correct thing
-# (build the server profile) without having to remember to also type
-# --profile server every time.
-if [[ "$BUILD_ALL" == false && "$PROFILE_SET" == false && "$HOST_SET" == true ]]; then
+#   1. If --host is given, read hosts/<host>/profile.default or hosts.local/<host>.conf.
+#   2. Hosts are required; bare builds prompt for a host selection.
+if [[ "$BUILD_ALL" == false && "$HOST_SET" == true ]]; then
   host_default_profile="$(ab_buildmeta_host_default_profile "$PROJECT_ROOT" "$HOST")"
   if [[ -n "$host_default_profile" ]]; then
     if [[ -f "$PROJECT_ROOT/hosts.local/$HOST.conf" ]]; then
@@ -1754,6 +1805,10 @@ if [[ "$BUILD_ALL" == false && "$PROFILE_SET" == false && "$HOST_SET" == true ]]
       echo "==> Using default profile from hosts/$HOST/profile.default: $host_default_profile"
     fi
     PROFILE="$host_default_profile"
+  else
+    echo "ERROR: host '$HOST' has no configured profile."
+    echo "       Add hosts/$HOST/profile.default or hosts.local/$HOST.conf with a profiles = line."
+    exit 1
   fi
 fi
 
@@ -1770,7 +1825,7 @@ unlock the vault and stage the secrets for you.
 
 To build, simply use:
   ./build.sh --host x1g13
-or for QEMU:
+or interactively:
   ./build.sh
 
 If you haven't set up the vault yet:
@@ -1824,10 +1879,8 @@ ensure_base_hostdeps
 if [[ "$BUILD_ALL" == true ]]; then
   # Auto-discover hosts by iterating hosts/*/ and reading each host's
   # profile.default. example-host is skipped — it's a template, not a
-  # real target. The leading "devbox|" is the no-host QEMU smoke-test
-  # build that has always been part of --all so CI can exercise the
-  # image format without needing any of the real hosts' toolchains.
-  BUILD_TARGETS=("devbox|")
+  # real target.
+  BUILD_TARGETS=()
   for _host_dir in "$PROJECT_ROOT"/hosts/*/; do
     _host_name="$(basename "$_host_dir")"
     [[ "$_host_name" == "example-host" ]] && continue

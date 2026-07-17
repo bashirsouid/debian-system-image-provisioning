@@ -55,7 +55,7 @@ Define your login user under the `"users.json"` key — see
 
 ```sh
 ./update-3rd-party-deps.sh
-./build.sh --profile devbox
+./build.sh --host x1g13
 ./run.sh
 ```
 

@@ -11,7 +11,7 @@ This doc covers the diagnostic flags. For day-to-day happy-path use,
 ## The happy path
 
 ```bash
-./build.sh --profile devbox
+./build.sh --host x1g13
 ./run.sh
 ```
 

@@ -116,7 +116,7 @@ non-hardware keys and refuse to continue in `--strict` mode.
 ```
 ./scripts/verify-build-secrets.sh --strict
 ./scripts/package-credentials.sh --host <hostname>
-./build.sh --profile server --host <hostname>
+./build.sh --host <hostname>
 ```
 
 Integrate the first two calls into `build.sh` so every build enforces

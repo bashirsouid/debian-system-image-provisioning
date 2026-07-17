@@ -27,7 +27,7 @@ normal installer path does not require it.
 Build first as usual, for example:
 
 ```bash
-./build.sh --profile macbook --host macbookpro13-2019-t2
+./build.sh --host macbookpro13-2019-t2
 ```
 
 Then write the test USB:
