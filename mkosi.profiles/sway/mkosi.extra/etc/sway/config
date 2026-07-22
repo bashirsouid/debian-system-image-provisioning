@@ -1,0 +1,158 @@
+# Default sway configuration
+# This is a minimal config that provides a working starting point
+# Users should customize ~/.config/sway/config for their setup
+
+# ┌─────────────────────────────────────────────────────────────┐
+# │ Output Configuration                                        │
+# └─────────────────────────────────────────────────────────────┘
+# Set default display resolution (adjust for your hardware)
+# output eDP-1 resolution 1920x1200@60Hz position 0,0
+
+# ┌─────────────────────────────────────────────────────────────┐
+# │ Input Configuration                                         │
+# └─────────────────────────────────────────────────────────────┘
+input type:keyboard {
+    xkb_layout us
+    xkb_variant intl
+    xkb_options caps:escape
+}
+
+input type:touchpad {
+    tap enabled
+    natural_scroll enabled
+    pointer_accel 0.5
+}
+
+# ┌─────────────────────────────────────────────────────────────┐
+# │ Key Bindings                                                │
+# └─────────────────────────────────────────────────────────────┘
+set $mod Mod4
+
+# Terminal
+bindsym $mod+Return exec kitty
+bindsym $mod+Shift+Return exec foot
+
+# Application launcher
+bindsym $mod+d exec wofi --show drun
+bindsym $mod+Shift+d exec wofi --show run
+
+# Screenshot
+bindsym Print exec grim - | wl-copy
+bindsym Shift+Print exec grim -g "$(slurp)" - | wl-copy
+
+# Lock screen
+bindsym $mod+Shift+l exec swaylock
+
+# Exit sway
+bindsym $mod+Shift+e exec swaynag -t warning -m 'Exit sway?' -B 'Yes' 'swaymsg exit'
+
+# ┌─────────────────────────────────────────────────────────────┐
+# │ Window Management                                           │
+# └─────────────────────────────────────────────────────────────┘
+# Focus
+bindsym $mod+h focus left
+bindsym $mod+j focus down
+bindsym $mod+k focus up
+bindsym $mod+l focus right
+
+# Move
+bindsym $mod+Shift+h move left
+bindsym $mod+Shift+j move down
+bindsym $mod+Shift+k move up
+bindsym $mod+Shift+l move right
+
+# Split
+bindsym $mod+b splith
+bindsym $mod+v splitv
+
+# Fullscreen
+bindsym $mod+f fullscreen
+
+# Layout
+bindsym $mod+s layout stacking
+bindsym $mod+w layout tabbed
+bindsym $mod+e layout toggle split
+
+# Resize mode
+mode "resize" {
+    bindsym h resize shrink width 10px
+    bindsym j resize grow height 10px
+    bindsym k resize shrink height 10px
+    bindsym l resize grow width 10px
+    bindsym Return mode "default"
+    bindsym Escape mode "default"
+}
+bindsym $mod+r mode "resize"
+
+# ┌─────────────────────────────────────────────────────────────┐
+# │ Workspaces                                                  │
+# └─────────────────────────────────────────────────────────────┘
+set $ws1 1
+set $ws2 2
+set $ws3 3
+set $ws4 4
+set $ws5 5
+set $ws6 6
+set $ws7 7
+set $ws8 8
+set $ws9 9
+set $ws10 10
+
+bindsym $mod+1 workspace number $ws1
+bindsym $mod+2 workspace number $ws2
+bindsym $mod+3 workspace number $ws3
+bindsym $mod+4 workspace number $ws4
+bindsym $mod+5 workspace number $ws5
+bindsym $mod+6 workspace number $ws6
+bindsym $mod+7 workspace number $ws7
+bindsym $mod+8 workspace number $ws8
+bindsym $mod+9 workspace number $ws9
+bindsym $mod+0 workspace number $ws10
+
+bindsym $mod+Shift+1 move container to workspace number $ws1
+bindsym $mod+Shift+2 move container to workspace number $ws2
+bindsym $mod+Shift+3 move container to workspace number $ws3
+bindsym $mod+Shift+4 move container to workspace number $ws4
+bindsym $mod+Shift+5 move container to workspace number $ws5
+bindsym $mod+Shift+6 move container to workspace number $ws6
+bindsym $mod+Shift+7 move container to workspace number $ws7
+bindsym $mod+Shift+8 move container to workspace number $ws8
+bindsym $mod+Shift+9 move container to workspace number $ws9
+bindsym $mod+Shift+0 move container to workspace number $ws10
+
+# ┌─────────────────────────────────────────────────────────────┐
+# │ Colors                                                      │
+# └─────────────────────────────────────────────────────────────┘
+#                       border    background text    indicator
+client.focused          #4c7899   #285577    #ffffff #2e9ef4
+client.focused_inactive #333333   #5f676a    #ffffff #484e50
+client.unfocused        #333333   #222222    #888888 #292d2e
+client.urgent           #2f343a   #900000    #ffffff #900000
+
+# ┌─────────────────────────────────────────────────────────────┐
+# │ Bar                                                         │
+# └─────────────────────────────────────────────────────────────┘
+bar {
+    position top
+    font pango:JetBrainsMono Nerd Font 10
+    colors {
+        background #1e1e2e
+        statusline #cdd6f4
+        separator #45475a
+        focused_workspace  #4c7899 #4c7899 #ffffff
+        active_workspace   #333333 #5f676a #ffffff
+        inactive_workspace #333333 #222222 #888888
+        urgent_workspace   #2f343a #900000 #ffffff
+    }
+    status_command sh -c 'while :; do date +"%Y-%m-%d %H:%M"; sleep 1; done'
+}
+
+# ┌─────────────────────────────────────────────────────────────┐
+# │ Autostart                                                   │
+# └─────────────────────────────────────────────────────────────┘
+exec --no-startup-id swaybg -c '#1e1e2e'
+exec --no-startup-id swayidle -w \
+    timeout 300 'swaylock -f -c 000000' \
+    timeout 600 'swaymsg "output * dpms off"' \
+    resume 'swaymsg "output * dpms on"' \
+    before-sleep 'swaylock -f -c 000000'

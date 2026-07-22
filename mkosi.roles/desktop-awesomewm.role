@@ -1,0 +1,7 @@
+# desktop-awesomewm.role — X11 desktop with awesomewm
+awesomewm
+display-manager-gdm3
+audio-pipewire
+bluetooth
+dev-tools
+wifi

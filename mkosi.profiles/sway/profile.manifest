@@ -1,0 +1,2 @@
+description="sway Wayland compositor with Wayland-native session management"
+uses_secrets=""

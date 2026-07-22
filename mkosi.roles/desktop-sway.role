@@ -1,0 +1,6 @@
+# desktop-sway.role — Wayland desktop with sway
+sway
+audio-pipewire
+bluetooth
+dev-tools
+wifi

@@ -27,7 +27,6 @@ Environment=HOME=/var/lib/kopia
 Environment=KOPIA_CHECK_FOR_UPDATES=false
 
 ExecStart=/usr/lib/kopia/kopia.backup.filesystem.bash
-TimeoutStartSec=3600
 
 # Directory creation and paths
 StateDirectory=kopia
