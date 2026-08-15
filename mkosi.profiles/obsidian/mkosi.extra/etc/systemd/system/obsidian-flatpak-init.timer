@@ -1,0 +1,11 @@
+[Unit]
+Description=Retry Obsidian Flatpak installation until it succeeds
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=30min
+AccuracySec=1min
+Unit=obsidian-flatpak-init.service
+
+[Install]
+WantedBy=timers.target

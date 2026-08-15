@@ -1,0 +1,11 @@
+[Unit]
+Description=Install Obsidian Flatpak (first-boot, idempotent)
+Documentation=https://flathub.org/apps/md.obsidian.Obsidian
+After=flatpak-flathub-init.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/flatpak/.ab-flathub-added
+ConditionPathExists=!/var/lib/flatpak/app/md.obsidian.Obsidian
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flatpak install -y flathub md.obsidian.Obsidian

@@ -18,4 +18,9 @@
 - `.live-usb-stage/` – temporary staging area for hardware‑test USB builds.
 - `.shellcheck-cache/` – local linting cache.
 
+## Font Cache Rebuild Post-Operation
+
+- Font cache rebuilding (`fc-cache -s -f`) runs as a global post-operation during image finalization (`mkosi.finalize.d/35-font-cache.sh`).
+- It executes inside the target root chroot on every build whenever `fontconfig` (`fc-cache`) is present in the image.
+
 *End of instructions.*

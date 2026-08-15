@@ -1,0 +1,3 @@
+description="Obsidian knowledge base / markdown editor via Flatpak (md.obsidian.Obsidian)."
+requires="flatpak"
+uses_secrets=""

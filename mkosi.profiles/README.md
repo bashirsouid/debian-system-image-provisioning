@@ -57,6 +57,7 @@ Profile directories currently in the tree:
 | `kernel-lts` | Stable Debian kernel (meta-package; amd64/arm64 auto-selected) |
 | `kernel-rolling` | Newest kernel from trixie-backports, auto-tracked (amd64/arm64 auto-selected) |
 | `macbook` | Apple T2 hardware: kernel, firmware, t2fanrd |
+| `obsidian` | Obsidian markdown editor & knowledge base via Flatpak (`md.obsidian.Obsidian`) |
 | `s3-unencrypted-backup` | Hourly upload of configured files to S3-compatible storage (no encryption) |
 | `server` | Minimal headless CLI baseline |
 | `signal` | *(apt-source wired)* Signal Desktop — uncomment Packages= to enable |
