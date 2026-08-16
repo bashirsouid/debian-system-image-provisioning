@@ -1,2 +1,2 @@
-description="Google Antigravity (agentic IDE). Ships AppImage runtime deps (libfuse2t64, zenity), a /usr/local/bin/antigravity launcher, and a desktop entry; the user drops the AppImage at /opt/antigravity/Antigravity.AppImage (no apt/Flathub package available yet)."
+description="Google Antigravity suite (CLI + IDE + Hub). Installed via a first-boot oneshot from antigravity.google so the user always gets the latest standalone releases, which then self-update."
 uses_secrets=""

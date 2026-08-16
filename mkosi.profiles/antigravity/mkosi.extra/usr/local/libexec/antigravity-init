@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MARKER="/var/lib/antigravity/.ab-antigravity-installed"
+[[ -e "$MARKER" ]] && exit 0
+
+# 1. Network check
+if ! getent ahosts antigravity.google >/dev/null 2>&1; then
+    echo "antigravity.google DNS not available yet; will retry later."
+    exit 0
+fi
+
+echo "==> Resolving first login user..."
+# Heuristic to find the primary non-root user that can login
+# Assume uid >= 1000 and has a valid shell and home dir
+LOGIN_USER=""
+while IFS=: read -r user pass uid gid gecos home shell; do
+    if (( uid >= 1000 && uid < 60000 )) && [[ -d "$home" ]] && [[ "$shell" != "/bin/false" ]] && [[ "$shell" != "/usr/sbin/nologin" ]]; then
+        LOGIN_USER="$user"
+        break
+    fi
+done < /etc/passwd
+
+if [[ -z "$LOGIN_USER" ]]; then
+    echo "No valid login user found; skipping per-user CLI install."
+else
+    echo "==> Found login user: $LOGIN_USER. Installing CLI..."
+    # 2. CLI installation
+    CLI_BIN="$(getent passwd "$LOGIN_USER" | cut -d: -f6)/.local/bin/agy"
+    if [[ ! -x "$CLI_BIN" ]]; then
+        # Run the official install script as the user
+        su - "$LOGIN_USER" -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash' || echo "CLI install failed, continuing..."
+    else
+        echo "CLI already installed at $CLI_BIN."
+    fi
+fi
+
+# 3. Download page scraping
+echo "==> Fetching latest URLs from antigravity.google/download..."
+DOWNLOAD_HTML="$(curl -fsSL --compressed https://antigravity.google/download)" || { echo "Failed to fetch download page"; exit 1; }
+
+IDE_URL="$(echo "$DOWNLOAD_HTML" | grep -o 'https://[^"'\'' ]*linux-x64/Antigravity%20IDE\.tar\.gz' | head -n1)"
+HUB_URL="$(echo "$DOWNLOAD_HTML" | grep -o 'https://[^"'\'' ]*linux-x64/Antigravity\.tar\.gz' | head -n1)"
+
+if [[ -z "$IDE_URL" ]] || [[ -z "$HUB_URL" ]]; then
+    echo "Failed to resolve tarball URLs. Retrying later."
+    exit 1
+fi
+
+# 4. IDE installation
+if [[ ! -d "/opt/antigravity-ide" ]]; then
+    echo "==> Installing Antigravity IDE from $IDE_URL..."
+    install -d -m 0755 /opt/antigravity-ide
+    curl -fsSL "$IDE_URL" | tar -xz -C /opt/antigravity-ide --strip-components=1
+    ln -sf /opt/antigravity-ide/antigravity-ide /usr/local/bin/antigravity-ide
+
+    # Create basic desktop entry
+    cat > /usr/share/applications/antigravity-ide.desktop <<EOF
+[Desktop Entry]
+Name=Antigravity IDE
+Exec=/usr/local/bin/antigravity-ide %F
+Terminal=false
+Type=Application
+Icon=/opt/antigravity-ide/resources/app/resources/linux/code.png
+Categories=Development;TextEditor;
+EOF
+else
+    echo "IDE already installed in /opt/antigravity-ide"
+fi
+
+# 5. Hub (2.0) installation
+if [[ ! -d "/opt/antigravity" ]]; then
+    echo "==> Installing Antigravity Hub from $HUB_URL..."
+    install -d -m 0755 /opt/antigravity
+    curl -fsSL "$HUB_URL" | tar -xz -C /opt/antigravity --strip-components=1
+    ln -sf /opt/antigravity/antigravity /usr/local/bin/antigravity
+
+    # Create basic desktop entry
+    cat > /usr/share/applications/antigravity.desktop <<EOF
+[Desktop Entry]
+Name=Antigravity 2.0
+Exec=/usr/local/bin/antigravity %F
+Terminal=false
+Type=Application
+Icon=/opt/antigravity/resources/app/resources/linux/code.png
+Categories=Development;
+EOF
+else
+    echo "Hub already installed in /opt/antigravity"
+fi
+
+echo "==> Antigravity suite installation complete."
+install -d -m 0755 /var/lib/antigravity
+install -m 0644 /dev/null "$MARKER"
