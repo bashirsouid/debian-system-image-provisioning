@@ -111,6 +111,7 @@ FORCE_EMERGENCY_SHELL=false
 # always: stage regardless (useful for first-time USB writes)
 # skip: never stage (--skip-dotfiles legacy alias)
 DOTFILES_MODE="auto"
+DOTFILES_MODE_EXPLICIT=false
 ROOT_PASSWORD_HASH=""
 
 HOST_USER_NAME="$(id -un)"
@@ -1008,6 +1009,42 @@ ensure_base_hostdeps() {
   ab_hostdeps_ensure_commands "build host prerequisites" mkosi jq openssl sfdisk || exit 1
 }
 
+ensure_cross_arch_hostdeps() {
+  local host_arch qemu_binary
+
+  case "$TARGET_ARCH" in
+    arm64)
+      host_arch="$(dpkg --print-architecture 2>/dev/null || true)"
+      [[ "$host_arch" == arm64 ]] && return 0
+
+      qemu_binary="qemu-aarch64-static"
+      if ! ab_hostdeps_have_all_commands "$qemu_binary"; then
+        ab_hostdeps_ensure_packages "ARM64 cross-build emulation" qemu-user-static || exit 1
+      fi
+
+      # qemu-user-static supplies the interpreter; binfmt_misc makes the
+      # kernel invoke it when dpkg runs ARM64 maintainer scripts.
+      if [[ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]]; then
+        if command -v systemctl >/dev/null 2>&1; then
+          if (( EUID == 0 )); then
+            systemctl restart systemd-binfmt || true
+          elif command -v sudo >/dev/null 2>&1; then
+            sudo systemctl restart systemd-binfmt || true
+          fi
+        fi
+      fi
+
+      if [[ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]]; then
+        echo "ERROR: ARM64 target requires qemu-aarch64 binfmt emulation on this host." >&2
+        echo "Install qemu-user-static and enable systemd-binfmt, then retry:" >&2
+        echo "  sudo apt-get install -y qemu-user-static" >&2
+        echo "  sudo systemctl restart systemd-binfmt" >&2
+        exit 1
+      fi
+      ;;
+  esac
+}
+
 ensure_profile_hostdeps() {
   local profile="$1"
 
@@ -1244,8 +1281,9 @@ find_built_disk_image() {
 build_target() {
   local target_profile="$1"
   local target_host="$2"
-  local target_image_id target_force
+  local target_image_id target_force effective_dotfiles_mode
   local host_dir checksum_file old_checksum built_image_path built_image_basename expected_image_path
+  local host_dotfiles_mode host_descriptor
   local generate_hostname_overlay=false
   local sb_required=false
   local extra_args=() mkosi_args=()
@@ -1267,6 +1305,20 @@ build_target() {
     HOST_BASE=""
   fi
 
+  effective_dotfiles_mode="$DOTFILES_MODE"
+  if [[ "$DOTFILES_MODE_EXPLICIT" == false && -n "$HOST" ]] && \
+     host_descriptor="$(ab_host_descriptor_file "$PROJECT_ROOT" "$HOST")"; then
+    host_dotfiles_mode="$(ab_host_descriptor_value "$host_descriptor" dotfiles)"
+    case "$host_dotfiles_mode" in
+      auto|always|skip) effective_dotfiles_mode="$host_dotfiles_mode" ;;
+      "") ;;
+      *)
+        echo "ERROR: dotfiles must be auto, always, or skip in hosts.local/$HOST.conf" >&2
+        exit 1
+        ;;
+    esac
+  fi
+
   # Expand any roles in the raw profile list to atomic mkosi profiles,
   # validate each token, and dedupe. Everything downstream (mkosi
   # invocation, per-profile hostdeps, image-id suffix) operates on the
@@ -1274,10 +1326,13 @@ build_target() {
   # returns from this point.
   PROFILE="$(ab_resolve_profiles "$PROFILE")" || exit 1
 
+  read_architecture_from_configs
+
   target_image_id="$(image_id_for_target "$BASE_IMAGE_ID" "$PROFILE" "$HOST")"
   warn_if_image_label_too_long "$target_image_id" "$IMAGE_VERSION" "$HOST"
 
   ensure_profile_hostdeps "$PROFILE"
+  ensure_cross_arch_hostdeps
 
   if [[ -n "$HOST" && ! -d "$HOST_BASE" ]]; then
     echo "ERROR: no host overlay for '$HOST' (looked for hosts.local/$HOST.conf and hosts/$HOST/)" >&2
@@ -1372,7 +1427,6 @@ EOF
     exit 1
   fi
 
-  read_architecture_from_configs
   read_host_kernel_args
 
   echo "==> Preparing first-boot provisioning data for profile=$PROFILE${HOST:+ host=$HOST}..."
@@ -1401,9 +1455,9 @@ EOF
   render_users_conf "$METADATA_DIR/usr/local/etc/users.conf"
   render_provision_users_json "$METADATA_DIR/etc/ab-users.json"
   chmod 0600 "$METADATA_DIR/usr/local/etc/users.conf"
-  if [[ "$DOTFILES_MODE" == "skip" ]]; then
+  if [[ "$effective_dotfiles_mode" == "skip" ]]; then
     echo "==> [DOTFILES] --dotfiles=skip: skipping dotfiles staging"
-  elif [[ "$DOTFILES_MODE" == "auto" && -n "$HOST" ]] && host_has_persistent_home "$HOST"; then
+  elif [[ "$effective_dotfiles_mode" == "auto" && -n "$HOST" ]] && host_has_persistent_home "$HOST"; then
     echo "==> [DOTFILES] auto: host '$HOST' has a persistent /home mount in its fstab;"
     echo "    skipping dotfiles staging (use --dotfiles=always to override)"
   else
@@ -1501,7 +1555,10 @@ EOF
   fi
 
   mkosi_args=("--image-id=$target_image_id" "--image-version=$IMAGE_VERSION")
-  if [[ -n "${AB_LUKS_PASSPHRASE_FILE:-}" ]]; then
+  if [[ -n "$HOST" && -d "$HOST_BASE/mkosi.repart" ]]; then
+    mkosi_args+=("--repart-directory=$HOST_BASE/mkosi.repart")
+  fi
+  if [[ "$LUKS_REQUIRED" == true && -n "${AB_LUKS_PASSPHRASE_FILE:-}" ]]; then
     mkosi_args+=("--passphrase=$AB_LUKS_PASSPHRASE_FILE")
 fi
 
@@ -1561,13 +1618,37 @@ if [[ -d ".mkosi.workspace" ]]; then
 fi
 
 echo "==> Starting mkosi build (profile: $PROFILE${HOST:+, host: $HOST}, force: ${target_force:-none})..."
+  repart_backup=""
+  if [[ -n "$HOST" && -d "$HOST_BASE/mkosi.repart" && -d "$PROJECT_ROOT/mkosi.repart" ]]; then
+    repart_backup="$PROJECT_ROOT/.mkosi-repart-base.$BASHPID"
+    mv "$PROJECT_ROOT/mkosi.repart" "$repart_backup"
+  fi
+
+  restore_repart_directory() {
+    if [[ -n "$repart_backup" && -d "$repart_backup" ]]; then
+      mv "$repart_backup" "$PROJECT_ROOT/mkosi.repart"
+    fi
+  }
+
+  mkosi_status=0
   if [[ -n "$target_force" ]]; then
     # shellcheck disable=SC2206
     local force_args=($target_force)
-    mkosi "${mkosi_args[@]}" "${force_args[@]}" "${extra_args[@]}" build
+    if mkosi "${mkosi_args[@]}" "${force_args[@]}" "${extra_args[@]}" build; then
+      :
+    else
+      mkosi_status=$?
+    fi
   else
-    mkosi "${mkosi_args[@]}" "${extra_args[@]}" build
+    if mkosi "${mkosi_args[@]}" "${extra_args[@]}" build; then
+      :
+    else
+      mkosi_status=$?
+    fi
   fi
+  restore_repart_directory
+  unset -f restore_repart_directory
+  (( mkosi_status == 0 )) || return "$mkosi_status"
 
   expected_image_path="$PROJECT_ROOT/mkosi.output/${target_image_id}_${IMAGE_VERSION}.raw"
   built_image_path="$(find_built_disk_image "$expected_image_path" || true)"
@@ -1720,6 +1801,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-dotfiles)
       DOTFILES_MODE="skip"
+      DOTFILES_MODE_EXPLICIT=true
       shift
       ;;
     --dotfiles=*)
@@ -1727,6 +1809,7 @@ while [[ $# -gt 0 ]]; do
         auto|always|skip) DOTFILES_MODE="${1#--dotfiles=}" ;;
         *) echo "ERROR: --dotfiles must be auto, always, or skip" >&2; exit 1 ;;
       esac
+      DOTFILES_MODE_EXPLICIT=true
       shift
       ;;
     -h|--help)
@@ -1893,6 +1976,34 @@ else
   BUILD_TARGETS=("$PROFILE|$HOST")
 fi
 
+# The base root partition is encrypted by default, but a host descriptor can
+# explicitly opt out with disk_encryption = no. Any encrypted target keeps
+# the passphrase flow enabled, including mixed --all builds.
+LUKS_REQUIRED=false
+for _t in "${BUILD_TARGETS[@]}"; do
+  _target_host="${_t#*|}"
+  [[ -n "$_target_host" ]] || { LUKS_REQUIRED=true; break; }
+  _target_desc="$(ab_host_descriptor_file "$PROJECT_ROOT" "$_target_host" 2>/dev/null || true)"
+  [[ -n "$_target_desc" ]] || { LUKS_REQUIRED=true; break; }
+  _target_encryption="$(ab_host_descriptor_value "$_target_desc" disk_encryption)"
+  case "$_target_encryption" in
+    no|false|0)
+      ;;
+    yes|true|1|"")
+      LUKS_REQUIRED=true
+      break
+      ;;
+    *)
+      echo "ERROR: disk_encryption must be yes or no for host $_target_host (got: $_target_encryption)" >&2
+      exit 1
+      ;;
+  esac
+done
+unset _t _target_host _target_desc _target_encryption
+if [[ "$LUKS_REQUIRED" == false ]]; then
+  echo "==> Disk encryption: disabled for all selected host targets."
+fi
+
 # Compute the union of resolved profiles across every target in this
 # invocation. Passed to verify-build-secrets.sh so it can tell which
 # secrets this build actually needs (vs. which ones are unrelated).
@@ -2008,7 +2119,7 @@ else
   IMAGE_VERSION="$("$PROJECT_ROOT/mkosi.version")"
 fi
 
-if [[ -z "${LUKS_PASSPHRASE:-}" ]]; then
+if [[ "$LUKS_REQUIRED" == true && -z "${LUKS_PASSPHRASE:-}" ]]; then
   if [[ "$NON_INTERACTIVE" == true ]]; then
     echo "ERROR: LUKS encryption requires a passphrase but --non-interactive was set." >&2
     echo "       Set the LUKS_PASSPHRASE environment variable before running." >&2
@@ -2033,13 +2144,15 @@ if [[ -z "${LUKS_PASSPHRASE:-}" ]]; then
   fi
 fi
 
-# Securely pass the passphrase to mkosi using a tmpfs file
-PASSPHRASE_FILE="/dev/shm/mkosi-luks-passphrase-$$"
-# Clean up temp directory and passphrase file on exit
-trap 'rm -rf "$TMPDIR"; rm -f "$PASSPHRASE_FILE"' EXIT
-echo -n "$LUKS_PASSPHRASE" > "$PASSPHRASE_FILE"
-chmod 600 "$PASSPHRASE_FILE"
-AB_LUKS_PASSPHRASE_FILE="$PASSPHRASE_FILE"
+if [[ "$LUKS_REQUIRED" == true ]]; then
+  # Securely pass the passphrase to mkosi using a tmpfs file
+  PASSPHRASE_FILE="/dev/shm/mkosi-luks-passphrase-$$"
+  # Clean up temp directory and passphrase file on exit
+  trap 'rm -rf "$TMPDIR"; rm -f "$PASSPHRASE_FILE"' EXIT
+  echo -n "$LUKS_PASSPHRASE" > "$PASSPHRASE_FILE"
+  chmod 600 "$PASSPHRASE_FILE"
+  AB_LUKS_PASSPHRASE_FILE="$PASSPHRASE_FILE"
+fi
 
 # Preflight: the LUKS-encrypted root image is written NON-SPARSE, and
 # systemd-repart stages an intermediate copy before encrypting into the final
@@ -2074,7 +2187,9 @@ EOF
   fi
   echo "==> Build space OK: ${avail_gb}G free on ${fs:-$PROJECT_ROOT} (need ~${min_gb}G; override via AB_MIN_FREE_GB)"
 }
-ensure_build_space
+if [[ "$LUKS_REQUIRED" == true ]]; then
+  ensure_build_space
+fi
 
 for target in "${BUILD_TARGETS[@]}"; do
   build_target "${target%%|*}" "${target#*|}"

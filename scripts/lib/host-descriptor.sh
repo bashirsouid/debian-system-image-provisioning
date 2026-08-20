@@ -28,6 +28,8 @@
 #     kernel_cmdline  = quiet amdgpu.gttsize=3072
 #     architecture    = arm64             # optional; omit for x86-64
 #     secure_boot     = yes               # yes -> sign UKI; no -> opt-out marker
+#     disk_encryption = yes               # yes -> encrypt root; no -> plain root
+#     dotfiles        = skip              # auto, always, or skip
 #     persistent_home = LABEL=HOME ext4   # "<source> [fstype]"; generates fstab
 #     packages        = firmware-linux    # optional host-only [Content] Packages=
 #     backup_paths    = /etc/s3-backup-paths.conf /home   # -> /etc/s3-backup-paths.conf
@@ -134,7 +136,7 @@ ab_host_descriptor_materialize() {
     cp -a "$legacy_host_dir/mkosi.extra/." "$out/mkosi.extra/"
   fi
 
-  local profiles hostname image_id_suffix kernel_cmdline secure_boot
+  local profiles hostname image_id_suffix kernel_cmdline secure_boot disk_encryption
   local persistent_home backup_paths architecture packages extra_mounts
   local kopia_filesystem_targets kopia_cloud_targets kopia_extra_excludes kopia_sources
   profiles="$(ab_host_descriptor_value "$desc" profiles)"
@@ -142,6 +144,7 @@ ab_host_descriptor_materialize() {
   image_id_suffix="$(ab_host_descriptor_value "$desc" image_id_suffix)"
   kernel_cmdline="$(ab_host_descriptor_value "$desc" kernel_cmdline)"
   secure_boot="$(ab_host_descriptor_value "$desc" secure_boot)"
+  disk_encryption="$(ab_host_descriptor_value "$desc" disk_encryption)"
   persistent_home="$(ab_host_descriptor_value "$desc" persistent_home)"
   extra_mounts="$(ab_host_descriptor_value "$desc" extra_mounts)"
   backup_paths="$(ab_host_descriptor_value "$desc" backup_paths)"
@@ -220,6 +223,37 @@ SB
     *)
       printf 'ab_host_descriptor: ERROR: secure_boot must be yes or no (got: %s)\n' \
         "$secure_boot" >&2
+      return 1
+      ;;
+  esac
+
+  # Root disk encryption. The base repart definition encrypts root by
+  # default; an explicit host value can opt out for headless machines where
+  # a boot-time passphrase prompt is not practical. This must be rendered as
+  # a systemd-repart definition, not an mkosi.conf.d drop-in: Encrypt= is
+  # interpreted by repart from the files in RepartDirectory=.
+  case "$disk_encryption" in
+    yes|true|1)
+      : # retain the base encrypted-root default
+      ;;
+    no|false|0)
+      install -d -m 0755 "$out/mkosi.repart"
+      for repart_file in "$root/mkosi.repart"/*.conf; do
+        [[ -f "$repart_file" ]] || continue
+        repart_name="$(basename "$repart_file")"
+        if [[ "$repart_name" == "10-root.conf" ]]; then
+          awk '!/^[[:space:]]*Encrypt[[:space:]]*=/' "$repart_file" > "$out/mkosi.repart/$repart_name"
+        else
+          cp -a "$repart_file" "$out/mkosi.repart/$repart_name"
+        fi
+      done
+      ;;
+    "")
+      : # retain the base encrypted-root default
+      ;;
+    *)
+      printf 'ab_host_descriptor: ERROR: disk_encryption must be yes or no (got: %s)\n' \
+        "$disk_encryption" >&2
       return 1
       ;;
   esac

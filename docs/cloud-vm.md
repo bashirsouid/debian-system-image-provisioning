@@ -61,7 +61,8 @@ remains as a manual fallback (accessible via serial console if needed).
 
 **Note:** If the instance is not a Shielded Instance, vTPM is not available.
 In that case, you have two options:
-1. Disable LUKS entirely by setting `Encrypt=no` in the host's mkosi config.
+1. Disable LUKS entirely by setting `disk_encryption = no` in
+  `hosts.local/cloudbox.conf`.
    Credentials in `/etc/credstore/` will not be at-rest encrypted; rely on
    OCI IAM and your Tailscale/SSH key chain instead.
 2. Implement network-bound disk encryption (NBDE) via Clevis + Tang — more
