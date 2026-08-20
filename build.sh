@@ -1288,7 +1288,10 @@ fix_arm64_efi_boot_fallback() {
 
   echo "==> Verifying arm64 UEFI fallback boot stub (EFI/BOOT/BOOTAA64.EFI)..."
 
-  loop_dev="$(sudo losetup -fP --show "$raw_image")"
+  if ! loop_dev="$(sudo losetup -fP --show "$raw_image")"; then
+    echo "WARNING: could not attach loop device for $raw_image; skipping boot fallback fix" >&2
+    return 0
+  fi
   esp_mount="$(mktemp -d)"
 
   cleanup_fix_boot() {
