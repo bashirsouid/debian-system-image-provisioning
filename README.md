@@ -35,6 +35,11 @@ rollback — no package manager on the running system required.
 * The bootstrap creates one ESP and two root partitions
 * Host-specific kernel flags live in Boot Loader Specification entries
 
+Building `arm64` images (for example, `cloudbox`) requires passwordless or
+interactive `sudo` for `losetup` and `mount`. These commands are used by
+`fix_arm64_efi_boot_fallback` to correct a cross-architecture UEFI fallback
+stub after the disk image is built.
+
 ## Quick start
 
 ### 1. Set up your secrets and users

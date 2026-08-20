@@ -1279,6 +1279,52 @@ find_built_disk_image() {
   return 1
 }
 
+fix_arm64_efi_boot_fallback() {
+  local raw_image="$1"
+  local loop_dev esp_partition esp_mount
+
+  # Only arm64 builds are affected; this is a no-op for other architectures.
+  [[ "$TARGET_ARCH" == "arm64" ]] || return 0
+
+  echo "==> Verifying arm64 UEFI fallback boot stub (EFI/BOOT/BOOTAA64.EFI)..."
+
+  loop_dev="$(sudo losetup -fP --show "$raw_image")"
+  esp_mount="$(mktemp -d)"
+
+  cleanup_fix_boot() {
+    sudo umount "$esp_mount" 2>/dev/null || true
+    rmdir "$esp_mount" 2>/dev/null || true
+    sudo losetup -d "$loop_dev" 2>/dev/null || true
+  }
+  trap cleanup_fix_boot RETURN
+
+  # The ESP is normally the first partition on these disk images.
+  esp_partition="${loop_dev}p1"
+  if [[ ! -e "$esp_partition" ]]; then
+    echo "WARNING: could not find ESP partition at $esp_partition; skipping boot fallback fix" >&2
+    return 0
+  fi
+
+  if ! sudo mount "$esp_partition" "$esp_mount"; then
+    echo "WARNING: could not mount ESP at $esp_partition; skipping boot fallback fix" >&2
+    return 0
+  fi
+
+  local uki_path
+  uki_path="$(find "$esp_mount/EFI/Linux" -maxdepth 1 -iname '*.efi' -print -quit 2>/dev/null || true)"
+  if [[ -z "$uki_path" ]]; then
+    echo "WARNING: no UKI found under EFI/Linux; skipping boot fallback fix" >&2
+    return 0
+  fi
+
+  sudo install -d -m 0755 "$esp_mount/EFI/BOOT"
+  # Replace the host-architecture fallback with the arm64 fallback filename.
+  sudo rm -f "$esp_mount/EFI/BOOT/BOOTX64.EFI"
+  sudo cp "$uki_path" "$esp_mount/EFI/BOOT/BOOTAA64.EFI"
+
+  echo "==> Wrote EFI/BOOT/BOOTAA64.EFI from $(basename "$uki_path")"
+}
+
 host_luks_required() {
   local host="$1" descriptor encryption
   if [[ -z "$host" ]]; then
@@ -1702,6 +1748,7 @@ echo "==> Starting mkosi build (profile: $PROFILE${HOST:+, host: $HOST}, force: 
     echo "ERROR: unable to locate built disk image in mkosi.output/ for $target_image_id" >&2
     exit 1
   fi
+  fix_arm64_efi_boot_fallback "$built_image_path"
 
   built_image_basename="$(basename "$built_image_path")"
 
