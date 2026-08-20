@@ -22,11 +22,15 @@ fi
 # and you still get a [FAILED] red line at boot:
 #   "Failed to listen on systemd-networkd.socket - Network Service Netlink Socket"
 # Mask the socket and service so they cannot be pulled in by anything.
-for _nu in systemd-networkd.service systemd-networkd.socket \
-           systemd-networkd-wait-online.service \
-           systemd-networkd-persistent-storage.service; do
-  if [[ -f "$ROOT/usr/lib/systemd/system/$_nu" ]]; then
-    echo "==> [FINALIZE] masking $_nu (this image uses NetworkManager)"
-    ln -snf /dev/null "$ROOT/etc/systemd/system/$_nu"
-  fi
-done
+if [[ -e "$ROOT/etc/cloud-networking.marker" ]]; then
+  echo "==> [FINALIZE] cloud-networking profile detected: leaving systemd-networkd unmasked"
+else
+  for _nu in systemd-networkd.service systemd-networkd.socket \
+             systemd-networkd-wait-online.service \
+             systemd-networkd-persistent-storage.service; do
+    if [[ -f "$ROOT/usr/lib/systemd/system/$_nu" ]]; then
+      echo "==> [FINALIZE] masking $_nu (this image uses NetworkManager)"
+      ln -snf /dev/null "$ROOT/etc/systemd/system/$_nu"
+    fi
+  done
+fi

@@ -1,0 +1,2 @@
+description="systemd-networkd + DHCP for headless cloud/hypervisor VMs with a single wired interface. Alternative to the wifi profile's NetworkManager stack; unmasks and enables systemd-networkd (masked by default because most hosts use NetworkManager)."
+uses_secrets=""
