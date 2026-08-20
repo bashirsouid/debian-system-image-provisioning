@@ -113,6 +113,7 @@ FORCE_EMERGENCY_SHELL=false
 DOTFILES_MODE="auto"
 DOTFILES_MODE_EXPLICIT=false
 ROOT_PASSWORD_HASH=""
+REPART_BACKUP=""
 
 HOST_USER_NAME="$(id -un)"
 HOST_UID="$(id -u)"
@@ -1278,10 +1279,59 @@ find_built_disk_image() {
   return 1
 }
 
+host_luks_required() {
+  local host="$1" descriptor encryption
+  if [[ -z "$host" ]]; then
+    printf 'true\n'
+    return 0
+  fi
+
+  descriptor="$(ab_host_descriptor_file "$PROJECT_ROOT" "$host" 2>/dev/null || true)"
+  if [[ -z "$descriptor" ]]; then
+    printf 'true\n'
+    return 0
+  fi
+
+  encryption="$(ab_host_descriptor_value "$descriptor" disk_encryption)"
+  case "$encryption" in
+    no|false|0)
+      printf 'false\n'
+      ;;
+    yes|true|1|"")
+      printf 'true\n'
+      ;;
+    *)
+      echo "ERROR: disk_encryption must be yes or no for host $host (got: $encryption)" >&2
+      return 1
+      ;;
+  esac
+}
+
+restore_repart_directory() {
+  if [[ -n "$REPART_BACKUP" && -d "$REPART_BACKUP" ]]; then
+    if [[ -e "$PROJECT_ROOT/mkosi.repart" ]]; then
+      echo "ERROR: cannot restore $REPART_BACKUP; $PROJECT_ROOT/mkosi.repart already exists" >&2
+      return 1
+    fi
+    mv "$REPART_BACKUP" "$PROJECT_ROOT/mkosi.repart"
+  fi
+  REPART_BACKUP=""
+}
+
+cleanup_build_state() {
+  local status=$?
+  restore_repart_directory || status=$?
+  rm -rf "$TMPDIR" || status=$?
+  if [[ -n "${PASSPHRASE_FILE:-}" ]]; then
+    rm -f "$PASSPHRASE_FILE" || status=$?
+  fi
+  return "$status"
+}
+
 build_target() {
   local target_profile="$1"
   local target_host="$2"
-  local target_image_id target_force effective_dotfiles_mode
+  local target_image_id target_force effective_dotfiles_mode target_luks_required=true
   local host_dir checksum_file old_checksum built_image_path built_image_basename expected_image_path
   local host_dotfiles_mode host_descriptor
   local generate_hostname_overlay=false
@@ -1558,9 +1608,12 @@ EOF
   if [[ -n "$HOST" && -d "$HOST_BASE/mkosi.repart" ]]; then
     mkosi_args+=("--repart-directory=$HOST_BASE/mkosi.repart")
   fi
-  if [[ "$LUKS_REQUIRED" == true && -n "${AB_LUKS_PASSPHRASE_FILE:-}" ]]; then
+  if [[ -n "$HOST" ]]; then
+    target_luks_required="$(host_luks_required "$HOST")" || exit 1
+  fi
+  if [[ "$target_luks_required" == true && -n "${AB_LUKS_PASSPHRASE_FILE:-}" ]]; then
     mkosi_args+=("--passphrase=$AB_LUKS_PASSPHRASE_FILE")
-fi
+  fi
 
   # Clean stale host config symlinks from previous builds
   if [[ -d "$PROJECT_ROOT/mkosi.conf.d" ]]; then
@@ -1618,17 +1671,11 @@ if [[ -d ".mkosi.workspace" ]]; then
 fi
 
 echo "==> Starting mkosi build (profile: $PROFILE${HOST:+, host: $HOST}, force: ${target_force:-none})..."
-  repart_backup=""
+  REPART_BACKUP=""
   if [[ -n "$HOST" && -d "$HOST_BASE/mkosi.repart" && -d "$PROJECT_ROOT/mkosi.repart" ]]; then
-    repart_backup="$PROJECT_ROOT/.mkosi-repart-base.$BASHPID"
-    mv "$PROJECT_ROOT/mkosi.repart" "$repart_backup"
+    REPART_BACKUP="$PROJECT_ROOT/.mkosi-repart-base.$BASHPID"
+    mv "$PROJECT_ROOT/mkosi.repart" "$REPART_BACKUP"
   fi
-
-  restore_repart_directory() {
-    if [[ -n "$repart_backup" && -d "$repart_backup" ]]; then
-      mv "$repart_backup" "$PROJECT_ROOT/mkosi.repart"
-    fi
-  }
 
   mkosi_status=0
   if [[ -n "$target_force" ]]; then
@@ -1646,8 +1693,7 @@ echo "==> Starting mkosi build (profile: $PROFILE${HOST:+, host: $HOST}, force: 
       mkosi_status=$?
     fi
   fi
-  restore_repart_directory
-  unset -f restore_repart_directory
+  restore_repart_directory || return 1
   (( mkosi_status == 0 )) || return "$mkosi_status"
 
   expected_image_path="$PROJECT_ROOT/mkosi.output/${target_image_id}_${IMAGE_VERSION}.raw"
@@ -1982,24 +2028,13 @@ fi
 LUKS_REQUIRED=false
 for _t in "${BUILD_TARGETS[@]}"; do
   _target_host="${_t#*|}"
-  [[ -n "$_target_host" ]] || { LUKS_REQUIRED=true; break; }
-  _target_desc="$(ab_host_descriptor_file "$PROJECT_ROOT" "$_target_host" 2>/dev/null || true)"
-  [[ -n "$_target_desc" ]] || { LUKS_REQUIRED=true; break; }
-  _target_encryption="$(ab_host_descriptor_value "$_target_desc" disk_encryption)"
-  case "$_target_encryption" in
-    no|false|0)
-      ;;
-    yes|true|1|"")
-      LUKS_REQUIRED=true
-      break
-      ;;
-    *)
-      echo "ERROR: disk_encryption must be yes or no for host $_target_host (got: $_target_encryption)" >&2
-      exit 1
-      ;;
-  esac
+  _target_luks_required="$(host_luks_required "$_target_host")" || exit 1
+  if [[ "$_target_luks_required" == true ]]; then
+    LUKS_REQUIRED=true
+    break
+  fi
 done
-unset _t _target_host _target_desc _target_encryption
+unset _t _target_host _target_luks_required
 if [[ "$LUKS_REQUIRED" == false ]]; then
   echo "==> Disk encryption: disabled for all selected host targets."
 fi
@@ -2147,12 +2182,14 @@ fi
 if [[ "$LUKS_REQUIRED" == true ]]; then
   # Securely pass the passphrase to mkosi using a tmpfs file
   PASSPHRASE_FILE="/dev/shm/mkosi-luks-passphrase-$$"
-  # Clean up temp directory and passphrase file on exit
-  trap 'rm -rf "$TMPDIR"; rm -f "$PASSPHRASE_FILE"' EXIT
   echo -n "$LUKS_PASSPHRASE" > "$PASSPHRASE_FILE"
   chmod 600 "$PASSPHRASE_FILE"
   AB_LUKS_PASSPHRASE_FILE="$PASSPHRASE_FILE"
 fi
+
+# Restore the shared repart directory even if a build is interrupted while
+# a host-specific repart directory is active.
+trap cleanup_build_state EXIT
 
 # Preflight: the LUKS-encrypted root image is written NON-SPARSE, and
 # systemd-repart stages an intermediate copy before encrypting into the final

@@ -188,8 +188,9 @@ See `docs/home-storage.md` for trade-offs and the fstab pattern.
 ### Host-specific kernel arguments
 
 Host overlays supply kernel arguments via `hosts/<name>/kernel-cmdline.extra`.
-These render into the versioned Boot Loader Specification entry installed
-by `systemd-sysupdate`.
+Descriptor-defined host arguments are also written to an mkosi
+`[Content] KernelCommandLine=` drop-in, so they are baked into the image's
+initial boot entry as well as retained for `systemd-sysupdate` updates.
 
 ### QEMU sample home seed
 

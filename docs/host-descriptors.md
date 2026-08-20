@@ -42,7 +42,7 @@ than encrypted.
 | `profiles` | `hosts/<name>/profile.default` | space-separated profiles/roles |
 | `hostname` | `…/etc/hostname` **and** `…/etc/hosts` | also writes a matching `127.0.1.1` line |
 | `image_id_suffix` | `hosts/<name>/image-id-suffix` | short GPT-label alias |
-| `kernel_cmdline` | `hosts/<name>/kernel-cmdline.extra` | |
+| `kernel_cmdline` | `hosts/<name>/kernel-cmdline.extra` and `[Content] KernelCommandLine=` drop-in | baked into the image boot entry and retained as host metadata |
 | `architecture` | `[Distribution] Architecture=` drop-in | e.g. `arm64`; omit for x86-64 |
 | `secure_boot` | `30-secure-boot.conf` / `secure-boot.disabled` | `yes` or `no` |
 | `disk_encryption` | `[Partition] Encrypt=` drop-in | `yes` or `no`; defaults to encrypted root |
@@ -68,7 +68,8 @@ When `--host <name>` is built and `hosts.local/<name>.conf` exists,
 `build.sh` renders a synthetic overlay under `.mkosi-host/<name>/` (also
 gitignored) that is byte-for-byte the layout it already consumes
 (`profile.default`, `image-id-suffix`, `kernel-cmdline.extra`,
-`mkosi.conf.d/30-secure-boot.conf` or `secure-boot.disabled`,
+`mkosi.conf.d/40-kernel-cmdline.conf`, `mkosi.conf.d/30-secure-boot.conf`
+or `secure-boot.disabled`,
 `mkosi.extra/...`). All of `build.sh`'s existing host-overlay logic then
 points at that directory via `$HOST_BASE`. The descriptor is purely an
 input adapter; no consumption logic changed.

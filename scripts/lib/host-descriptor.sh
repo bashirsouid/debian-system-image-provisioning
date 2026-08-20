@@ -41,8 +41,9 @@
 # When a descriptor exists, ab_host_descriptor_materialize renders a
 # synthetic host overlay under .mkosi-host/<name>/ that is byte-for-byte
 # the layout build.sh already knows how to consume (profile.default,
-# image-id-suffix, kernel-cmdline.extra, mkosi.conf.d/30-secure-boot.conf
-# or secure-boot.disabled, mkosi.extra/...). build.sh points its existing
+# image-id-suffix, kernel-cmdline.extra, mkosi.conf.d/40-kernel-cmdline.conf,
+# mkosi.conf.d/30-secure-boot.conf or secure-boot.disabled, mkosi.extra/...).
+# build.sh points its existing
 # host-overlay logic at that directory via $HOST_BASE. The descriptor is
 # therefore purely an INPUT ADAPTER — none of build.sh's consumption
 # logic has to change.
@@ -157,7 +158,14 @@ ab_host_descriptor_materialize() {
 
   [[ -n "$profiles" ]]        && printf '%s\n' "$profiles"        > "$out/profile.default"
   [[ -n "$image_id_suffix" ]] && printf '%s\n' "$image_id_suffix" > "$out/image-id-suffix"
-  [[ -n "$kernel_cmdline" ]]  && printf '%s\n' "$kernel_cmdline"  > "$out/kernel-cmdline.extra"
+  if [[ -n "$kernel_cmdline" ]]; then
+    printf '%s\n' "$kernel_cmdline" > "$out/kernel-cmdline.extra"
+    cat > "$out/mkosi.conf.d/40-kernel-cmdline.conf" <<CMDLINE
+# Generated from hosts.local/$host.conf (kernel_cmdline).
+[Content]
+KernelCommandLine=$kernel_cmdline
+CMDLINE
+  fi
 
   # Hostname: write /etc/hostname AND a matching /etc/hosts. The base
   # image ships /etc/hosts with "127.0.1.1 qemu"; without this override a
