@@ -119,19 +119,19 @@ sector_size="$(jq -r '.partitiontable.sectorsize // 512' <<<"$partition_json")"
 [[ "$sector_size" =~ ^[0-9]+$ ]] || die "unable to determine sector size"
 
 root_start="$(jq -r '
-  .partitiontable.partitions
+  (.partitiontable.partitions // [])
   | map(select((.type // "") | ascii_downcase != "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"))
   | max_by(.size // 0)
   | .start // empty
 ' <<<"$partition_json")"
 root_size="$(jq -r '
-  .partitiontable.partitions
+  (.partitiontable.partitions // [])
   | map(select((.type // "") | ascii_downcase != "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"))
   | max_by(.size // 0)
   | .size // empty
 ' <<<"$partition_json")"
 
-[[ "$root_start" =~ ^[0-9]+$ ]] || die "unable to determine root partition start sector"
+[[ "$root_start" =~ ^[0-9]+$ ]] || die "image has no usable root partition; refusing to export sysupdate artifacts"
 [[ "$root_size" =~ ^[0-9]+$ ]] || die "unable to determine root partition size in sectors"
 
 echo "==> Exporting root partition from image.raw"

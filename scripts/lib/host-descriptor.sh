@@ -245,6 +245,10 @@ SB
       : # retain the base encrypted-root default
       ;;
     no|false|0)
+      if [[ ! -d "$root/mkosi.repart" ]] || ! compgen -G "$root/mkosi.repart/*.conf" >/dev/null; then
+        printf 'ab_host_descriptor: ERROR: base mkosi.repart definitions are missing; refusing to build host %s without a partition layout\n' "$host" >&2
+        return 1
+      fi
       install -d -m 0755 "$out/mkosi.repart"
       for repart_file in "$root/mkosi.repart"/*.conf; do
         [[ -f "$repart_file" ]] || continue
