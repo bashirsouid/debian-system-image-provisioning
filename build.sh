@@ -1397,9 +1397,11 @@ SCRIPT
   sudo tee "$root_mount/etc/systemd/system/ab-data-disk-mount.service" >/dev/null <<'UNIT'
 [Unit]
 Description=Format and mount OCI data disk at /mnt/data (idempotent)
+DefaultDependencies=no
 After=systemd-udev-settle.service local-fs-pre.target
 Wants=systemd-udev-settle.service
 Before=local-fs.target
+Conflicts=shutdown.target
 
 [Service]
 Type=oneshot
