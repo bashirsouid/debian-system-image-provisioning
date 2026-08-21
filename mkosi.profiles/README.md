@@ -39,7 +39,7 @@ Profile directories currently in the tree:
 | `joystickwake` | Prevents DPMS timeout on controller input |
 | `bluetooth` | Bluetooth support with bluez stack |
 | `cloudflare-tunnel` | cloudflared connector for backup SSH |
-| `cloud-networking` | systemd-networkd + DHCP for headless cloud/hypervisor VMs (wired-only alternative to `wifi`'s NetworkManager) |
+| `oci-cloud` | systemd-networkd + DHCP, root partition auto-growth, and data-disk auto-mount for OCI Compute instances (wired-only alternative to `wifi`'s NetworkManager; no cloud-init dependency) |
 | `brave-repo` | *(repo-only base, auto-pulled via `requires=`)* Brave apt source + signing key |
 | `cloudflared-repo` | *(repo-only base, auto-pulled via `requires=`)* Cloudflare apt source + key for the `cloudflared` package |
 | `cosmic` | *(stub)* COSMIC desktop environment (Wayland) — uncomment Packages= to enable |

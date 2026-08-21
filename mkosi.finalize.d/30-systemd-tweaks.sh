@@ -22,8 +22,8 @@ fi
 # and you still get a [FAILED] red line at boot:
 #   "Failed to listen on systemd-networkd.socket - Network Service Netlink Socket"
 # Mask the socket and service so they cannot be pulled in by anything.
-if [[ -e "$ROOT/etc/cloud-networking.marker" ]]; then
-  echo "==> [FINALIZE] cloud-networking profile detected: leaving systemd-networkd unmasked"
+if [[ -e "$ROOT/etc/oci-cloud.marker" ]]; then
+  echo "==> [FINALIZE] oci-cloud profile detected: leaving systemd-networkd unmasked"
 else
   for _nu in systemd-networkd.service systemd-networkd.socket \
              systemd-networkd-wait-online.service \

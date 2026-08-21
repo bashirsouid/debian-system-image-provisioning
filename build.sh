@@ -1295,9 +1295,9 @@ fix_arm64_efi_boot_fallback() {
   esp_mount="$(mktemp -d)"
 
   cleanup_fix_boot() {
-    sudo umount "$esp_mount" 2>/dev/null || true
-    rmdir "$esp_mount" 2>/dev/null || true
-    sudo losetup -d "$loop_dev" 2>/dev/null || true
+    sudo umount "${esp_mount:-}" 2>/dev/null || true
+    rmdir "${esp_mount:-}" 2>/dev/null || true
+    sudo losetup -d "${loop_dev:-}" 2>/dev/null || true
   }
   trap cleanup_fix_boot RETURN
 
@@ -1326,6 +1326,93 @@ fix_arm64_efi_boot_fallback() {
   sudo cp "$uki_path" "$esp_mount/EFI/BOOT/BOOTAA64.EFI"
 
   echo "==> Wrote EFI/BOOT/BOOTAA64.EFI from $(basename "$uki_path")"
+}
+
+apply_oci_cloud_fixes() {
+  local raw_image="$1" host_repart_dir="$2"
+  local loop_dev root_mount root_partition repart_src
+
+  loop_dev="$(sudo losetup -fP --show "$raw_image")"
+  root_mount="$(mktemp -d)"
+
+  cleanup_oci_cloud_fixes() {
+    sudo umount "${root_mount:-}" 2>/dev/null || true
+    rmdir "${root_mount:-}" 2>/dev/null || true
+    sudo losetup -d "${loop_dev:-}" 2>/dev/null || true
+  }
+  trap cleanup_oci_cloud_fixes RETURN
+
+  root_partition="${loop_dev}p2"
+  if [[ ! -e "$root_partition" ]]; then
+    echo "WARNING: could not find root partition at $root_partition; skipping oci-cloud fixes" >&2
+    return 0
+  fi
+
+  if ! sudo mount "$root_partition" "$root_mount"; then
+    echo "WARNING: could not mount root at $root_partition; skipping oci-cloud fixes" >&2
+    return 0
+  fi
+
+  if [[ ! -e "$root_mount/etc/oci-cloud.marker" ]]; then
+    return 0
+  fi
+
+  echo "==> Applying oci-cloud post-build fixes (root growth, data disk mount)..."
+
+  repart_src="$host_repart_dir"
+  [[ -d "$repart_src" ]] || repart_src="$PROJECT_ROOT/mkosi.repart"
+  if [[ -d "$repart_src" ]]; then
+    sudo install -d -m 0755 "$root_mount/usr/lib/repart.d"
+    sudo cp "$repart_src"/*.conf "$root_mount/usr/lib/repart.d/"
+    echo "==> Copied repart definitions from $repart_src to /usr/lib/repart.d"
+  else
+    echo "WARNING: no repart directory found at $repart_src; root will not auto-grow" >&2
+  fi
+
+  sudo install -d -m 0755 "$root_mount/usr/local/sbin"
+  sudo tee "$root_mount/usr/local/sbin/ab-data-disk-mount" >/dev/null <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+DEVICE="/dev/sdb"
+MOUNT_POINT="/mnt/data"
+LABEL="data"
+
+[[ -b "$DEVICE" ]] || { echo "ab-data-disk-mount: $DEVICE not present; skipping"; exit 0; }
+
+if ! blkid "$DEVICE" >/dev/null 2>&1; then
+  echo "ab-data-disk-mount: formatting $DEVICE as ext4 (label=$LABEL)"
+  mkfs.ext4 -L "$LABEL" "$DEVICE"
+fi
+
+mkdir -p "$MOUNT_POINT"
+if ! mountpoint -q "$MOUNT_POINT"; then
+  mount "$DEVICE" "$MOUNT_POINT" 2>/dev/null || mount -L "$LABEL" "$MOUNT_POINT"
+fi
+SCRIPT
+  sudo chmod 0755 "$root_mount/usr/local/sbin/ab-data-disk-mount"
+
+  sudo install -d -m 0755 "$root_mount/etc/systemd/system"
+  sudo tee "$root_mount/etc/systemd/system/ab-data-disk-mount.service" >/dev/null <<'UNIT'
+[Unit]
+Description=Format and mount OCI data disk at /mnt/data (idempotent)
+After=systemd-udev-settle.service local-fs-pre.target
+Wants=systemd-udev-settle.service
+Before=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ab-data-disk-mount
+
+[Install]
+WantedBy=local-fs.target
+UNIT
+
+  sudo install -d -m 0755 "$root_mount/etc/systemd/system/local-fs.target.wants"
+  sudo ln -snf /etc/systemd/system/ab-data-disk-mount.service \
+    "$root_mount/etc/systemd/system/local-fs.target.wants/ab-data-disk-mount.service"
+
+  echo "==> Installed ab-data-disk-mount.service (enabled)"
 }
 
 host_luks_required() {
@@ -1752,6 +1839,7 @@ echo "==> Starting mkosi build (profile: $PROFILE${HOST:+, host: $HOST}, force: 
     exit 1
   fi
   fix_arm64_efi_boot_fallback "$built_image_path"
+  apply_oci_cloud_fixes "$built_image_path" "$HOST_BASE/mkosi.repart"
 
   built_image_basename="$(basename "$built_image_path")"
 
