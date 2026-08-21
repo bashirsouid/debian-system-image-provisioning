@@ -1295,6 +1295,7 @@ fix_arm64_efi_boot_fallback() {
   esp_mount="$(mktemp -d)"
 
   cleanup_fix_boot() {
+    trap - RETURN
     sudo umount "${esp_mount:-}" 2>/dev/null || true
     rmdir "${esp_mount:-}" 2>/dev/null || true
     sudo losetup -d "${loop_dev:-}" 2>/dev/null || true
@@ -1336,6 +1337,7 @@ apply_oci_cloud_fixes() {
   root_mount="$(mktemp -d)"
 
   cleanup_oci_cloud_fixes() {
+    trap - RETURN
     sudo umount "${root_mount:-}" 2>/dev/null || true
     rmdir "${root_mount:-}" 2>/dev/null || true
     sudo losetup -d "${loop_dev:-}" 2>/dev/null || true
