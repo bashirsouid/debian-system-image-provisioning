@@ -78,9 +78,10 @@ The default fresh layout is:
 - `/home` as a GPT `home` partition using the remaining space
 - no `/mnt/data` partition unless you ask for one
 
-If you add a `/mnt/data` partition, label it `DATA`. The image ships an
-`/etc/fstab` entry that mounts `PARTLABEL=DATA` to `/mnt/data` with `nofail`,
-so future retained versions keep mounting it without per-version edits.
+If you add a `/mnt/data` partition, label it `DATA` and select the
+`data-partition` profile for that host. The profile ships an `/etc/fstab`
+entry that mounts `PARTLABEL=DATA` to `/mnt/data` with `nofail`, so future
+retained versions keep mounting it without per-version edits.
 
 ## T2 Mac note
 

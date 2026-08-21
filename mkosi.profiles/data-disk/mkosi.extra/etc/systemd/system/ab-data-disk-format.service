@@ -1,0 +1,11 @@
+[Unit]
+Description=Format OCI data disk (idempotent, one-time)
+ConditionPathExists=/dev/sdb
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ab-data-disk-format
+
+[Install]
+WantedBy=multi-user.target

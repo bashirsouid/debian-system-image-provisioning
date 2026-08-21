@@ -1,0 +1,8 @@
+# Second, unpartitioned attached block device (e.g. a separate OCI
+# volume) formatted by ab-data-disk-format.service. Lazy automount +
+# a 30s device-timeout absorbs the disk attaching a few seconds late
+# at boot, and covers the brand-new-volume first-boot race where this
+# entry's mount attempt might land before ab-data-disk-format.service
+# finishes: automount retries on the next real access to /mnt/data,
+# by which point formatting will be done.
+LABEL=data /mnt/data ext4 nofail,x-systemd.automount,x-systemd.device-timeout=30s 0 2

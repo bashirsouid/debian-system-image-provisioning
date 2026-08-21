@@ -26,11 +26,15 @@ The repo now prefers the **native GPT path** for that:
 That is the layout the hardware-test USB installer now defaults to when you pick
 `rest` for `/home`.
 
-There is also a simple optional persistent data path baked into the image now:
+There is also a simple optional persistent data path, available via
+opt-in profile:
 
-- if a partition with `PARTLABEL=DATA` exists, it is mounted at `/mnt/data`
-- if no such partition exists, the `nofail` mount entry is ignored and boot
-  continues normally
+- select the `data-partition` profile if the data lives on a same-disk
+  GPT partition labeled `DATA`
+- select the `data-disk` profile if the data lives on a separate,
+  unpartitioned attached block device (e.g. a second cloud volume)
+- either way it mounts at `/mnt/data`; select exactly one, never both
+- if neither profile is selected, no such mount is attempted
 
 You can still use host-specific overlays via `--host NAME` when you want a more
 opinionated machine-local storage layout, but the preferred golden path is now:

@@ -1359,7 +1359,7 @@ apply_oci_cloud_fixes() {
     return 0
   fi
 
-  echo "==> Applying oci-cloud post-build fixes (root growth, data disk mount)..."
+  echo "==> Applying oci-cloud post-build fixes (root growth)..."
 
   repart_src="$host_repart_dir"
   [[ -d "$repart_src" ]] || repart_src="$PROJECT_ROOT/mkosi.repart"
@@ -1371,52 +1371,7 @@ apply_oci_cloud_fixes() {
     echo "WARNING: no repart directory found at $repart_src; root will not auto-grow" >&2
   fi
 
-  sudo install -d -m 0755 "$root_mount/usr/local/sbin"
-  sudo tee "$root_mount/usr/local/sbin/ab-data-disk-mount" >/dev/null <<'SCRIPT'
-#!/usr/bin/env bash
-set -euo pipefail
-DEVICE="/dev/sdb"
-MOUNT_POINT="/mnt/data"
-LABEL="data"
-
-[[ -b "$DEVICE" ]] || { echo "ab-data-disk-mount: $DEVICE not present; skipping"; exit 0; }
-
-if ! blkid "$DEVICE" >/dev/null 2>&1; then
-  echo "ab-data-disk-mount: formatting $DEVICE as ext4 (label=$LABEL)"
-  mkfs.ext4 -L "$LABEL" "$DEVICE"
-fi
-
-mkdir -p "$MOUNT_POINT"
-if ! mountpoint -q "$MOUNT_POINT"; then
-  mount "$DEVICE" "$MOUNT_POINT" 2>/dev/null || mount -L "$LABEL" "$MOUNT_POINT"
-fi
-SCRIPT
-  sudo chmod 0755 "$root_mount/usr/local/sbin/ab-data-disk-mount"
-
-  sudo install -d -m 0755 "$root_mount/etc/systemd/system"
-  sudo tee "$root_mount/etc/systemd/system/ab-data-disk-mount.service" >/dev/null <<'UNIT'
-[Unit]
-Description=Format and mount OCI data disk at /mnt/data (idempotent)
-DefaultDependencies=no
-After=systemd-udev-settle.service local-fs-pre.target
-Wants=systemd-udev-settle.service
-Before=local-fs.target
-Conflicts=shutdown.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/sbin/ab-data-disk-mount
-
-[Install]
-WantedBy=local-fs.target
-UNIT
-
-  sudo install -d -m 0755 "$root_mount/etc/systemd/system/local-fs.target.wants"
-  sudo ln -snf /etc/systemd/system/ab-data-disk-mount.service \
-    "$root_mount/etc/systemd/system/local-fs.target.wants/ab-data-disk-mount.service"
-
-  echo "==> Installed ab-data-disk-mount.service (enabled)"
+  echo "==> oci-cloud post-build fixes complete (root growth only; data disk handled by data-disk profile)"
 }
 
 host_luks_required() {

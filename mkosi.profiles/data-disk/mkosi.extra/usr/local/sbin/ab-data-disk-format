@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+DEVICE="/dev/sdb"
+LABEL="data"
+
+[[ -b "$DEVICE" ]] || { echo "ab-data-disk-format: $DEVICE not present; skipping"; exit 0; }
+
+if ! blkid "$DEVICE" >/dev/null 2>&1; then
+  echo "ab-data-disk-format: formatting $DEVICE as ext4 (label=$LABEL)"
+  mkfs.ext4 -L "$LABEL" "$DEVICE"
+fi

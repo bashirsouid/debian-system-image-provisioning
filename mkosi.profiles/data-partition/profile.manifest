@@ -1,0 +1,2 @@
+description="Mounts a same-disk GPT partition labeled DATA at /mnt/data via lazy automount. For hosts with a physically repartitioned data slice on the boot disk. Mutually exclusive with data-disk (both target /mnt/data; select exactly one per host)."
+uses_secrets=""

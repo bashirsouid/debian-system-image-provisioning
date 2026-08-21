@@ -19,21 +19,17 @@ Ships:
 - `/etc/systemd/system-preset/10-oci-cloud.preset` - enables
   `systemd-networkd.service`/`.socket` (sorts before the base
   `90-ab.preset` so it wins for these units).
-- `/etc/oci-cloud.marker` - sentinel checked by three separate
-  mechanisms:
+- `/etc/oci-cloud.marker` - sentinel checked by two mechanisms:
   - `mkosi.finalize.d/30-systemd-tweaks.sh` skips masking
     systemd-networkd.
   - `build.sh`'s `apply_oci_cloud_fixes()` post-build step copies
     repart definitions into `/usr/lib/repart.d/` so root grows to fill
-    the actual boot volume size on first real boot (mkosi's own
-    `SizeMaxBytes=` cap in `mkosi.repart/10-root.conf` already allows
-    this; it just never reached the running system before).
-  - The same post-build step installs and enables
-    `ab-data-disk-mount.service`, an idempotent oneshot unit that
-    formats (if needed) and mounts a second attached block device at
-    `/mnt/data` on every boot. This exists because cloud-init is not
-    installed in this image family, so OCI's `user_data` cloud-config
-    mechanism cannot be used for this.
+    the actual boot volume size on first real boot.
+
+Persistent data storage on an OCI host is handled separately by the
+`data-disk` profile (add it explicitly to a host's `profiles=` list
+alongside `oci-cloud` if it has a second attached volume) — kept
+separate since not every OCI host will necessarily have one.
 
 Not needed for OCI with this setup: Oracle Cloud Agent. It's only
 required for OCI console CPU/memory monitoring graphs and the Block

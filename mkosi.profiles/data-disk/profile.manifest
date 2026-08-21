@@ -1,0 +1,2 @@
+description="Formats and mounts a separate, unpartitioned attached block device (e.g. a second OCI volume) at /mnt/data via lazy automount. For hosts where the data disk has no partition table. Mutually exclusive with data-partition (both target /mnt/data; select exactly one per host)."
+uses_secrets=""

@@ -39,10 +39,12 @@ Profile directories currently in the tree:
 | `joystickwake` | Prevents DPMS timeout on controller input |
 | `bluetooth` | Bluetooth support with bluez stack |
 | `cloudflare-tunnel` | cloudflared connector for backup SSH |
-| `oci-cloud` | systemd-networkd + DHCP, root partition auto-growth, and data-disk auto-mount for OCI Compute instances (wired-only alternative to `wifi`'s NetworkManager; no cloud-init dependency) |
+| `oci-cloud` | systemd-networkd + DHCP and root partition auto-growth for OCI Compute instances (wired-only alternative to `wifi`'s NetworkManager; no cloud-init dependency) |
 | `brave-repo` | *(repo-only base, auto-pulled via `requires=`)* Brave apt source + signing key |
 | `cloudflared-repo` | *(repo-only base, auto-pulled via `requires=`)* Cloudflare apt source + key for the `cloudflared` package |
 | `cosmic` | *(stub)* COSMIC desktop environment (Wayland) — uncomment Packages= to enable |
+| `data-disk` | Formats + mounts a separate unpartitioned attached block device at /mnt/data via lazy automount. Mutually exclusive with `data-partition`. |
+| `data-partition` | Mounts a same-disk GPT partition labeled DATA at /mnt/data via lazy automount. Mutually exclusive with `data-disk`. |
 | `debian-backports` | *(repo-only base, auto-pulled via `requires=`)* enables the `trixie-backports` apt suite |
 | `devbox` | Liquorix kernel + spice-vdagent (QEMU/virt guest) |
 | `dev-tools` | Baseline CLI: git, curl, vim, htop, tmux, rsync, less, jq |
