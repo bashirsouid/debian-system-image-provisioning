@@ -1,6 +1,6 @@
 # data-disk
 
-Formats (idempotently, once) and mounts a separate, wholly unpartitioned
+Formats (idempotently, retrying every boot) and mounts a separate, wholly unpartitioned
 attached block device at `/mnt/data`, lazily, via systemd's automount
 support. This is for hosts where the data disk has no partition table at
 all — e.g. an OCI Compute instance with a second paravirtualized volume
@@ -9,7 +9,8 @@ attached as `/dev/sdb`.
 Ships:
 - `/usr/local/sbin/ab-data-disk-format` — idempotent oneshot script;
   formats `/dev/sdb` as ext4 with `LABEL=data` only if it has no
-  existing filesystem signature. Safe to run on every boot.
+  existing filesystem signature, waiting up to 90 seconds for the device.
+  Safe to run on every boot.
 - `ab-data-disk-format.service` (`WantedBy=multi-user.target`) — runs
   the above once per boot. No `local-fs.target` ordering, so there is no
   ordering-cycle risk.

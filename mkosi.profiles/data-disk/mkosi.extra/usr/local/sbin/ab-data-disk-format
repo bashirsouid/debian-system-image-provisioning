@@ -2,10 +2,21 @@
 set -euo pipefail
 DEVICE="/dev/sdb"
 LABEL="data"
+MAX_WAIT=90
 
-[[ -b "$DEVICE" ]] || { echo "ab-data-disk-format: $DEVICE not present; skipping"; exit 0; }
+for ((i=0; i<MAX_WAIT; i++)); do
+  [[ -b "$DEVICE" ]] && break
+  sleep 1
+done
+
+if [[ ! -b "$DEVICE" ]]; then
+  echo "ab-data-disk-format: $DEVICE not present after ${MAX_WAIT}s; skipping"
+  exit 0
+fi
 
 if ! blkid "$DEVICE" >/dev/null 2>&1; then
-  echo "ab-data-disk-format: formatting $DEVICE as ext4 (label=$LABEL)"
+  echo "ab-data-disk-format: formatting $DEVICE as ext4 (label=$LABEL); this may take a while on a large disk, no timeout will interrupt it"
   mkfs.ext4 -L "$LABEL" "$DEVICE"
+else
+  echo "ab-data-disk-format: $DEVICE already has a filesystem; nothing to do"
 fi
