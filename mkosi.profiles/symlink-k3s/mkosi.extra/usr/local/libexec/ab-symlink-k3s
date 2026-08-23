@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# /usr/local/libexec/ab-symlink-k3s
+#
+# Idempotent first-boot oneshot: symlink K3s + container storage to the
+# persistent DATA partition (/mnt/data). Migrates any baked-in seed
+# content (e.g. k3s server/manifests from the image) into the data dir
+# before replacing the real directory with a symlink.
+#
+# Runs once per root slot (ConditionPathExists=!/var/lib/ab-symlink-k3s/done).
+# If /mnt/data is not yet a real mountpoint (e.g. still formatting or
+# missing data disk), waits with bounded retries so the first boot
+# succeeds cleanly instead of leaving a failed unit.
+
+set -euo pipefail
+
+DATA_ROOT=/mnt/data
+MARKER_DIR=/var/lib/ab-symlink-k3s
+MAX_RETRIES=45   # 45 * 2s = 90s ceiling; covers slow mkfs on large volumes
+RETRY_SLEEP=2
+
+log() { printf '[ab-symlink-k3s] %s\n' "$*"; }
+
+# Wait for /mnt/data to become a real mountpoint (not just an automount stub).
+# With x-systemd.automount the directory exists immediately but mounts on
+# first access; if the underlying volume is still being formatted (mkfs),
+# the first mkdir will fail. We retry the operation itself, which both
+# triggers and absorbs the automount.
+attempt=0
+last_err=""
+until mkdir -p -- "$DATA_ROOT/k3s" "$DATA_ROOT/containers" 2>/dev/null; do
+  attempt=$((attempt + 1))
+  # Capture the real error for the final failure message
+  if ! mkdir -p -- "$DATA_ROOT/k3s" "$DATA_ROOT/containers" 2>&1; then
+    last_err="$(mkdir -p -- "$DATA_ROOT/k3s" "$DATA_ROOT/containers" 2>&1 || true)"
+  fi
+  if (( attempt > MAX_RETRIES )); then
+    log "ERROR: $DATA_ROOT not available after $((MAX_RETRIES * RETRY_SLEEP))s; giving up"
+    [[ -n "$last_err" ]] && log "Last error: $last_err"
+    exit 1
+  fi
+  log "Waiting for DATA partition (attempt ${attempt}/${MAX_RETRIES})..."
+  sleep "$RETRY_SLEEP"
+done
+
+# Ensure parent directories exist so ln -sfn works even on a fresh
+# image where /var/lib/rancher doesn't exist yet.
+install -d -m 0755 /var/lib/rancher
+install -d -m 0755 /var/lib/containers
+
+# Generic adopt-and-link for one state directory.
+# $1 = data_dir  (under /mnt/data)
+# $2 = state_dir (under /var/lib, will become symlink)
+adopt_and_link() {
+  local data_dir="$1" state_dir="$2"
+  mkdir -p -- "$data_dir"
+  # If state_dir exists as a REAL directory (not a symlink), migrate
+  # its content into the data dir. cp -a --update=none copies only
+  # missing files without affecting exit status (coreutils >= 9.3),
+  # so baked seeds (server/manifests) are adopted without clobbering
+  # evolved runtime state on later boots / A/B swaps.
+  if [[ -d "$state_dir" && ! -L "$state_dir" ]]; then
+    log "Adopting seed content from $state_dir into $data_dir"
+    cp -a --update=none -- "$state_dir"/. "$data_dir"/
+    rm -rf -- "$state_dir"
+  fi
+  # Replace (or create) the symlink. ln -sfn is idempotent: if the
+  # target already exists as the correct symlink, it's a no-op; if it
+  # exists as a symlink, it's replaced. Real directories are already
+  # removed by the migration block above, so ln never sees a real dir.
+  ln -sfn -- "$data_dir" "$state_dir"
+}
+
+adopt_and_link "$DATA_ROOT/k3s"       /var/lib/rancher/k3s
+adopt_and_link "$DATA_ROOT/containers" /var/lib/containers
+
+# Marker only on full success. If we reach here, symlinks are in place.
+install -d -m 0700 "$MARKER_DIR"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$MARKER_DIR/done"
+log "Done: K3s + containers -> $DATA_ROOT"

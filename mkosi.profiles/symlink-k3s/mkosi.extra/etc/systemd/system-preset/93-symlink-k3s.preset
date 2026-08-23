@@ -1,0 +1,3 @@
+# /etc/systemd/system-preset/93-symlink-k3s.preset -- shipped by the
+# symlink-k3s profile. Enables the ab-symlink-k3s oneshot service.
+enable ab-symlink-k3s.service

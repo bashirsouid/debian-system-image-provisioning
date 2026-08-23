@@ -1,0 +1,5 @@
+# /etc/systemd/system-preset/92-k3s-proxy.preset -- shipped by the
+# k3s-proxy profile. Enables the caddy service. (The Debian package
+# postinst also enables it via deb-systemd-helper; this is
+# belt-and-braces and keeps the repo's preset pattern consistent.)
+enable caddy.service

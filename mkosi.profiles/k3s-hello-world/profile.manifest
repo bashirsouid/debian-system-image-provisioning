@@ -1,0 +1,3 @@
+description="Sample static site deployed via k3s manifests (ConfigMap + nginx Deployment + NodePort Service); exposed through host Caddy (k3s-proxy). No build-time dependencies beyond the multi-arch nginx image."
+requires="k3s k3s-proxy"
+uses_secrets=""

@@ -1,0 +1,4 @@
+# k3s profile: local pod networking (input side)
+iifname { "cni0", "flannel.1", "veth*" } accept comment "k3s local pod net"
+ip saddr 10.42.0.0/16 accept comment "k3s default pod CIDR"
+ip saddr 10.43.0.0/16 accept comment "k3s default service CIDR"

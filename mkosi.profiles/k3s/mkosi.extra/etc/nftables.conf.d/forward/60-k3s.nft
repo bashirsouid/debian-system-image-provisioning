@@ -1,0 +1,3 @@
+# k3s profile: pod forwarding (NodePort DNAT, pod egress)
+iifname { "cni0", "flannel.1" } accept comment "k3s pods outbound"
+oifname { "cni0", "flannel.1" } accept comment "k3s pods inbound"

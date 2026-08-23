@@ -1,0 +1,20 @@
+[Unit]
+Description=Symlink Caddy state to persistent DATA partition
+Documentation=file:///usr/local/libexec/ab-symlink-caddy
+After=local-fs.target
+# Must complete before caddy.service starts, so certs/ACME account are
+# written to the DATA partition from the beginning. Ordering-only
+# reference to a unit that isn't shipped is silently ignored.
+Before=caddy.service
+ConditionPathExists=!/var/lib/ab-symlink-caddy/done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=180s
+ExecStart=/usr/local/libexec/ab-symlink-caddy
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

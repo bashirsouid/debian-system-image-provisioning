@@ -1,0 +1,2 @@
+description="Persist Caddy TLS certs + ACME account (/var/lib/caddy) to the DATA partition (/mnt/data/caddy) across A/B root swaps. Pair with k3s-proxy."
+uses_secrets=""

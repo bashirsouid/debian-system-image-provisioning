@@ -1,0 +1,8 @@
+# /etc/default/ab-k3s-extra -- sourced by k3s-install.service IN ADDITION to
+# the user pin file /etc/default/ab-k3s-install (which is read first).
+#
+# Baked by the k3s-proxy profile: this host fronts k3s with Caddy on
+# 80/443, so the bundled Traefik ingress controller and ServiceLB must
+# stay out of the way. If you also pin INSTALL_K3S_VERSION in
+# ab-k3s-install, leave EXEC alone here.
+INSTALL_K3S_EXEC="--disable=traefik --disable=servicelb"

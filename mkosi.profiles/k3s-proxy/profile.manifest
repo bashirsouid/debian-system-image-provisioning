@@ -1,0 +1,2 @@
+description="Host Caddy reverse proxy: terminates public HTTPS for k3s-published services and disables k3s' bundled Traefik + ServiceLB. Pair with k3s (and symlink-caddy to persist certs)."
+uses_secrets=""

@@ -53,7 +53,9 @@ Profile directories currently in the tree:
 | `ftp` | SFTP-only server with sftponly user (SSH-key auth, no shell) |
 | `healthchecksio` | Dead-man's-switch heartbeat to healthchecks.io |
 | `incus` | System containers / VMs |
-| `k3s` | *(stub)* single-node Kubernetes |
+| `k3s` | Single-node Kubernetes via get.k3s.io (first-boot installer). Ships resolv-conf fix, firewall drop-in, and env-file hooks for profile-owned install overrides. |
+| `k3s-hello-world` | Sample static site deployed via k3s manifests (ConfigMap + nginx Deployment + NodePort Service); exposed through host Caddy (k3s-proxy). |
+| `k3s-proxy` | Host Caddy reverse proxy: terminates public TLS for k3s-published services, disables k3s' bundled Traefik + ServiceLB. |
 | `kopia-base` | Shared base for the backup stack: Kopia CLI + `kopia` system user (UID 5000) + the `/usr/lib/kopia/*.bash` scripts and `/etc/kopia` config. Pulled in automatically by the backup profiles (`requires=`); not selected directly. (see [Kopia backup stack](#kopia-backup-stack) below) |
 | `kopia-cloud-backup` | Hourly encrypted S3 cloud backup service — auto-pulls `kopia-base` (see [Kopia backup stack](#kopia-backup-stack)) |
 | `kopia-filesystem-backup` | Hourly encrypted filesystem backup service for rotating local/USB drives — auto-pulls `kopia-base` (see [Kopia backup stack](#kopia-backup-stack)) |
@@ -66,6 +68,7 @@ Profile directories currently in the tree:
 | `signal` | *(apt-source wired)* Signal Desktop — uncomment Packages= to enable |
 | `ssh-server` | openssh-server + hardening drop-ins |
 | `steam` | *(stub)* Steam client |
+| `symlink-caddy` | Persist Caddy TLS certs + ACME account (`/var/lib/caddy`) to the DATA partition (`/mnt/data/caddy`) across A/B root swaps. Pair with k3s-proxy. |
 | `symlink-docker` | Symlink `/var/lib/docker` -> `/mnt/data/docker` for persistent container storage |
 | `symlink-k3s` | Symlink K3s + container storage to `/mnt/data/` for persistent K8s state |
 | `tailscale` | Tailscale mesh VPN |

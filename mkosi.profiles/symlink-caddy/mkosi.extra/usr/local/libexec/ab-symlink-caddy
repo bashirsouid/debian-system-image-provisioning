@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# /usr/local/libexec/ab-symlink-caddy
+#
+# Idempotent first-boot oneshot: symlink Caddy state directory to the
+# persistent DATA partition (/mnt/data/caddy). Migrates any baked-in
+# content, chowns to the caddy user so certs/ACME account are writable.
+#
+# Runs once per root slot (ConditionPathExists=!/var/lib/ab-symlink-caddy/done).
+# If /mnt/data is not yet a real mountpoint, waits with bounded retries.
+
+set -euo pipefail
+
+DATA_ROOT=/mnt/data
+MARKER_DIR=/var/lib/ab-symlink-caddy
+STATE_DIR=/var/lib/caddy
+DATA_DIR="$DATA_ROOT/caddy"
+MAX_RETRIES=45
+RETRY_SLEEP=2
+
+log() { printf '[ab-symlink-caddy] %s\n' "$*"; }
+
+# Wait for /mnt/data to become a real mountpoint.
+attempt=0
+last_err=""
+until mkdir -p -- "$DATA_ROOT/caddy" 2>/dev/null; do
+  attempt=$((attempt + 1))
+  # Capture the real error for the final failure message
+  if ! mkdir -p -- "$DATA_ROOT/caddy" 2>&1; then
+    last_err="$(mkdir -p -- "$DATA_ROOT/caddy" 2>&1 || true)"
+  fi
+  if (( attempt > MAX_RETRIES )); then
+    log "ERROR: $DATA_ROOT not available after $((MAX_RETRIES * RETRY_SLEEP))s; giving up"
+    [[ -n "$last_err" ]] && log "Last error: $last_err"
+    exit 1
+  fi
+  log "Waiting for DATA partition (attempt ${attempt}/${MAX_RETRIES})..."
+  sleep "$RETRY_SLEEP"
+done
+
+# Ensure parent exists so ln -sfn works on a fresh image.
+install -d -m 0755 "$(dirname "$STATE_DIR")"
+mkdir -p -- "$DATA_DIR"
+
+# If STATE_DIR exists as a REAL directory (not a symlink), migrate its
+# content into the data dir. cp -a --update=none copies only missing
+# files without affecting exit status (coreutils >= 9.3), preserving
+# evolved state on A/B swaps while adopting any baked seeds.
+if [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]]; then
+  log "Adopting seed content from $STATE_DIR into $DATA_DIR"
+  cp -a --update=none -- "$STATE_DIR"/. "$DATA_DIR"/
+  rm -rf -- "$STATE_DIR"
+fi
+
+# Replace (or create) the symlink.
+ln -sfn -- "$DATA_DIR" "$STATE_DIR"
+
+# Ensure the caddy user owns the data directory so Caddy can write
+# certs, ACME account, autosave.json, etc. The caddy user is created
+# by the Debian package at build time.
+if getent passwd caddy >/dev/null; then
+  chown -R caddy:caddy -- "$DATA_DIR"
+else
+  log "WARN: caddy user not found; skipping chown (caddy package not installed?)"
+fi
+
+# Marker only on full success.
+install -d -m 0700 "$MARKER_DIR"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$MARKER_DIR/done"
+log "Done: Caddy state -> $DATA_DIR (owned by caddy:caddy)"

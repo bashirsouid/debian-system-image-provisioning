@@ -1,0 +1,2 @@
+# Seed file: keeps this directory present in the image so the
+# include glob in /etc/nftables.conf always resolves. Contains no rules.

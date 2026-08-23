@@ -1,0 +1,10 @@
+# /etc/caddy/Caddyfile -- placeholder shipped by the k3s-proxy profile.
+#
+# A host descriptor with `k3s_proxy_domain = <fqdn>` replaces this file
+# at build time (via scripts/lib/host-descriptor.sh) with a real site
+# block that terminates TLS and reverse-proxies to the k3s NodePort
+# backend. Until then Caddy serves an HTTP-only marker page on port 80
+# so the service starts cleanly even without a configured domain.
+http://:80 {
+	respond "k3s-proxy is up, but no k3s_proxy_domain is configured in the host descriptor yet.\n"
+}

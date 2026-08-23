@@ -1,8 +1,12 @@
 [Unit]
 Description=Install k3s via get.k3s.io (first-boot, idempotent)
 Documentation=https://docs.k3s.io/quick-start
-After=network-online.target
+After=network-online.target ab-symlink-k3s.service
 Wants=network-online.target
+# Persistent-storage symlink profiles must finish before the installer
+# runs, so k3s populates the DATA partition instead of a fresh rootfs
+# dir. Ordering-only references to units that aren't shipped are
+# silently ignored by systemd, so plain k3s builds are unaffected.
 # Don't re-run after the install marker is dropped. The k3s.service
 # unit that the installer writes is what keeps k3s running afterwards.
 ConditionPathExists=!/var/lib/ab-k3s-installed
@@ -15,6 +19,10 @@ Type=oneshot
 # pinning the user can force a specific release once they've decided
 # on one (drop a /etc/default/ab-k3s-install file with overrides).
 EnvironmentFile=-/etc/default/ab-k3s-install
+# Second optional env file for *profiles* that adjust the install
+# (e.g. k3s-proxy disabling Traefik + ServiceLB). Listed AFTER the user
+# pin file above, so profile flags win if both set the same variable.
+EnvironmentFile=-/etc/default/ab-k3s-extra
 ExecStart=/bin/sh -c '/usr/bin/curl -sfL https://get.k3s.io | sh -'
 ExecStartPost=/bin/sh -c 'install -m 0644 /dev/null /var/lib/ab-k3s-installed'
 # Best-effort. If the install fails (offline first boot, github outage),

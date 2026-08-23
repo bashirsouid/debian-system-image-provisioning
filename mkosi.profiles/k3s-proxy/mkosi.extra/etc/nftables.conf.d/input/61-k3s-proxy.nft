@@ -1,0 +1,19 @@
+# /etc/nftables.conf.d/61-k3s-proxy.nft -- shipped by the k3s-proxy profile.
+#
+# The base firewall (mkosi.extra/etc/nftables.conf) is default-drop on
+# the input chain. Caddy terminates public TLS on the host and must be
+# reachable on 80 (HTTP redirect + ACME HTTP-01 challenge) and 443
+# (HTTPS + HTTP/3 QUIC).
+#
+# Included via `include "/etc/nftables.conf.d/*.nft"` at the end of
+# /etc/nftables.conf; re-declaring table inet filter here MERGES with
+# the base declaration (nftables adds these rules to the existing
+# chains rather than replacing them).
+
+table inet filter {
+
+    chain input {
+        tcp dport { 80, 443 } ct state new accept comment "k3s-proxy Caddy HTTP(S)"
+        udp dport 443 ct state new accept comment "k3s-proxy Caddy HTTP/3 QUIC"
+    }
+}

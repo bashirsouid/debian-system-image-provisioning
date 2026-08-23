@@ -55,6 +55,8 @@ than encrypted.
 | `kopia_cloud_targets` | `…/etc/kopia/targets.json` (`.cloud`) | optional; space-separated `name:https://endpoint` entries (endpoint split on first `:`) |
 | `kopia_sources` | `…/etc/kopia/sources.conf` | optional; space-separated paths to snapshot (default `/home`) |
 | `kopia_extra_excludes` | `…/etc/kopia/excludes.local.conf` | optional; space-separated extra ignore patterns |
+| `k3s_proxy_domain` | `/etc/caddy/Caddyfile` | optional; FQDN for Caddy automatic HTTPS (Let's Encrypt/ZeroSSL); site block reverse-proxies to 127.0.0.1:30080 |
+| `acme_email` | `/etc/caddy/Caddyfile` | optional; email for ACME account registration (Let's Encrypt) |
 
 Anything that cannot be a `key = value` scalar — firmware blobs, quirk
 systemd units, driver configs — is **not** a descriptor key. It belongs

@@ -1,0 +1,3 @@
+# /etc/systemd/system-preset/93-symlink-caddy.preset -- shipped by the
+# symlink-caddy profile. Enables the ab-symlink-caddy oneshot service.
+enable ab-symlink-caddy.service

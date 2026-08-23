@@ -1,0 +1,3 @@
+# /etc/systemd/system-preset/93-symlink-docker.preset -- shipped by the
+# symlink-docker profile. Enables the ab-symlink-docker oneshot service.
+enable ab-symlink-docker.service

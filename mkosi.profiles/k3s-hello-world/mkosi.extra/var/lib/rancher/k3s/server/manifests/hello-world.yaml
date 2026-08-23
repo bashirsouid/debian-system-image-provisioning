@@ -1,0 +1,98 @@
+# /var/lib/rancher/k3s/server/manifests/hello-world.yaml
+#
+# Auto-deployed by k3s on startup. Contains:
+#   - ConfigMap: static index.html
+#   - Deployment: nginx:stable-alpine (multi-arch amd64+arm64)
+#   - Service:   NodePort 30080 → container 80
+#
+# No Ingress object: host Caddy (k3s-proxy) terminates TLS and
+# reverse-proxies 127.0.0.1:30080.
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hello-world-index
+  labels:
+    app: hello-world
+data:
+  index.html: |
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <title>k3s-hello-world</title>
+      <style>
+        body { font-family: system-ui, sans-serif; margin: 3rem auto; max-width: 40rem; line-height: 1.6; }
+        code { background: #f4f4f4; padding: 0.2em 0.4em; border-radius: 3px; }
+        .badge { display: inline-block; padding: 0.2em 0.6em; background: #e8f5e9; color: #2e7d32; border-radius: 999px; font-size: 0.85em; margin-left: 0.5em; }
+      </style>
+    </head>
+    <body>
+      <h1>Hello from <code>k3s-hello-world</code> <span class="badge">static</span></h1>
+      <p>This page is served by an <code>nginx:stable-alpine</code> pod running on a single-node <a href="https://k3s.io">k3s</a> cluster.</p>
+      <ul>
+        <li>Public TLS terminated by <strong>Caddy</strong> on the host (k3s-proxy profile).</li>
+        <li>Internal traffic: Caddy → NodePort 30080 → nginx pod.</li>
+        <li>Manifest auto-deployed from <code>/var/lib/rancher/k3s/server/manifests/</code>.</li>
+        <li>Image <code>nginx:stable-alpine</code> is multi-arch (amd64 + arm64).</li>
+      </ul>
+      <hr>
+      <p style="color:#666;font-size:0.9em">Host: <code>cloudbox</code> · Built with <a href="https://mkosi.systemd.io">mkosi</a></p>
+    </body>
+    </html>
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-world
+  labels:
+    app: hello-world
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hello-world
+  template:
+    metadata:
+      labels:
+        app: hello-world
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:stable-alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "16Mi"
+          limits:
+            cpu: "100m"
+            memory: "64Mi"
+      volumes:
+      - name: html
+        configMap:
+          name: hello-world-index
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-world
+  labels:
+    app: hello-world
+spec:
+  type: NodePort
+  selector:
+    app: hello-world
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 30080
+    protocol: TCP
+    name: http

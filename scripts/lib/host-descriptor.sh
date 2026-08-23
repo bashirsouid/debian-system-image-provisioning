@@ -140,6 +140,7 @@ ab_host_descriptor_materialize() {
   local profiles hostname image_id_suffix kernel_cmdline secure_boot disk_encryption
   local persistent_home backup_paths architecture packages extra_mounts
   local kopia_filesystem_targets kopia_cloud_targets kopia_extra_excludes kopia_sources
+  local k3s_proxy_domain acme_email
   profiles="$(ab_host_descriptor_value "$desc" profiles)"
   hostname="$(ab_host_descriptor_value "$desc" hostname)"
   image_id_suffix="$(ab_host_descriptor_value "$desc" image_id_suffix)"
@@ -155,6 +156,8 @@ ab_host_descriptor_materialize() {
   kopia_cloud_targets="$(ab_host_descriptor_value "$desc" kopia_cloud_targets)"
   kopia_extra_excludes="$(ab_host_descriptor_value "$desc" kopia_extra_excludes)"
   kopia_sources="$(ab_host_descriptor_value "$desc" kopia_sources)"
+  k3s_proxy_domain="$(ab_host_descriptor_value "$desc" k3s_proxy_domain)"
+  acme_email="$(ab_host_descriptor_value "$desc" acme_email)"
 
   [[ -n "$profiles" ]]        && printf '%s\n' "$profiles"        > "$out/profile.default"
   [[ -n "$image_id_suffix" ]] && printf '%s\n' "$image_id_suffix" > "$out/image-id-suffix"
@@ -426,6 +429,35 @@ SB
         printf '%s\n' "$_s"
       done
     } > "$out/mkosi.extra/etc/kopia/sources.conf"
+  fi
+
+  # k3s-proxy TLS front — non-secret per-host config. Renders
+  # /etc/caddy/Caddyfile so Caddy terminates TLS for <domain> and
+  # reverse-proxies to the k3s NodePort. Without k3s_proxy_domain,
+  # the placeholder Caddyfile from the k3s-proxy profile ships instead.
+  if [[ -n "$k3s_proxy_domain" ]]; then
+    # Validate domain: fail closed like secure_boot. Only letters, digits,
+    # dots, hyphens, optional :port. No whitespace or shell metacharacters.
+    if [[ ! "$k3s_proxy_domain" =~ ^[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then
+      printf 'ab_host_descriptor: ERROR: k3s_proxy_domain %q must match ^[A-Za-z0-9.-]+(:[0-9]+)?$\n' "$k3s_proxy_domain" >&2
+      return 1
+    fi
+    # Validate acme_email if provided (basic sanity: no whitespace, contains @)
+    if [[ -n "$acme_email" && ! "$acme_email" =~ ^[^[:space:]@]+@[^[:space:]]+\.[^[:space:]]+$ ]]; then
+      printf 'ab_host_descriptor: ERROR: acme_email %q must be a valid email address (no whitespace, contains @ and .)\n' "$acme_email" >&2
+      return 1
+    fi
+    install -d -m 0755 "$out/mkosi.extra/etc/caddy"
+    {
+      printf '# Generated from hosts.local/%s.conf (k3s_proxy_domain).\n' "$host"
+      printf '# Managed by mkosi; edit the descriptor and rebuild to change.\n'
+      if [[ -n "$acme_email" ]]; then
+        printf '{\n'
+        printf '\temail %s\n' "$acme_email"
+        printf '}\n\n'
+      fi
+      printf '%s {\n\treverse_proxy 127.0.0.1:30080\n}\n' "$k3s_proxy_domain"
+    } > "$out/mkosi.extra/etc/caddy/Caddyfile"
   fi
 
   printf '%s\n' "$out"

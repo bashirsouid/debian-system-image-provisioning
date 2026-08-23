@@ -2,13 +2,17 @@
 Description=Symlink K3s and container storage to persistent DATA partition
 Documentation=file:///usr/local/libexec/ab-symlink-k3s
 After=local-fs.target
+# Must complete before k3s-install.service runs, so k3s writes state
+# into the DATA partition. Ordering-only references to units that aren't
+# shipped are silently ignored by systemd, so plain builds are unaffected.
+Before=k3s-install.service k3s.service
 ConditionPathExists=!/var/lib/ab-symlink-k3s/done
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'test -d /mnt/data && mkdir -p /mnt/data/k3s /mnt/data/containers && ln -sf /mnt/data/k3s /var/lib/rancher/k3s && ln -sf /mnt/data/containers /var/lib/containers || true'
-ExecStartPost=/bin/sh -c 'install -d -m 0700 /var/lib/ab-symlink-k3s && date -u +%Y-%m-%dT%H:%M:%SZ > /var/lib/ab-symlink-k3s/done'
+TimeoutStartSec=180s
+ExecStart=/usr/local/libexec/ab-symlink-k3s
 StandardOutput=journal
 StandardError=journal
 

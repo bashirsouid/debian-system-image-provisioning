@@ -1,0 +1,15 @@
+# /etc/rancher/k3s/config.yaml -- baked defaults for the k3s server.
+#
+# Owned by the k3s profile. Profiles that need to change k3s startup
+# behavior (e.g. k3s-proxy disabling Traefik) must NOT ship this same
+# path -- mkosi composes mkosi.extra/ last-writer-wins per file, so a
+# second copy would silently clobber these settings depending on
+# profile order. Use an INSTALL_K3S_EXEC env file instead (see
+# /etc/default/ab-k3s-extra shipped by k3s-proxy).
+#
+# resolv-conf: the base image runs systemd-resolved with a 127.0.0.53
+# stub listener in /etc/resolv.conf. That loopback address is
+# unreachable from pod network namespaces, so CoreDNS forwarding would
+# fail for every workload. Point k3s at resolved's real upstream file
+# (the non-stub one) so pods get working DNS on any host.
+resolv-conf: /run/systemd/resolve/resolv.conf

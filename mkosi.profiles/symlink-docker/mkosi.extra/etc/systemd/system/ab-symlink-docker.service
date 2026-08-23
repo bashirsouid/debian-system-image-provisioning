@@ -2,13 +2,17 @@
 Description=Symlink Docker storage to persistent DATA partition
 Documentation=file:///usr/local/libexec/ab-symlink-docker
 After=local-fs.target
+# Must complete before docker.service starts, so container images/
+# volumes are written to the DATA partition from the beginning.
+# Ordering-only reference to a unit that isn't shipped is silently ignored.
+Before=docker.service
 ConditionPathExists=!/var/lib/ab-symlink-docker/done
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'test -d /mnt/data && mkdir -p /mnt/data/docker && ln -sf /mnt/data/docker /var/lib/docker || true'
-ExecStartPost=/bin/sh -c 'install -d -m 0700 /var/lib/ab-symlink-docker && date -u +%Y-%m-%dT%H:%M:%SZ > /var/lib/ab-symlink-docker/done'
+TimeoutStartSec=180s
+ExecStart=/usr/local/libexec/ab-symlink-docker
 StandardOutput=journal
 StandardError=journal
 
