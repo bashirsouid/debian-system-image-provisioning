@@ -209,6 +209,8 @@ for name in \
     healthchecks-ping-url \
     wifi-ssid \
     wifi-psk \
+    wifi-band \
+    wifi-powersave-off \
     s3-backup-credentials.json \
     seaweedfs-s3-credentials.json \
     users.json

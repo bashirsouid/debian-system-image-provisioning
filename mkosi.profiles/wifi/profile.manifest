@@ -1,2 +1,2 @@
-description="NetworkManager + iwd for Wi-Fi. Ships common non-free wifi firmware (Intel iwlwifi, Realtek, Mediatek). Pre-seeds a connection from .mkosi-secrets/wifi-ssid + wifi-psk when both are present."
+description="NetworkManager + iwd for Wi-Fi. Ships common non-free wifi firmware (Intel iwlwifi, Realtek, Mediatek). Pre-seeds a connection from .mkosi-secrets/wifi-ssid + wifi-psk when both are present. Optional wifi-band (a|b|bg|6GHz) pins band; optional wifi-powersave-off (true|false) disables Wi-Fi power saving."
 uses_secrets="wifi"

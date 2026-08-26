@@ -287,6 +287,12 @@ fi
 # connection at build time so a freshly-installed laptop joins the
 # network on first boot without anyone having to type credentials at
 # the console.
+#
+# Optional extras (consumed when wifi profile is selected):
+#   wifi-band           : one of "a" (5 GHz), "b", "bg" (2.4 GHz), "6GHz"
+#                         (NM >= 1.58); adds band=<value> to [wifi] section
+#   wifi-powersave-off  : "true" to emit conf.d drop-in with
+#                         wifi.powersave=2; "false"/absent = no-op
 
 if [[ -n "${NEEDED[wifi]+x}" ]]; then
     ws_path="$(resolve_secret wifi-ssid 2>/dev/null || true)"
@@ -311,11 +317,61 @@ if [[ -n "${NEEDED[wifi]+x}" ]]; then
             elif [[ "${#psk_val}" -gt 63 ]]; then
                 fail_soft wifi "wifi-psk is longer than the WPA2 maximum of 63 chars"
             else
-                ok wifi "ssid='${ssid_val}', ${#psk_val}-char psk"
+                # Validate optional wifi-band (only meaningful when connection is seeded)
+                band_path="$(resolve_secret wifi-band 2>/dev/null || true)"
+                band_val=""
+                if [[ -n "${band_path}" ]]; then
+                    band_val="$(<"${band_path}")"; band_val="${band_val%$'\n'}"
+                    if [[ ! "${band_val}" =~ ^(a|b|bg|6GHz)$ ]]; then
+                        fail_soft wifi "wifi-band has invalid value '${band_val}'; expected a|b|bg|6GHz"
+                        band_val=""
+                    fi
+                fi
+
+                # Validate optional wifi-powersave-off (independent of ssid/psk)
+                wpso_path="$(resolve_secret wifi-powersave-off 2>/dev/null || true)"
+                wpso_val=""
+                wifi_bad=""
+                if [[ -n "${wpso_path}" ]]; then
+                    wpso_val="$(<"${wpso_path}")"; wpso_val="${wpso_val%$'\n'}"
+                    if [[ ! "${wpso_val}" =~ ^(true|false)$ ]]; then
+                        fail_soft wifi "wifi-powersave-off must be 'true' or 'false', got '${wpso_val}'"
+                        wifi_bad=1
+                    fi
+                fi
+
+                # Only report ok when nothing soft-failed above.
+                if [[ -z "${wifi_bad}" ]]; then
+                    if [[ -n "${band_val}" ]]; then
+                        ok wifi "ssid='${ssid_val}', ${#psk_val}-char psk, band=${band_val}"
+                    else
+                        ok wifi "ssid='${ssid_val}', ${#psk_val}-char psk"
+                    fi
+                fi
+                unset ssid_val psk_val band_val band_path wpso_val wpso_path wifi_bad
             fi
-            unset ssid_val psk_val
         fi
     else
+        # Even without ssid/psk, validate wifi-powersave-off if present (independent feature)
+        wpso_path="$(resolve_secret wifi-powersave-off 2>/dev/null || true)"
+        if [[ -n "${wpso_path}" ]]; then
+            wpso_val="$(<"${wpso_path}")"; wpso_val="${wpso_val%$'\n'}"
+            if [[ ! "${wpso_val}" =~ ^(true|false)$ ]]; then
+                fail_soft wifi "wifi-powersave-off must be 'true' or 'false', got '${wpso_val}'"
+            else
+                ok wifi "wifi-powersave-off=${wpso_val} (no pre-seeded connection)"
+            fi
+            unset wpso_val wpso_path
+        fi
+
+        # Warn about band without ssid/psk
+        band_path="$(resolve_secret wifi-band 2>/dev/null || true)"
+        if [[ -n "${band_path}" ]]; then
+            band_val="$(<"${band_path}")"; band_val="${band_val%$'\n'}"
+            warn "wifi-band present but wifi-ssid+wifi-psk absent; band pin requires a pre-seeded connection"
+            unset band_val band_path
+        fi
+
         warn "wifi-ssid + wifi-psk absent — wifi profile selected but no pre-seeded SSID; you'll set one up at first login"
     fi
 fi

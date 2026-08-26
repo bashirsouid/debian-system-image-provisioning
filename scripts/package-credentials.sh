@@ -144,11 +144,45 @@ fi
 # uses key-mgmt=wpa-psk; open networks aren't supported here on
 # purpose — anyone wanting an open SSID can drop a hand-written
 # .nmconnection into mkosi.profiles/wifi/mkosi.extra/ instead.
+#
+# Optional extras (consumed when wifi profile is selected):
+#   wifi-band           : one of "a" (5 GHz), "b", "bg" (2.4 GHz), "6GHz"
+#                         (NM >= 1.58); adds band=<value> to [wifi] section
+#   wifi-powersave-off  : "true" to emit conf.d drop-in with
+#                         wifi.powersave=2; "false"/absent = no-op
 if profile_selected wifi; then
+    # Handle wifi-powersave-off independently of ssid/psk presence
+    if wpso_path="$(resolve_secret wifi-powersave-off 2>/dev/null || true)" && [[ -n "${wpso_path}" ]]; then
+        wpso_val="$(<"${wpso_path}")"; wpso_val="${wpso_val%$'\n'}"
+        if [[ "${wpso_val}" == "true" ]]; then
+            install -d -m 0755 "${EXTRA_DIR}/etc/NetworkManager/conf.d"
+            cat >"${EXTRA_DIR}/etc/NetworkManager/conf.d/wifi-powersave-off.conf" <<'EOF'
+[connection]
+wifi.powersave=2
+EOF
+            chmod 0644 "${EXTRA_DIR}/etc/NetworkManager/conf.d/wifi-powersave-off.conf"
+            log "wifi-powersave-off=true -> emitted conf.d drop-in"
+        elif [[ -n "${wpso_val}" ]]; then
+            warn "wifi-powersave-off has unexpected value '${wpso_val}'; expected true|false; ignoring"
+        fi
+        unset wpso_path wpso_val
+    fi
+
+    # Handle pre-seeded connection + optional band pin
     if ws_path="$(resolve_secret wifi-ssid)" && wp_path="$(resolve_secret wifi-psk)"; then
         ssid="$(<"${ws_path}")"; ssid="${ssid%$'\n'}"
         psk="$(<"${wp_path}")"; psk="${psk%$'\n'}"
         if [[ -n "${ssid}" && -n "${psk}" ]]; then
+            # Optional band pin (only meaningful when connection is seeded)
+            band=""
+            if band_path="$(resolve_secret wifi-band 2>/dev/null || true)" && [[ -n "${band_path}" ]]; then
+                band="$(<"${band_path}")"; band="${band%$'\n'}"
+                if [[ ! "${band}" =~ ^(a|b|bg|6GHz)$ ]]; then
+                    warn "wifi-band has invalid value '${band}'; expected a|b|bg|6GHz; ignoring"
+                    band=""
+                fi
+            fi
+
             install -d -m 0700 "${NM_SYSCON_D}"
             # Sanitize the SSID for the filename (NM only requires the
             # extension match; the [connection] id= is the human-visible
@@ -160,6 +194,15 @@ if profile_selected wifi; then
             # doesn't churn NM state on the booted system.
             uuid="$(printf '%s' "${ssid}" | sha256sum | head -c32 \
                 | sed -E 's/(........)(....)(....)(....)(.{12})/\1-\2-\3-\4-\5/')"
+
+            # Build the [wifi] section with optional band
+            wifi_section="ssid=${ssid}
+mode=infrastructure"
+            if [[ -n "${band}" ]]; then
+                wifi_section="${wifi_section}
+band=${band}"
+            fi
+
             cat >"${nm_path}" <<EOF
 [connection]
 id=${ssid}
@@ -168,8 +211,7 @@ type=wifi
 autoconnect=true
 
 [wifi]
-ssid=${ssid}
-mode=infrastructure
+${wifi_section}
 
 [wifi-security]
 key-mgmt=wpa-psk
@@ -182,10 +224,13 @@ method=auto
 method=auto
 EOF
             chmod 0600 "${nm_path}"
+            if [[ -n "${band}" ]]; then
+                log "wifi-band=${band} added to connection"
+            fi
         else
             warn "wifi-ssid or wifi-psk is empty; skipping NM connection"
         fi
-        unset ssid psk safe_ssid nm_path uuid
+        unset ssid psk safe_ssid nm_path uuid band band_path wifi_section
     else
         log "wifi profile selected but wifi-ssid+wifi-psk not both present; skipping NM connection"
     fi

@@ -68,6 +68,8 @@ with `jq`. Top-level keys map directly to files under
   "healthchecks-ping-url": "https://hc-ping.com/...",
   "wifi-ssid": "example",
   "wifi-psk": "correct horse battery staple",
+  "wifi-band": "a",
+  "wifi-powersave-off": "false",
   "s3-backup-credentials.json": {
     "endpoint": "",
     "accessKeyId": "YOUR_ACCESS_KEY",
