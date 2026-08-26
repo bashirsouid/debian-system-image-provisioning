@@ -74,6 +74,10 @@ with `jq`. Top-level keys map directly to files under
     "secretAccessKey": "YOUR_SECRET_KEY",
     "bucket": "your-backup-bucket"
   },
+  "seaweedfs-s3-credentials.json": {
+    "accessKeyId": "YOUR_SEAWEEDFS_ACCESS_KEY",
+    "secretAccessKey": "YOUR_SEAWEEDFS_SECRET_KEY"
+  },
   "kopia-password": "long-random-repository-passphrase",
   "kopia-s3-creds-wasabi.json": {
     "accessKeyId": "YOUR_S3_ACCESS_KEY",
@@ -131,6 +135,13 @@ backup fails if it is missing/empty) and one
 per cloud target named in the host's `kopia_cloud_targets` descriptor
 list. The S3 endpoint is non-secret and lives in the descriptor, not
 here. See the Kopia backup stack section of `mkosi.profiles/README.md`.
+
+The SeaweedFS S3 gateway (profile `k3s-seaweedfs`) reads
+`seaweedfs-s3-credentials.json` (`{accessKeyId, secretAccessKey}`) to
+configure the S3 identity credentials. The endpoint is implicit (the
+local k3s NodePort). If the secret is absent the credential renderer
+no-ops and the SeaweedFS pod will fail to start — add the secret to the
+vault and rebuild.
 
 All other keys are optional except the secrets required by the profiles
 you select. `scripts/verify-build-secrets.sh` remains the authority for

@@ -50,7 +50,7 @@ source "${REPO_ROOT}/scripts/lib/profile-resolver.sh"
 # Every known secret category. Order matters for the summary table.
 # ssh is special: always required (no bootable image is useful without
 # it). The rest are optional unless a selected profile declares them.
-ALL_FEATURES=(ssh tailscale cloudflared mailjet pagerduty healthchecks wifi s3-backup kopia)
+ALL_FEATURES=(ssh tailscale cloudflared mailjet pagerduty healthchecks wifi s3-backup kopia seaweedfs)
 
 declare -A STATUS
 declare -A DETAIL
@@ -341,6 +341,26 @@ if [[ -n "${NEEDED[s3-backup]+x}" ]]; then
         fi
     else
         warn "s3-backup-credentials.json absent — s3-unencrypted-backup profile selected but backup disabled"
+    fi
+fi
+
+# --- OPTIONAL: seaweedfs-s3-credentials.json ---------------------------------
+# Single JSON file containing SeaweedFS S3 gateway credentials.
+# Format: {"accessKeyId":"", "secretAccessKey":""}
+
+if [[ -n "${NEEDED[seaweedfs]+x}" ]]; then
+    if sw_path="$(resolve_secret seaweedfs-s3-credentials.json)" && check_file_perms "${sw_path}"; then
+        if ! jq -e '.' "${sw_path}" >/dev/null 2>&1; then
+            fail_soft seaweedfs "content is not valid JSON"
+        elif [[ -z "$(jq -r '.accessKeyId // empty' "${sw_path}")" ]]; then
+            fail_soft seaweedfs "accessKeyId field is missing or empty"
+        elif [[ -z "$(jq -r '.secretAccessKey // empty' "${sw_path}")" ]]; then
+            fail_soft seaweedfs "secretAccessKey field is missing or empty"
+        else
+            ok seaweedfs "configured (accessKeyId=$(jq -r '.accessKeyId' "${sw_path}" | sed 's/./*/g'))"
+        fi
+    else
+        warn "seaweedfs-s3-credentials.json absent — k3s-seaweedfs profile selected but S3 gateway will not start"
     fi
 fi
 

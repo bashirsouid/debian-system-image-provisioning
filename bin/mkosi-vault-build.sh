@@ -210,6 +210,7 @@ for name in \
     wifi-ssid \
     wifi-psk \
     s3-backup-credentials.json \
+    seaweedfs-s3-credentials.json \
     users.json
 do
     write_value ".[\"${name}\"]" "${name}"

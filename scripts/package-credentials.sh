@@ -229,6 +229,19 @@ else
     log "s3-unencrypted-backup profile not selected; skipping s3-backup-credentials.json packaging"
 fi
 
+# --- OPTIONAL: seaweedfs-s3-credentials.json --------------------------------
+# Single JSON file containing SeaweedFS S3 gateway credentials.
+# Format: {"accessKeyId":"", "secretAccessKey":""}
+if profile_selected k3s-seaweedfs; then
+    if sw_path="$(resolve_secret seaweedfs-s3-credentials.json)"; then
+        stage_credential seaweedfs-s3-credentials.json "${sw_path}" "${CREDSTORE}/seaweedfs-s3-credentials.json"
+    else
+        warn "seaweedfs-s3-credentials.json absent; skipping. ab-k3s-seaweedfs-creds.service will no-op via ConditionPathExists="
+    fi
+else
+    log "k3s-seaweedfs profile not selected; skipping seaweedfs-s3-credentials.json packaging"
+fi
+
 # --- OPTIONAL: Kopia credentials ---------------------------------------
 # Helper: stage every secret whose basename matches a glob, host-specific
 # files winning over global ones of the same name. Staged root:kopia 0640 so

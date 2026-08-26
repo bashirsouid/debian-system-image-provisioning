@@ -1,0 +1,3 @@
+# /etc/systemd/system-preset/91-k3s-seaweedfs.preset
+# Enable the SeaweedFS credential renderer so it runs before k3s starts.
+enable ab-k3s-seaweedfs-creds.service

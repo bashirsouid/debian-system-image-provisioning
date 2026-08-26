@@ -1,0 +1,3 @@
+description="SeaweedFS S3-compatible object store deployed via k3s (single-process weed server: master+volume+filer+S3 gateway); data on /mnt/data/seaweedfs; reachable via Tailscale (NodePort 30090/30091) or future Caddy TLS front."
+requires="k3s"
+uses_secrets="seaweedfs"

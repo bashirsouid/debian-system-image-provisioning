@@ -56,6 +56,7 @@ Profile directories currently in the tree:
 | `k3s` | Single-node Kubernetes via get.k3s.io (first-boot installer). Ships resolv-conf fix, firewall drop-in, and env-file hooks for profile-owned install overrides. |
 | `k3s-hello-world` | Sample static site deployed via k3s manifests (ConfigMap + nginx Deployment + NodePort Service); exposed through host Caddy (k3s-proxy). |
 | `k3s-proxy` | Host Caddy reverse proxy: terminates public TLS for k3s-published services, disables k3s' bundled Traefik + ServiceLB. |
+| `k3s-seaweedfs` | SeaweedFS S3-compatible object store (single-process `weed server`); data on `/mnt/data/seaweedfs`; reachable via Tailscale NodePorts 30090/30091. |
 | `kopia-base` | Shared base for the backup stack: Kopia CLI + `kopia` system user (UID 5000) + the `/usr/lib/kopia/*.bash` scripts and `/etc/kopia` config. Pulled in automatically by the backup profiles (`requires=`); not selected directly. (see [Kopia backup stack](#kopia-backup-stack) below) |
 | `kopia-cloud-backup` | Hourly encrypted S3 cloud backup service — auto-pulls `kopia-base` (see [Kopia backup stack](#kopia-backup-stack)) |
 | `kopia-filesystem-backup` | Hourly encrypted filesystem backup service for rotating local/USB drives — auto-pulls `kopia-base` (see [Kopia backup stack](#kopia-backup-stack)) |
