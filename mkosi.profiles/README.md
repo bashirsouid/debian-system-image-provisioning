@@ -33,6 +33,7 @@ Profile directories currently in the tree:
 | Profile | Purpose |
 | --- | --- |
 | `ab-diagnostics` | Stream current-boot journal to `/root/last-boot.log` |
+| `auto-update-clock` | Update the system clock once after `network-online.target` at boot |
 | `antigravity` | *(stub)* Google Antigravity IDE |
 | `audio-pipewire` | PipeWire + bluez audio stack |
 | `awesomewm` | awesome window manager + xorg (with xorg-legacy) |

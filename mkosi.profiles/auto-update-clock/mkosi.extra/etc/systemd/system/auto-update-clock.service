@@ -1,0 +1,13 @@
+[Unit]
+Description=Update system clock after network is online
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/sleep 5s
+ExecStart=/usr/local/libexec/fix-trixie-clock.sh --yes
+
+[Install]
+WantedBy=multi-user.target
+
